@@ -7,6 +7,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {
   Activity,
+  AlertTriangle,
   Bell,
   Bot,
   Check,
@@ -34,6 +35,7 @@ import {
   Pin,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Send,
@@ -167,6 +169,9 @@ interface ActivityRecord {
   completed?: ToolCompletedEvent;
   auxiliary?: ActivityAuxiliaryEvent;
 }
+type ConversationRecord =
+  | { id: string; kind: 'message'; message: Extract<AgentEvent, { type: 'message.completed' | 'message.user' }> }
+  | { id: string; kind: 'activity'; activity: ActivityRecord };
 interface InputRequest {
   requestId: string;
   question: string;
@@ -316,6 +321,86 @@ const formatCommandOutput = (value: unknown): string => {
   }
   return JSON.stringify(output ?? '', null, 2);
 };
+
+const toolPresentation: Record<string, { label: string; description: string }> = {
+  list_files: { label: '浏览项目文件', description: '查看目录结构' },
+  read_file: { label: '读取文件', description: '读取项目上下文' },
+  read_files: { label: '批量读取文件', description: '收集相关代码上下文' },
+  search_text: { label: '搜索代码', description: '定位相关实现' },
+  write_file: { label: '写入文件', description: '更新工作区内容' },
+  apply_patch: { label: '应用代码修改', description: '更新工作区内容' },
+  run_command: { label: '运行命令', description: '执行验证或构建' },
+  git_diff: { label: '检查代码变更', description: '读取 Git Diff' },
+  set_plan: { label: '更新执行计划', description: '同步任务进度' },
+  delegate: { label: '委派子 Agent', description: '并行收集只读证据' },
+  review_changes: { label: '审查代码变更', description: '检查缺陷与测试缺口' },
+  checkpoint: { label: '创建恢复点', description: '保存当前修改快照' },
+  compact_context: { label: '整理上下文', description: '压缩较早的任务记录' },
+  ask_user: { label: '请求用户确认', description: '等待补充信息' },
+  finish: { label: '完成任务', description: '汇总变更与验证证据' },
+};
+
+function friendlyAgentError(message: string): { title: string; summary: string } {
+  if (/tool_call_id|deserialize|invalid_request_error/i.test(message)) {
+    return {
+      title: '模型接口格式不兼容',
+      summary: '兼容接口拒绝了工具调用上下文。可重试任务；若仍失败，请检查模型与接口配置。',
+    };
+  }
+  if (/401|unauthorized|api.?key/i.test(message)) {
+    return { title: '模型鉴权失败', summary: '请在设置中检查 API Key，然后重新尝试。' };
+  }
+  if (/429|rate.?limit/i.test(message)) {
+    return { title: '请求过于频繁', summary: '模型服务暂时限流，请稍后重新尝试。' };
+  }
+  if (/timeout|timed out/i.test(message)) {
+    return { title: '执行超时', summary: '模型或工具未在限制时间内完成，可缩小任务范围后重试。' };
+  }
+  return {
+    title: '任务未完成',
+    summary: message.length > 180 ? `${message.slice(0, 177)}…` : message,
+  };
+}
+
+function InlineMarkdown({ text }: { text: string }): React.JSX.Element {
+  const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith('`') && part.endsWith('`')) {
+          return <code key={`${index}-${part}`}>{part.slice(1, -1)}</code>;
+        }
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={`${index}-${part}`}>{part.slice(2, -2)}</strong>;
+        }
+        return <React.Fragment key={`${index}-${part}`}>{part}</React.Fragment>;
+      })}
+    </>
+  );
+}
+
+function MarkdownMessage({ text }: { text: string }): React.JSX.Element {
+  const blocks = text.split(/(```[\s\S]*?```)/g).filter(Boolean);
+  return (
+    <div className="markdown-message">
+      {blocks.map((block, blockIndex) => {
+        if (block.startsWith('```') && block.endsWith('```')) {
+          const body = block.slice(3, -3).replace(/^[^\n]*\n/, '');
+          return <pre key={`${blockIndex}-${block.slice(0, 12)}`}><code>{body}</code></pre>;
+        }
+        return block.split(/\r?\n/).map((line, lineIndex) => {
+          const trimmed = line.trim();
+          if (!trimmed) return <span className="markdown-gap" key={`${blockIndex}-${lineIndex}`} />;
+          const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+          if (bullet) {
+            return <div className="markdown-list-item" key={`${blockIndex}-${lineIndex}`}><span>•</span><div><InlineMarkdown text={bullet[1] ?? ''} /></div></div>;
+          }
+          return <div className="markdown-line" key={`${blockIndex}-${lineIndex}`}><InlineMarkdown text={line} /></div>;
+        });
+      })}
+    </div>
+  );
+}
 
 function App(): React.JSX.Element {
   const state = useStore();
@@ -625,6 +710,18 @@ function App(): React.JSX.Element {
     set({ toast: resultOutput(result) ? `已暂存 ${path}` : 'Stage 未完成，请检查 Git 状态' });
   }
   async function restoreCheckpoint(id: string): Promise<void> { const result = await window.seecoder.checkpoint.restore(id); set({ toast: resultOutput(result) ? 'Checkpoint 已恢复' : 'Checkpoint 恢复失败' }); await loadGit(); }
+  function retryLastTask(): void {
+    const lastUserMessage = [...events]
+      .reverse()
+      .map((item) => item.event)
+      .find((event): event is Extract<AgentEvent, { type: 'message.user' }> => event.type === 'message.user');
+    if (!lastUserMessage) {
+      set({ toast: '没有可重试的任务内容' });
+      return;
+    }
+    setComposer(lastUserMessage.text);
+    set({ toast: '上次任务已放回输入框，可修改后重新发送' });
+  }
   function feedback(kind: 'like' | 'dislike'): void {
     set({ toast: kind === 'like' ? '感谢反馈，已记录为有帮助' : '已记录改进反馈' });
   }
@@ -652,16 +749,6 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('seecoder:command', listener);
   });
 
-  const currentMessages = useMemo(
-    () =>
-      events
-        .map((item) => item.event)
-        .filter(
-          (event): event is Extract<AgentEvent, { type: 'message.completed' | 'message.user' }> =>
-            event.type === 'message.completed' || event.type === 'message.user',
-        ),
-    [events],
-  );
   const visibleThreads = threads.filter(
     (thread) =>
       !thread.archived && (!search || thread.title.toLowerCase().includes(search.toLowerCase())),
@@ -689,7 +776,6 @@ function App(): React.JSX.Element {
             selectedThread={selectedThread}
             mode={mode}
             running={running}
-            currentMessages={currentMessages}
             streamingText={streamingText}
             events={events}
             plans={plans}
@@ -711,6 +797,7 @@ function App(): React.JSX.Element {
             onMenu={showThreadMenu}
             onBranch={showBranches}
             onRestoreCheckpoint={restoreCheckpoint}
+            onRetry={retryLastTask}
             onOpenInspector={() => { setCollapsed(false); setInspector('changes'); }}
           />
         ) : (
@@ -949,7 +1036,6 @@ function TaskPage({
   selectedThread,
   mode,
   running,
-  currentMessages,
   streamingText,
   events,
   plans,
@@ -971,12 +1057,12 @@ function TaskPage({
   onMenu,
   onBranch,
   onRestoreCheckpoint,
+  onRetry,
   onOpenInspector,
 }: {
   selectedThread: Thread | undefined;
   mode: ExecutionMode;
   running: boolean;
-  currentMessages: Array<Extract<AgentEvent, { type: 'message.completed' | 'message.user' }>>;
   streamingText: string;
   events: TimelineItem[];
   plans: PlanStep[];
@@ -1004,24 +1090,32 @@ function TaskPage({
   onMenu: () => void;
   onBranch: () => void;
   onRestoreCheckpoint: (id: string) => void;
+  onRetry: () => void;
   onOpenInspector: () => void;
 }): React.JSX.Element {
-  const activityRecords = useMemo(() => {
-    const records: ActivityRecord[] = [];
-    const byCallId = new Map<string, ActivityRecord>();
-    events.forEach(({ event }) => {
-      if (event.type === 'tool.requested') {
-        const record = byCallId.get(event.call.id) ?? { id: `tool-${event.call.id}` };
-        record.requested = event;
-        byCallId.set(event.call.id, record);
-        if (!records.includes(record)) records.push(record);
+  const conversationRecords = useMemo(() => {
+    const records: ConversationRecord[] = [];
+    const activityByCallId = new Map<string, ActivityRecord>();
+    events.forEach(({ id, event }) => {
+      if (event.type === 'message.user' || event.type === 'message.completed') {
+        records.push({ id, kind: 'message', message: event });
+      } else if (event.type === 'tool.requested') {
+        const activity = activityByCallId.get(event.call.id) ?? { id: `tool-${event.call.id}` };
+        activity.requested = event;
+        activityByCallId.set(event.call.id, activity);
+        if (!records.some((record) => record.kind === 'activity' && record.activity === activity)) {
+          records.push({ id: activity.id, kind: 'activity', activity });
+        }
       } else if (event.type === 'tool.completed') {
-        const record = byCallId.get(event.callId) ?? { id: `tool-${event.callId}` };
-        record.completed = event;
-        byCallId.set(event.callId, record);
-        if (!records.includes(record)) records.push(record);
+        const activity = activityByCallId.get(event.callId) ?? { id: `tool-${event.callId}` };
+        activity.completed = event;
+        activityByCallId.set(event.callId, activity);
+        if (!records.some((record) => record.kind === 'activity' && record.activity === activity)) {
+          records.push({ id: activity.id, kind: 'activity', activity });
+        }
       } else if (event.type === 'context.compacted' || event.type === 'checkpoint.created') {
-        records.push({ id: `${event.type}-${event.type === 'checkpoint.created' ? event.checkpoint.id : event.timestamp}`, auxiliary: event });
+        const activity: ActivityRecord = { id, auxiliary: event };
+        records.push({ id, kind: 'activity', activity });
       }
     });
     return records;
@@ -1030,6 +1124,10 @@ function TaskPage({
     () => [...events].reverse().find(({ event }) => event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled'),
     [events],
   );
+  const hasConversation = conversationRecords.length > 0 || streamingText.length > 0 || plans.length > 0;
+  const failure = latestTurnResult?.event.type === 'turn.failed'
+    ? friendlyAgentError(latestTurnResult.event.error.message)
+    : undefined;
   return (
     <>
       <header className="topbar">
@@ -1082,7 +1180,7 @@ function TaskPage({
         </div>
       </header>
       <section className="conversation">
-        <div className="welcome">
+        {!hasConversation && <div className="welcome">
           <div className="welcome-orb">
             <Sparkles size={23} />
           </div>
@@ -1090,7 +1188,7 @@ function TaskPage({
             <h1>让代码，自己找到答案。</h1>
             <p>描述一个目标，SeeCoder 会探索、修改并验证你的工作区。</p>
           </div>
-        </div>
+        </div>}
         {plans.length > 0 && <PlanCard plans={plans} mode={mode} onApprove={onPlan} onReplan={onReplan} onEdit={onEditPlan} />}
         {reviewFindings.length > 0 && (
           <div className="review-summary">
@@ -1113,12 +1211,15 @@ function TaskPage({
           </div>
         )}
         <div className="message-stack">
-          {currentMessages.map((message) => (
-            <MessageCard
-              key={`${message.type}-${message.turnId}-${message.timestamp}`}
-              message={message}
-              onCopy={onCopy}
-              onFeedback={onFeedback}
+          {conversationRecords.map((record) => record.kind === 'message' ? (
+            <MessageCard key={record.id} message={record.message} onCopy={onCopy} onFeedback={onFeedback} />
+          ) : (
+            <ActivityCard
+              key={record.id}
+              record={record.activity}
+              expanded={Boolean(expanded[record.id])}
+              onRestoreCheckpoint={onRestoreCheckpoint}
+              onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
             />
           ))}
           {streamingText && (
@@ -1138,15 +1239,6 @@ function TaskPage({
               </div>
             </div>
           )}
-          {activityRecords.map((record) => (
-              <ActivityCard
-                key={record.id}
-                record={record}
-                expanded={Boolean(expanded[record.id])}
-                onRestoreCheckpoint={onRestoreCheckpoint}
-                onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
-              />
-            ))}
           {approvals.map((approval) => (
             <ApprovalCard
               key={approval.id}
@@ -1203,17 +1295,23 @@ function TaskPage({
             </button>
           </div>
         )}
-        {latestTurnResult?.event.type === 'turn.failed' && (
-          <div className="complete-banner failure-banner">
-            <div className="complete-icon"><X size={15} /></div>
+        {latestTurnResult?.event.type === 'turn.failed' && failure && (
+          <div className="complete-banner failure-banner" role="alert">
+            <div className="complete-icon"><AlertTriangle size={15} /></div>
             <div>
-              <strong>任务失败</strong>
-              <span>{latestTurnResult.event.error.message}</span>
+              <strong>{failure.title}</strong>
+              <span>{failure.summary}</span>
             </div>
-            <button data-action="view-failure" onClick={onOpenInspector}>
+            <div className="failure-actions">
+              <button data-action="retry-turn" onClick={onRetry}>
+                <RefreshCw size={14} />
+                重新尝试
+              </button>
+              <button data-action="view-failure" onClick={onOpenInspector}>
               <PanelRight size={14} />
-              查看轨迹
-            </button>
+                查看详情
+              </button>
+            </div>
           </div>
         )}
       </section>
@@ -1286,7 +1384,7 @@ function MessageCard({
           <span>{message.type === 'message.user' ? '你' : 'SeeCoder'}</span>
           <span>{timeLabel(message.timestamp)}</span>
         </div>
-        <div className="message-text">{message.text}</div>
+        <div className="message-text"><MarkdownMessage text={message.text} /></div>
         <div className="message-actions">
           <button data-action="copy-message" title="复制" onClick={() => onCopy(message.text)}>
             <Copy size={13} />
@@ -1328,16 +1426,20 @@ function ActivityCard({
   const isTool = Boolean(record.requested || record.completed);
   const isSuccess = record.completed?.result.ok ?? false;
   const isError = Boolean(record.completed && !record.completed.result.ok);
-  const label = record.requested?.call.name
-    ?? (record.completed ? `工具 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? 'Checkpoint 已创建' : '上下文已压缩');
+  const toolName = record.requested?.call.name;
+  if (toolName === 'finish') return <></>;
+  const presentation = toolName ? toolPresentation[toolName] : undefined;
+  const label = presentation?.label
+    ?? toolName
+    ?? (record.completed ? `工具调用 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? '已创建恢复点' : '已整理上下文');
   const status = record.completed
-    ? record.completed.result.ok ? '已完成' : (record.completed.result.error?.message ?? '执行失败')
+    ? record.completed.result.ok ? (presentation?.description ?? '已完成') : '执行失败，展开查看详情'
     : record.auxiliary?.type === 'checkpoint.created' ? '可恢复' : isTool ? '执行中' : '已记录';
   return (
     <div
       className={`activity ${isError ? 'error' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
     >
-      <button className="activity-head" data-action="toggle-activity" onClick={onToggle}>
+      <button className="activity-head" data-action="toggle-activity" aria-expanded={expanded} onClick={onToggle}>
         <div className="activity-icon">
           {record.auxiliary?.type === 'checkpoint.created' ? (
             <RotateCcw size={14} />
@@ -1358,6 +1460,7 @@ function ActivityCard({
       </button>
       {expanded && (
         <div className="activity-detail">
+          {toolName && <div className="activity-technical">工具标识：<code>{toolName}</code></div>}
           <pre>{displayDetail}</pre>
           {checkpoint && (
             <button
