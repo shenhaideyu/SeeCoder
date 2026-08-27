@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, readdir, realpath, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, readdir, realpath, writeFile, mkdir, stat, unlink } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z, type ZodTypeAny } from 'zod';
@@ -139,13 +139,14 @@ function parseUnifiedPatch(patch: string): PatchFile[] {
 }
 
 function applyFilePatch(before: string, file: PatchFile): string {
+  const eol = before.includes('\r\n') ? '\r\n' : '\n';
   const source = before.replace(/\r\n/g, '\n').split('\n');
   let delta = 0;
   for (const hunk of file.hunks) {
     const [header, ...body] = hunk.split('\n');
     const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
     if (!match) throw new Error(`补丁区块无效: ${header}`);
-    const start = Number(match[1]) - 1 + delta;
+    const expectedStart = Number(match[1]) - 1 + delta;
     const removed: string[] = [];
     const added: string[] = [];
     const patchBody = body.at(-1) === '' ? body.slice(0, -1) : body;
@@ -158,12 +159,20 @@ function applyFilePatch(before: string, file: PatchFile): string {
         added.push(value);
       }
     }
-    const actual = source.slice(start, start + removed.length);
-    if (actual.join('\n') !== removed.join('\n')) throw new Error(`补丁上下文不匹配: ${file.newPath}`);
+    let start = expectedStart;
+    const matchesAt = (index: number) => source.slice(index, index + removed.length).join('\n') === removed.join('\n');
+    if (!matchesAt(start)) {
+      const candidates: number[] = [];
+      const from = Math.max(0, expectedStart - 80);
+      const to = Math.min(source.length, expectedStart + 80);
+      for (let index = from; index <= to; index += 1) if (matchesAt(index)) candidates.push(index);
+      if (candidates.length !== 1) throw new Error(`补丁上下文不匹配: ${file.newPath}`);
+      start = candidates[0]!;
+    }
     source.splice(start, removed.length, ...added);
-    delta += added.length - removed.length;
+    delta += start - expectedStart + added.length - removed.length;
   }
-  return source.join('\n');
+  return source.join(eol);
 }
 
 async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<void> {
@@ -291,7 +300,13 @@ export function createToolDefinitions(): ToolDefinition[] {
       parameters: z.object({ path: z.string().optional(), depth: z.number().int().min(0).max(5).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path?: string; depth?: number };
-        try { const path = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal); return result(true, files, Date.now() - started); }
+        try {
+          const path = await new WorkspacePolicy(context.workspace).path(args.path);
+          if ((await stat(path)).isFile()) return result(true, [relative(context.workspace, path)], Date.now() - started);
+          const files: string[] = [];
+          await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal);
+          return result(true, files, Date.now() - started);
+        }
         catch (error) { return result(false, undefined, Date.now() - started, { code: 'path_denied', message: error instanceof Error ? error.message : '路径无效' }); }
       },
     },
@@ -305,7 +320,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'read_files', description: '批量读取工作区内文本文件', sideEffect: false, risk: 'low',
+      name: 'read_files', description: '一次批量读取多个已知文本文件；已定位多个文件时优先于重复 read_file', sideEffect: false, risk: 'low',
       parameters: z.object({ paths: z.array(z.string().min(1)).min(1).max(30) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { paths: string[] }; const outputs: Array<{ path: string; text?: string; error?: string }> = [];
@@ -318,13 +333,26 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'search_text', description: '在工作区文本文件中搜索字符串或正则', sideEffect: false, risk: 'low',
+      name: 'search_text', description: '先按字符串或正则定位相关文件和行，再按需读取命中片段', sideEffect: false, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
-        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path);
-        const fastMatches = await searchWithRg(args.query, base, context.workspace, args.glob, max, context.signal);
-        if (fastMatches) return result(true, fastMatches, Date.now() - started);
-        const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50;
+        try {
+          const base = await new WorkspacePolicy(context.workspace).path(args.path);
+          const matches: Array<{ path: string; line: number; text: string }> = [];
+          let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); }
+          if ((await stat(base)).isFile()) {
+            const text = await readExisting(base);
+            if (text && !text.includes('\u0000')) text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relative(context.workspace, base), line: index + 1, text: line.slice(0, 300) }); });
+            return result(true, matches, Date.now() - started);
+          }
+          const fastMatches = await searchWithRg(args.query, base, context.workspace, args.glob, max, context.signal);
+          if (fastMatches) return result(true, fastMatches, Date.now() - started);
+          const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        } catch (error) {
+          if (context.signal?.aborted) throw error;
+          return result(false, undefined, Date.now() - started, { code: 'search_failed', message: error instanceof Error ? error.message : '搜索失败' });
+        }
       },
     },
     {

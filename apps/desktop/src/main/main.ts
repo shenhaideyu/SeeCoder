@@ -50,6 +50,7 @@ class MainLogger {
     else if (event.type === 'tool.completed') this.write(event.result.ok ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, durationMs: event.result.durationMs, error: event.result.error?.code });
     else if (event.type === 'tool.output') this.write('INFO', 'agent.tool.output', { ...base, callId: event.callId, stream: event.stream, bytes: event.text.length });
     else if (event.type === 'model.completed') this.write('INFO', 'agent.model.completed', { ...base, iteration: event.iteration, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens, retries: event.retries, finishReason: event.finishReason });
+    else if (event.type === 'subagent.updated') this.write(event.child.status === 'failed' ? 'WARN' : 'INFO', 'agent.subagent.updated', { ...base, childId: event.child.id, role: event.child.role, status: event.child.status, iteration: event.child.iteration, durationMs: event.child.durationMs, inputTokens: event.child.inputTokens, outputTokens: event.child.outputTokens, currentAction: event.child.currentAction, error: event.child.errorCode });
     else if (event.type === 'turn.started' || event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') this.write(event.type === 'turn.failed' ? 'ERROR' : 'INFO', `agent.${event.type}`, { ...base, status: event.turn.status, iteration: event.turn.iteration, ...(event.type === 'turn.failed' ? { error: event.error.code } : {}) });
     else if (event.type === 'approval.requested' || event.type === 'approval.resolved' || event.type === 'checkpoint.created' || event.type === 'checkpoint.restored') this.write('INFO', `agent.${event.type}`, base);
   }
@@ -383,8 +384,9 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(async () => {
   logger.init(app.getPath('userData'));
-  logger.write('INFO', 'app.ready', { version: app.getVersion(), platform: process.platform, workspace });
   await loadPersistedSettings();
+  // 记录恢复后的真实工作区，避免启动日志误导排障或让人以为 Core 曾绑定源码目录。
+  logger.write('INFO', 'app.ready', { version: app.getVersion(), platform: process.platform, workspace });
   registerIpc();
   registerMenu();
   await createWindow();

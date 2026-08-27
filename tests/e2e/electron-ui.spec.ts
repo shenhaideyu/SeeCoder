@@ -16,6 +16,9 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('[data-action="permission-mode"]')).toBeVisible();
     await expect(page.locator('[data-action="inspector-changes"]')).toBeVisible();
     await page.locator('[data-action="new-task"]').click();
+    const tasksAfterClick = await page.locator('[data-action="open-thread"]').count();
+    await page.keyboard.press('Control+N');
+    await expect(page.locator('[data-action="open-thread"]')).toHaveCount(tasksAfterClick + 1);
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
     await expect(page.locator('.run-status')).toContainText('就绪');
     await expect(page.locator('[data-action="stage-all"]')).toBeDisabled();

@@ -237,7 +237,8 @@ const useStore = create<UiState>((set) => ({
       const next = [...state.events, { id: `${Date.now()}-${Math.random()}`, event }].slice(-800);
       if (event.type === 'message.delta')
         return {
-          events: next,
+          // Delta 只用于当前流式文本；持久保留会在长回复中挤掉工具、审批和终态事件。
+          events: state.events,
           streamingText: `${state.streamingText}${event.text}`,
           running: true,
           phase: 'model',
@@ -553,8 +554,9 @@ function App(): React.JSX.Element {
   }
   async function newThread(): Promise<void> {
     const created = (await window.seecoder.thread.create('新的 SeeCoder 任务')) as Thread;
+    const currentThreads = useStore.getState().threads;
     set({
-      threads: [created, ...threads],
+      threads: [created, ...currentThreads.filter((thread) => thread.id !== created.id)],
       selectedThread: created,
       events: [],
       approvals: [],
@@ -841,7 +843,7 @@ function App(): React.JSX.Element {
             onBranch={showBranches}
             onRestoreCheckpoint={restoreCheckpoint}
             onRetry={retryLastTask}
-            onOpenInspector={() => { setCollapsed(false); setInspector('changes'); }}
+            onOpenInspector={() => { setCollapsed(false); setInspector('trace'); }}
           />
         ) : (
           <WorkspacePage
@@ -1193,6 +1195,8 @@ function TaskPage({
   const failure = latestTurnResult?.event.type === 'turn.failed'
     ? friendlyAgentError(latestTurnResult.event.error.message)
     : undefined;
+  const planActionsEnabled = latestTurnResult?.event.type !== 'turn.cancelled'
+    && latestTurnResult?.event.type !== 'turn.failed';
   const phaseText: Record<RunPhase, string> = {
     idle: '就绪', preparing: '准备下一步', model: '调用模型', tool: '执行工具', approval: '等待确认', input: '等待输入', review: '审查变更',
   };
@@ -1272,7 +1276,7 @@ function TaskPage({
             <p>描述一个目标，SeeCoder 会探索、修改并验证你的工作区。</p>
           </div>
         </div>}
-        {plans.length > 0 && <PlanCard plans={plans} mode={mode} onApprove={onPlan} onReplan={onReplan} onEdit={onEditPlan} />}
+        {plans.length > 0 && <PlanCard plans={plans} mode={mode} actionsEnabled={planActionsEnabled} onApprove={onPlan} onReplan={onReplan} onEdit={onEditPlan} />}
         {reviewFindings.length > 0 && (
           <div className="review-summary">
             <div className="card-heading">
@@ -1343,8 +1347,9 @@ function TaskPage({
               <Users size={15} />
               协作 Agent{' '}
               <span className="card-meta">
-                {children.filter((child) => child.status === 'completed').length}/{children.length}{' '}
-                已完成
+                {children.filter((child) => child.status === 'completed').length} 完成
+                {children.some((child) => child.status === 'failed') && ` · ${children.filter((child) => child.status === 'failed').length} 失败`}
+                {children.some((child) => child.status === 'running') && ` · ${children.filter((child) => child.status === 'running').length} 运行中`}
               </span>
             </div>
             {children.map((child) => (
@@ -1354,10 +1359,12 @@ function TaskPage({
                 <span className="truncate">{child.task}</span>
                 <span className="child-result">
                   {child.status === 'completed'
-                    ? '完成'
+                    ? `完成 · ${child.iteration ?? 0} 轮`
                     : child.status === 'running'
-                      ? '运行中'
-                      : child.status}
+                      ? `${child.currentAction ?? '运行中'} · 第 ${child.iteration ?? 1} 轮`
+                      : child.status === 'failed'
+                        ? `失败${child.errorCode ? ` · ${child.errorCode}` : ''}`
+                        : child.status === 'cancelled' ? '已取消' : '排队中'}
                 </span>
               </div>
             ))}
@@ -1370,11 +1377,11 @@ function TaskPage({
             </div>
             <div>
               <strong>任务完成</strong>
-              <span>变更、测试和轨迹证据已保存。</span>
+              <span>对话与执行轨迹已保存。</span>
             </div>
             <button data-action="view-result" onClick={onOpenInspector}>
               <PanelRight size={14} />
-              查看结果
+              查看轨迹
             </button>
           </div>
         )}
@@ -1397,6 +1404,19 @@ function TaskPage({
             </div>
           </div>
         )}
+        {latestTurnResult?.event.type === 'turn.cancelled' && (
+          <div className="complete-banner cancelled-banner" role="status">
+            <div className="complete-icon"><Square size={13} /></div>
+            <div>
+              <strong>任务已取消</strong>
+              <span>模型请求、工具和子 Agent 已停止，不会在后台继续执行。</span>
+            </div>
+            <button data-action="view-cancelled" onClick={onOpenInspector}>
+              <PanelRight size={14} />
+              查看轨迹
+            </button>
+          </div>
+        )}
       </section>
     </>
   );
@@ -1405,12 +1425,14 @@ function TaskPage({
 function PlanCard({
   plans,
   mode,
+  actionsEnabled,
   onApprove,
   onReplan,
   onEdit,
 }: {
   plans: PlanStep[];
   mode: ExecutionMode;
+  actionsEnabled: boolean;
   onApprove: () => void;
   onReplan: () => void;
   onEdit: (id: string) => void;
@@ -1423,7 +1445,7 @@ function PlanCard({
         <span className="card-meta">
           {plans.filter((step) => step.status === 'completed').length}/{plans.length}
         </span>
-        {mode === 'plan' && (
+        {mode === 'plan' && actionsEnabled && (
           <><button className="small-button" data-action="replan" onClick={onReplan}>重新规划</button><button className="small-button primary" data-action="approve-plan" onClick={onApprove}><Play size={12} />批准实施</button></>
         )}
       </div>
@@ -1519,7 +1541,11 @@ function ActivityCard({
     ? record.completed.result.ok
       ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
       : '执行失败，展开查看详情'
-    : record.auxiliary?.type === 'checkpoint.created' ? '可恢复' : isTool ? '执行中' : '已记录';
+    : record.auxiliary?.type === 'checkpoint.created'
+      ? '可恢复'
+      : isTool
+        ? toolName === 'ask_user' ? '等待你的选择' : '执行中'
+        : '已记录';
   return (
     <div
       className={`activity ${isError ? 'error' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
@@ -2023,7 +2049,7 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
         {children.map((child) => (
           <div className="trace-child" key={child.id}>
             <Users size={13} />
-            <span>{child.role} · {child.status}</span>
+            <span>{child.role} · {child.status} · {child.iteration ?? 0} 轮 · {Math.round((child.durationMs ?? 0) / 100) / 10}s</span>
           </div>
         ))}
         {!rows.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}

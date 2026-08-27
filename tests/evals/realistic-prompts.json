@@ -1,0 +1,47 @@
+[
+  {
+    "id": "onboarding-call-chain",
+    "level": "simple",
+    "mode": "plan",
+    "prompt": "我刚接手这个项目。后端是从哪里启动的？一个用户请求从入口到核心 Agent 大致会经过哪些模块？请用几句话和文件路径帮我理清楚，不要改代码。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 8,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 0,
+      "maxInputTokensPerRequest": 20000,
+      "maxAnswerChars": 1800,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "offline-backend-experience",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "前端如果连不上后端，用户现在会看到什么？帮我沿着配置、请求和异常处理链路查清楚，指出最容易让用户困惑的地方和一个最小改进方案。先不要改代码。",
+    "limits": {
+      "maxIterations": 7,
+      "maxToolCalls": 15,
+      "maxFailedTools": 1,
+      "maxDuplicateCalls": 1,
+      "maxInputTokensPerRequest": 35000,
+      "maxAnswerChars": 4200,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "stale-progress-recovery",
+    "level": "complex",
+    "mode": "guided",
+    "prompt": "最近有同学反馈，聊天页面偶尔一直显示正在处理，但刷新后任务其实已经结束。请定位状态同步链路里最可能的根因，做一个最小修复并补上回归测试。完成后自己运行相关测试，不要顺手重构无关模块。",
+    "limits": {
+      "maxIterations": 14,
+      "maxToolCalls": 28,
+      "maxFailedTools": 3,
+      "maxDuplicateCalls": 2,
+      "maxInputTokensPerRequest": 70000,
+      "maxAnswerChars": 5000,
+      "maxSideEffects": 8
+    }
+  }
+]

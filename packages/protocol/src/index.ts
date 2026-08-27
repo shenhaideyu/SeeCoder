@@ -128,6 +128,12 @@ export interface SubagentState {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   summary?: string;
   evidence?: Array<{ path?: string; detail: string }>;
+  iteration?: number;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  currentAction?: string;
+  errorCode?: string;
 }
 
 export interface AgentError {
@@ -145,7 +151,7 @@ export type Item =
   | { kind: 'approval'; id: string; approval: Approval; createdAt: string }
   | { kind: 'changes'; id: string; changeSet: ChangeSet; createdAt: string }
   | { kind: 'subagent'; id: string; state: SubagentState; createdAt: string }
-  | { kind: 'compaction'; id: string; summary: string; createdAt: string }
+  | { kind: 'compaction'; id: string; summary: string; messages?: ModelMessage[]; createdAt: string }
   | { kind: 'error'; id: string; error: AgentError; createdAt: string };
 
 export type AgentEventPayload =

@@ -58,6 +58,9 @@
 .failure-actions { display:flex; align-items:center; gap:3px; margin-left:auto; }
 .failure-banner .failure-actions button { margin-left:0; color:var(--danger); border-radius:6px; }
 .failure-banner .failure-actions button:hover { background:rgba(201,48,79,.1); }
+.cancelled-banner { border-color:var(--border); background:var(--surface-muted); }
+.cancelled-banner .complete-icon { color:var(--muted); background:var(--surface); }
+.cancelled-banner button { color:var(--muted); }
 .sidebar { padding:14px 10px 10px; }
 .brand { padding-bottom:16px; }
 .workspace-button { background:transparent; }

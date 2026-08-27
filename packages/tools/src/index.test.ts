@@ -61,6 +61,22 @@ describe('file tools', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('treats a file path as a valid list and search target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-file-target-'));
+    try {
+      await mkdir(join(root, 'src'), { recursive: true });
+      await writeFile(join(root, 'src', 'entry.ts'), 'const marker = "needle";\n', 'utf8');
+      const registry = new ToolRegistry();
+      const listed = await registry.get('list_files')!.execute({ path: 'src/entry.ts' }, { workspace: root });
+      const searched = await registry.get('search_text')!.execute({ query: 'needle', path: 'src/entry.ts' }, { workspace: root });
+      expect(listed.ok).toBe(true);
+      expect((listed.output as string[])[0]?.replace(/\\/g, '/')).toBe('src/entry.ts');
+      expect(searched).toMatchObject({ ok: true, output: [expect.objectContaining({ line: 1, text: expect.stringContaining('needle') })] });
+      const missing = await registry.get('search_text')!.execute({ query: 'needle', path: 'missing.ts' }, { workspace: root });
+      expect(missing).toMatchObject({ ok: false, error: { code: 'search_failed' } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('writes atomically and returns a change record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-tools-'));
     try {
@@ -97,6 +113,18 @@ describe('file tools', () => {
       const rejected = await tool!.execute({ patch: stale }, { workspace: root });
       expect(rejected.ok).toBe(false);
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('one\nchanged\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('applies a uniquely matching shifted hunk and preserves CRLF line endings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-patch-crlf-'));
+    try {
+      await writeFile(join(root, 'a.txt'), 'zero\r\none\r\ntwo\r\nthree\r\n', 'utf8');
+      const tool = new ToolRegistry().get('apply_patch');
+      const patch = ['--- a/a.txt', '+++ b/a.txt', '@@ -1,2 +1,2 @@', ' one', '-two', '+changed', ''].join('\n');
+      const output = await tool!.execute({ patch }, { workspace: root });
+      expect(output.ok).toBe(true);
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('zero\r\none\r\nchanged\r\nthree\r\n');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
