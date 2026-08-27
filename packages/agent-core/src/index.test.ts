@@ -106,4 +106,21 @@ describe('AgentCore', () => {
       expect(result.error?.code).toBe('checkpoint_conflict');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it('isolates threads by workspace after a workspace switch', async () => {
+    const rootA = await mkdtemp(join(tmpdir(), 'seecoder-workspace-a-'));
+    const rootB = await mkdtemp(join(tmpdir(), 'seecoder-workspace-b-'));
+    const store = new SessionStore(join(tmpdir(), `seecoder-shared-${Date.now()}`));
+    try {
+      const coreA = new AgentCore({ workspace: rootA, provider: new FakeModelProvider([]), model, store, mode: 'plan' });
+      const threadA = await coreA.createThread('A');
+      const coreB = new AgentCore({ workspace: rootB, provider: new FakeModelProvider([]), model, store, mode: 'plan' });
+      expect(await coreB.listThreads()).toEqual([]);
+      expect(await coreB.hydrateThread(threadA.id)).toBeNull();
+      expect(await coreB.readThreadEvents(threadA.id)).toEqual([]);
+    } finally {
+      await rm(rootA, { recursive: true, force: true });
+      await rm(rootB, { recursive: true, force: true });
+    }
+  });
 });

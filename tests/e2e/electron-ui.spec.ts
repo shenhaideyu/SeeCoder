@@ -15,7 +15,22 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await page.locator('[data-action="new-task"]').click();
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
     await page.locator('[data-action="permission-mode"]').click();
-    await expect(page.locator('[data-action="permission-mode"]')).toContainText(/Plan|Guided|Auto/);
+    await expect(page.locator('[data-action="mode-plan"]')).toBeVisible();
+    await page.locator('[data-action="mode-plan"]').click();
+    await expect(page.locator('[data-action="permission-mode"]')).toContainText('Plan');
+    await expect(page.locator('.composer-note')).toContainText('不会修改工作区');
+    await expect(page.locator('.workspace-context')).toBeVisible();
+
+    await page.locator('[data-action="inspector-files"]').click();
+    await expect(page.locator('[data-action="open-file"]').filter({ hasText: '.env.example' })).toHaveCount(1);
+    await expect(page.locator('[data-action="open-file"]').filter({ hasText: /^\.env$/ })).toHaveCount(0);
+
+    await page.locator('[data-action="inspector-terminal"]').click();
+    const terminal = page.locator('[data-action="terminal-input"]');
+    await terminal.fill('git status --short --branch');
+    await terminal.press('Enter');
+    await expect(page.locator('.terminal-output')).toContainText('git status --short --branch');
+    await expect(page.locator('.terminal-output')).toContainText('##');
   } finally {
     await app.close();
     await rm(userData, { recursive: true, force: true });

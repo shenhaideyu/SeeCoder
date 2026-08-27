@@ -20,6 +20,18 @@ export interface ToolDefinition {
   execute(args: unknown, context: ToolContext): Promise<ToolResult>;
 }
 
+/**
+ * 凭据类文件不进入 Agent 上下文，也不出现在 Files 面板。
+ * 这是应用层最小权限策略，不等同于操作系统沙箱。
+ */
+export function isSensitivePath(input: string): boolean {
+  const normalized = input.replace(/\\/g, '/').toLowerCase();
+  const basename = normalized.split('/').pop() ?? normalized;
+  if (basename === '.env' || (basename.startsWith('.env.') && !['.env.example', '.env.sample', '.env.template'].includes(basename))) return true;
+  if (/(^|[-_.])(secret|secrets|credential|credentials|token|apikey|api_key|private)([-_.]|$)/.test(basename)) return true;
+  return /\.(pem|key|p12|pfx|kdbx)$/i.test(basename) || basename === 'id_rsa' || basename === 'id_ed25519';
+}
+
 export class WorkspacePolicy {
   readonly root: string;
 
@@ -33,6 +45,7 @@ export class WorkspacePolicy {
     const canonicalRoot = await realpath(this.root).catch(() => this.root);
     const outside = relative(canonicalRoot, existing).startsWith('..') || isAbsolute(relative(canonicalRoot, existing));
     if (outside) throw new Error(`路径越出工作区: ${input}`);
+    if (isSensitivePath(input)) throw new Error(`出于安全原因，禁止访问凭据文件: ${input}`);
     return candidate;
   }
 
@@ -154,7 +167,7 @@ async function collectFiles(root: string, current: string, output: string[], dep
   if (output.length >= max || depth < 0) return;
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
-    if (output.length >= max || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name)) continue;
+    if (output.length >= max || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name) || isSensitivePath(entry.name)) continue;
     const full = join(current, entry.name);
     if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max);
     else output.push(relative(root, full));
