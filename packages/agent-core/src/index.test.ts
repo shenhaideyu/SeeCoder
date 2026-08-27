@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -48,5 +48,22 @@ describe('AgentCore', () => {
       await core.resolveApproval(approvals[0]!, 'allow'); await completed;
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-});
 
+  it('can restore a recorded ChangeSet', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-revert-'));
+    try {
+      await writeFile(join(root, 'a.txt'), 'before', 'utf8');
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'write-restore', name: 'write_file', argsDelta: '{"path":"a.txt","content":"after"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '完成' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      let changeSetId = '';
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'changes.created') changeSetId = event.changeSet.id; if (event.type === 'turn.completed') resolve(); }));
+      const thread = await core.createThread('撤销测试'); await core.startTurn(thread.id, '修改文件'); await completed;
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('after');
+      expect((await core.revertChangeSet(changeSetId)).ok).toBe(true);
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('before');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
