@@ -25,7 +25,7 @@ const api = {
   schedule: { list: (): Promise<ScheduleDefinition[]> => ipcRenderer.invoke('schedule:list'), save: (value: ScheduleDefinition) => ipcRenderer.invoke('schedule:save', value), toggle: (id: string, enabled: boolean) => ipcRenderer.invoke('schedule:toggle', id, enabled), run: (id: string) => ipcRenderer.invoke('schedule:run', id) },
   settings: {
     read: () => ipcRenderer.invoke('settings:read'),
-    update: (next: { mode?: ExecutionMode; model?: string; baseUrl?: string; contextWindow?: number; maxOutputTokens?: number; temporaryApiKey?: string }) => ipcRenderer.invoke('settings:update', next),
+    update: (next: { mode?: ExecutionMode; model?: string; baseUrl?: string; contextWindow?: number; maxOutputTokens?: number; apiKey?: string; clearApiKey?: boolean }) => ipcRenderer.invoke('settings:update', next),
   },
   events: { subscribe: (listener: (event: AgentEvent) => void) => { const handler = (_event: Electron.IpcRendererEvent, value: AgentEvent) => listener(value); ipcRenderer.on('seecoder:event', handler); return () => { ipcRenderer.removeListener('seecoder:event', handler); }; } },
   menu: { subscribe: (listener: (action: string) => void) => { const handler = (_event: Electron.IpcRendererEvent, value: string) => listener(value); ipcRenderer.on('seecoder:menu', handler); return () => { ipcRenderer.removeListener('seecoder:menu', handler); }; } },

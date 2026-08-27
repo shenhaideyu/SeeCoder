@@ -99,6 +99,16 @@ export class AgentCore {
 
   getMode(): ExecutionMode { return this.mode; }
 
+  /**
+   * 在不丢失线程、审批和进行中 Turn 的情况下切换模型 Provider。
+   * 设置页更新配置时只替换依赖，避免重建 Core 导致 Renderer 持有的
+   * threadId 脱离内存状态。
+   */
+  reconfigureModel(provider: ModelProvider, model: ModelConfig): void {
+    this.options.provider = provider;
+    this.options.model = model;
+  }
+
   private async persistLedger(threadId: string): Promise<void> { const ledger = this.ledgers.get(threadId); if (ledger) await this.options.store.writeState(threadId, ledger.snapshot()); }
 
   queueFollowUp(turnId: string, text: string): void {

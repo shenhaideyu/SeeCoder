@@ -62,8 +62,16 @@ export class WorkspacePolicy {
     const args = call.args as { command?: unknown; cwd?: unknown };
     if (typeof args.cwd === 'string' && !this.isInside(args.cwd)) return false;
     if (typeof args.command !== 'string') return false;
-    return !/(remove-item|rm\s+-rf|rmdir|del\s+\/s|format(-volume)?|shutdown|reg\s+|git\s+(reset|clean|push)|curl\s+|wget\s+|npm\s+install|pnpm\s+add|yarn\s+add)/i.test(args.command);
+    return !isHighRiskCommand(args.command);
   }
+}
+
+/**
+ * 应用层的高风险命令识别。它不是操作系统沙箱，只负责在 Agent 自动模式和
+ * 终端 IPC 边界做最后一道明确拒绝；需要人工确认的 Git 操作由专用按钮处理。
+ */
+export function isHighRiskCommand(command: string): boolean {
+  return /(remove-item|rm\s+-rf|rmdir|del\s+\/s|format(-volume)?|shutdown|reg\s+|git\s+(reset|clean|push)|curl\s+|wget\s+|npm\s+(install|i\b)|pnpm\s+(add|install)|yarn\s+(add|install)|invoke-webrequest)/i.test(command);
 }
 
 async function atomicWrite(path: string, content: string): Promise<void> {

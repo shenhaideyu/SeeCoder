@@ -1,13 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
 import { existsSync } from 'node:fs';
-import { readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { appendFile, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentCore } from '@seecoder/agent-core';
 import { OpenAICompatibleProvider, type ModelConfig } from '@seecoder/model';
 import { SessionStore } from '@seecoder/storage';
-import { ToolRegistry, WorkspacePolicy, commandRunner, type ToolContext } from '@seecoder/tools';
+import { ToolRegistry, WorkspacePolicy, commandRunner, isHighRiskCommand, type ToolContext } from '@seecoder/tools';
 import type { AgentEvent, AttachmentRef, ExecutionMode, ScheduleDefinition, Thread } from '@seecoder/protocol';
+
+// 未打包运行时 Electron 默认使用应用名“Electron”，会把会话和日志写入
+// %APPDATA%\\Electron。显式固定产品名，确保 SeeCoder 的数据隔离和可审计路径稳定。
+app.setName('SeeCoder');
 
 let mainWindow: BrowserWindow | null = null;
 let core: AgentCore;
@@ -16,12 +20,40 @@ let workspace = process.cwd();
 let mode: ExecutionMode = 'guided';
 let scheduleTimer: NodeJS.Timeout | undefined;
 const runningSchedules = new Set<string>();
+class MainLogger {
+  private filePath: string | undefined;
+  private queue = Promise.resolve();
+
+  init(root: string): void {
+    this.filePath = join(root, 'logs', 'main.log');
+    this.queue = this.queue.then(async () => { await mkdir(join(root, 'logs'), { recursive: true }); });
+  }
+
+  write(level: 'INFO' | 'WARN' | 'ERROR', message: string, details?: Record<string, unknown>): void {
+    if (!this.filePath) return;
+    const suffix = details ? ` ${JSON.stringify(details)}` : '';
+    const line = `${new Date().toISOString()} [${level}] ${message}${suffix}\n`;
+    this.queue = this.queue.then(async () => { await appendFile(this.filePath!, line, 'utf8'); }).catch(() => undefined);
+  }
+
+  event(event: AgentEvent): void {
+    const base = { type: event.type, threadId: event.threadId, turnId: 'turnId' in event ? event.turnId : undefined };
+    if (event.type === 'tool.requested') this.write('INFO', 'agent.tool.requested', { ...base, callId: event.call.id, tool: event.call.name });
+    else if (event.type === 'tool.completed') this.write(event.result.ok ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, durationMs: event.result.durationMs, error: event.result.error?.code });
+    else if (event.type === 'tool.output') this.write('INFO', 'agent.tool.output', { ...base, callId: event.callId, stream: event.stream, bytes: event.text.length });
+    else if (event.type === 'model.completed') this.write('INFO', 'agent.model.completed', { ...base, iteration: event.iteration, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens, retries: event.retries, finishReason: event.finishReason });
+    else if (event.type === 'turn.started' || event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') this.write(event.type === 'turn.failed' ? 'ERROR' : 'INFO', `agent.${event.type}`, base);
+    else if (event.type === 'approval.requested' || event.type === 'approval.resolved' || event.type === 'checkpoint.created' || event.type === 'checkpoint.restored') this.write('INFO', `agent.${event.type}`, base);
+  }
+}
+const logger = new MainLogger();
 const modelConfig: ModelConfig = {
   baseUrl: process.env.SEECODER_BASE_URL ?? 'https://api.openai.com/v1',
   model: process.env.SEECODER_MODEL ?? 'gpt-4o-mini', apiKeyEnv: 'SEECODER_API_KEY',
   contextWindow: 128000, temperature: 0.2, maxOutputTokens: 8192,
 };
 const storeRoot = () => join(app.getPath('userData'), 'sessions-data');
+const settingsPath = () => join(app.getPath('userData'), 'config', 'settings.json');
 const toolRegistry = new ToolRegistry();
 const send = (event: AgentEvent): void => { mainWindow?.webContents.send('seecoder:event', event); };
 
@@ -30,6 +62,7 @@ function createCore(): void {
   const store = new SessionStore(storeRoot());
   core = new AgentCore({ workspace, mode, model: modelConfig, store, provider: new OpenAICompatibleProvider(modelConfig), registry: toolRegistry });
   coreUnsubscribe = core.onEvent((event) => {
+    logger.event(event);
     send(event);
     if (event.type === 'turn.completed' && mainWindow && !mainWindow.isFocused() && Notification.isSupported()) new Notification({ title: 'SeeCoder 任务完成', body: '任务已完成，请查看验证结果。' }).show();
   });
@@ -49,6 +82,75 @@ function commandContext(onOutput?: ToolContext['onOutput']): ToolContext { retur
 async function runWorkspaceCommand(command: string, cwd = workspace, timeoutMs = 30_000, onOutput?: ToolContext['onOutput']) {
   const resolved = await new WorkspacePolicy(workspace).path(cwd);
   return commandRunner(command, resolved, commandContext(onOutput), timeoutMs);
+}
+
+interface PersistedSettings {
+  model?: string;
+  baseUrl?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  /** 使用 Electron safeStorage（Windows DPAPI）加密后的 API Key。 */
+  apiKeyEncrypted?: string;
+}
+
+let persistedApiKeyEncrypted: string | undefined;
+let apiKeySource: 'environment' | 'os' | 'none' = 'none';
+
+function encryptApiKey(value: string): string {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储暂不可用，请稍后重试或设置 SEECODER_API_KEY 环境变量');
+  return safeStorage.encryptString(value).toString('base64');
+}
+
+function decryptApiKey(value: string): string {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统安全存储不可用，无法读取已保存的 API Key');
+  return safeStorage.decryptString(Buffer.from(value, 'base64'));
+}
+
+async function loadPersistedSettings(): Promise<void> {
+  try {
+    const value = JSON.parse(await readFile(settingsPath(), 'utf8')) as PersistedSettings;
+    if (typeof value.model === 'string' && value.model.length <= 200) modelConfig.model = value.model;
+    if (typeof value.baseUrl === 'string' && value.baseUrl.length <= 1000) modelConfig.baseUrl = value.baseUrl;
+    if (typeof value.contextWindow === 'number') modelConfig.contextWindow = Math.max(8_000, Math.min(1_000_000, value.contextWindow));
+    if (typeof value.maxOutputTokens === 'number') modelConfig.maxOutputTokens = Math.max(256, Math.min(64_000, value.maxOutputTokens));
+    persistedApiKeyEncrypted = typeof value.apiKeyEncrypted === 'string' ? value.apiKeyEncrypted : undefined;
+    if (process.env[modelConfig.apiKeyEnv]) {
+      apiKeySource = 'environment';
+    } else if (persistedApiKeyEncrypted) {
+      try {
+        const decrypted = decryptApiKey(persistedApiKeyEncrypted);
+        if (decrypted) {
+          process.env[modelConfig.apiKeyEnv] = decrypted;
+          apiKeySource = 'os';
+        }
+      } catch {
+        logger.write('WARN', 'settings.key.decrypt.failed', { storage: 'os' });
+      }
+    }
+    logger.write('INFO', 'settings.loaded', { model: modelConfig.model, baseUrl: modelConfig.baseUrl });
+  } catch {
+    // 首次启动没有配置文件是正常情况。
+    if (process.env[modelConfig.apiKeyEnv]) apiKeySource = 'environment';
+  }
+}
+
+async function savePersistedSettings(options: { apiKey?: string; clearApiKey?: boolean } = {}): Promise<void> {
+  const target = settingsPath();
+  const temporary = `${target}.tmp`;
+  await mkdir(join(app.getPath('userData'), 'config'), { recursive: true });
+  if (options.apiKey !== undefined) {
+    if (!options.apiKey.trim()) throw new Error('API Key 不能为空');
+    persistedApiKeyEncrypted = encryptApiKey(options.apiKey.trim());
+    process.env[modelConfig.apiKeyEnv] = options.apiKey.trim();
+    apiKeySource = 'os';
+  } else if (options.clearApiKey) {
+    persistedApiKeyEncrypted = undefined;
+    if (apiKeySource === 'os') delete process.env[modelConfig.apiKeyEnv];
+    apiKeySource = process.env[modelConfig.apiKeyEnv] ? 'environment' : 'none';
+  }
+  const payload: PersistedSettings = { model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, ...(persistedApiKeyEncrypted ? { apiKeyEncrypted: persistedApiKeyEncrypted } : {}) };
+  await writeFile(temporary, JSON.stringify(payload, null, 2), 'utf8');
+  await rename(temporary, target);
 }
 
 async function readSchedules(): Promise<ScheduleDefinition[]> {
@@ -155,23 +257,57 @@ function registerIpc(): void {
   ipcMain.handle('git:commit', async (_event, message: string) => runWorkspaceCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, workspace, 60_000));
   ipcMain.handle('git:push', async () => runWorkspaceCommand('git push', workspace, 120_000));
   ipcMain.handle('git:prStatus', async () => runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000));
-  ipcMain.handle('terminal:run', async (_event, command: string, cwd?: string) => runWorkspaceCommand(textArg(command, 'command', 20_000), cwd, 120_000));
+  ipcMain.handle('terminal:run', async (_event, command: string, cwd?: string) => {
+    const value = textArg(command, 'command', 20_000);
+    if (isHighRiskCommand(value)) throw new Error('终端命令被 SeeCoder 安全策略拒绝：请使用受控 Git/依赖操作入口并确认风险。');
+    return runWorkspaceCommand(value, cwd, 120_000);
+  });
   ipcMain.handle('preview:open', async (_event, url: string) => { const target = textArg(url, 'url', 1000); if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(`${target}/`)) throw new Error('Preview 只允许 localhost 地址'); await shell.openExternal(target); return target; });
   ipcMain.handle('extension:list', async () => listExtensions());
   ipcMain.handle('schedule:list', async () => readSchedules());
   ipcMain.handle('schedule:save', async (_event, input: ScheduleDefinition) => { const list = await readSchedules(); const nextAt = input.enabled ? (input.nextRunAt ?? nextScheduleAt(input.cadence)) : undefined; const value: ScheduleDefinition = { ...input, ...(nextAt ? { nextRunAt: nextAt } : {}) }; const next = [...list.filter((item) => item.id !== input.id), value]; await saveSchedules(next); return next; });
   ipcMain.handle('schedule:toggle', async (_event, id: string, enabled: boolean) => { const list = await readSchedules(); const next = list.map((item) => item.id === id ? { ...item, enabled } : item); await saveSchedules(next); return next; });
   ipcMain.handle('schedule:run', async (_event, id: string) => { const item = (await readSchedules()).find((value) => value.id === id); if (!item) throw new Error('计划不存在'); const thread = (await core.listThreads()).find((value) => value.workspacePath === item.projectPath) ?? await core.createThread(`计划：${item.prompt.slice(0, 40)}`); return core.startTurn(thread.id, item.prompt, 'plan'); });
-  ipcMain.handle('settings:read', async () => ({ workspace, mode: core.getMode(), model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]) }));
-  ipcMain.handle('settings:update', async (_event, next: { mode?: ExecutionMode; model?: string; baseUrl?: string; contextWindow?: number; maxOutputTokens?: number; temporaryApiKey?: string }) => { if (next.mode) { mode = next.mode; core.setMode(mode); } if (typeof next.model === 'string' && next.model.length <= 200) modelConfig.model = next.model; if (typeof next.baseUrl === 'string' && next.baseUrl.length <= 1000) modelConfig.baseUrl = next.baseUrl; if (typeof next.contextWindow === 'number') modelConfig.contextWindow = Math.max(8_000, Math.min(1_000_000, next.contextWindow)); if (typeof next.maxOutputTokens === 'number') modelConfig.maxOutputTokens = Math.max(256, Math.min(64_000, next.maxOutputTokens)); if (typeof next.temporaryApiKey === 'string' && next.temporaryApiKey.length <= 1000) process.env[modelConfig.apiKeyEnv] = next.temporaryApiKey; return { workspace, mode: core.getMode(), model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]) }; });
+  ipcMain.handle('settings:read', async () => ({ workspace, mode: core.getMode(), model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]), keyStorage: apiKeySource, logPath: join(app.getPath('userData'), 'logs', 'main.log') }));
+  ipcMain.handle('settings:update', async (_event, next: { mode?: ExecutionMode; model?: string; baseUrl?: string; contextWindow?: number; maxOutputTokens?: number; apiKey?: string; clearApiKey?: boolean }) => {
+    const input = next && typeof next === 'object' ? next : {};
+    let providerChanged = false;
+    if (input.mode) { mode = input.mode; core.setMode(mode); }
+    if (typeof input.model === 'string' && input.model.length <= 200 && input.model !== modelConfig.model) { modelConfig.model = input.model; providerChanged = true; }
+    if (typeof input.baseUrl === 'string' && input.baseUrl.length <= 1000 && input.baseUrl !== modelConfig.baseUrl) { modelConfig.baseUrl = input.baseUrl; providerChanged = true; }
+    if (typeof input.contextWindow === 'number') modelConfig.contextWindow = Math.max(8_000, Math.min(1_000_000, input.contextWindow));
+    if (typeof input.maxOutputTokens === 'number') modelConfig.maxOutputTokens = Math.max(256, Math.min(64_000, input.maxOutputTokens));
+    const apiKey = typeof input.apiKey === 'string' ? input.apiKey : undefined;
+    if (apiKey !== undefined) providerChanged = true;
+    if (apiKey !== undefined || input.clearApiKey) await savePersistedSettings({ ...(apiKey !== undefined ? { apiKey } : {}), ...(input.clearApiKey ? { clearApiKey: true } : {}) });
+    else await savePersistedSettings();
+    if (providerChanged) core.reconfigureModel(new OpenAICompatibleProvider(modelConfig), modelConfig);
+    logger.write('INFO', 'settings.updated', { model: modelConfig.model, baseUrl: modelConfig.baseUrl, mode, providerChanged, keyStorage: apiKeySource, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]) });
+    return { workspace, mode: core.getMode(), model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]), keyStorage: apiKeySource, logPath: join(app.getPath('userData'), 'logs', 'main.log') };
+  });
 }
 
 async function createWindow(): Promise<void> {
   createCore();
-  mainWindow = new BrowserWindow({ width: 1480, height: 940, minWidth: 1050, minHeight: 680, backgroundColor: '#f6f6f7', title: 'SeeCoder', webPreferences: { preload: join(__dirname, '../preload/preload.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  // preload 使用 ESM + 类型安全 IPC 桥；保持 Renderer 无 Node 权限和上下文隔离，
+  // 但不对 preload 强制 Chromium sandbox，否则 Electron 38 会拒绝加载该 ESM 桥，
+  // Renderer 会误退回 previewApi，造成“按钮可见但后端不执行”的假成功。
+  mainWindow = new BrowserWindow({ width: 1480, height: 940, minWidth: 1050, minHeight: 680, backgroundColor: '#f6f6f7', title: 'SeeCoder', webPreferences: { preload: join(__dirname, '../preload/preload.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: false } });
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
   if (rendererUrl) await mainWindow.loadURL(rendererUrl); else await mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
 }
 
-app.whenReady().then(async () => { registerIpc(); registerMenu(); await createWindow(); startScheduleLoop(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); }); });
-app.on('window-all-closed', () => { if (scheduleTimer) clearInterval(scheduleTimer); if (process.platform !== 'darwin') app.quit(); });
+app.whenReady().then(async () => {
+  logger.init(app.getPath('userData'));
+  logger.write('INFO', 'app.ready', { version: app.getVersion(), platform: process.platform, workspace });
+  await loadPersistedSettings();
+  registerIpc();
+  registerMenu();
+  await createWindow();
+  startScheduleLoop();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
+}).catch((error) => {
+  logger.write('ERROR', 'app.start.failed', { message: error instanceof Error ? error.message : String(error) });
+});
+app.on('render-process-gone', (_event, _webContents, details) => logger.write('ERROR', 'renderer.gone', { reason: details.reason, exitCode: details.exitCode }));
+app.on('window-all-closed', () => { logger.write('INFO', 'app.window-all-closed'); if (scheduleTimer) clearInterval(scheduleTimer); if (process.platform !== 'darwin') app.quit(); });

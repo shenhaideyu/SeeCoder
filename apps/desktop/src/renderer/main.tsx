@@ -135,6 +135,7 @@ const previewApi: SeeCoderApi = {
       contextWindow: 128000,
       maxOutputTokens: 8192,
       hasApiKey: false,
+      keyStorage: 'none' as const,
     }),
     update: async () => ({
       workspace: 'Preview / Browser',
@@ -144,6 +145,7 @@ const previewApi: SeeCoderApi = {
       contextWindow: 128000,
       maxOutputTokens: 8192,
       hasApiKey: false,
+      keyStorage: 'none' as const,
     }),
   },
   events: { subscribe: () => () => undefined },
@@ -176,6 +178,7 @@ interface UiState {
   running: boolean;
   currentTurnId: string | undefined;
   mode: ExecutionMode;
+  model: string;
   toast: string | undefined;
   reviewFindings: Array<{
     severity: string;
@@ -202,6 +205,7 @@ const useStore = create<UiState>((set) => ({
   running: false,
   currentTurnId: undefined,
   mode: 'guided',
+  model: 'gpt-4o-mini',
   toast: undefined,
   reviewFindings: [],
   set: (patch) => set(patch),
@@ -308,6 +312,7 @@ function App(): React.JSX.Element {
     running,
     currentTurnId,
     mode,
+    model,
     toast,
     reviewFindings,
   } = state;
@@ -342,7 +347,7 @@ function App(): React.JSX.Element {
     void (async () => {
       const settings = await window.seecoder.settings.read();
       setWorkspace(settings.workspace);
-      set({ mode: settings.mode });
+      set({ mode: settings.mode, model: settings.model });
       const list = (await window.seecoder.thread.list()) as Thread[];
       if (list.length) {
         set({ threads: list, selectedThread: list[0] });
@@ -372,6 +377,21 @@ function App(): React.JSX.Element {
     const timer = window.setTimeout(() => set({ toast: undefined }), 2600);
     return () => window.clearTimeout(timer);
   }, [toast, set]);
+  useEffect(() => {
+    const describe = (value: unknown): string => {
+      if (value instanceof Error) return value.message;
+      if (typeof value === 'string') return value;
+      return '未知错误';
+    };
+    const onError = (event: ErrorEvent) => set({ toast: `操作失败：${describe(event.error ?? event.message)}` });
+    const onRejection = (event: PromiseRejectionEvent) => set({ toast: `操作失败：${describe(event.reason)}` });
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, [set]);
 
   async function loadThread(thread: Thread): Promise<void> {
     await window.seecoder.thread.hydrate(thread.id);
@@ -438,19 +458,23 @@ function App(): React.JSX.Element {
     const text = composer.trim();
     if (!text || !selectedThread) return;
     setComposer('');
-    if (running && currentTurnId) {
-      await window.seecoder.turn.followUp(currentTurnId, text);
-      set({ toast: '已加入当前任务的追加要求' });
-      return;
+    try {
+      if (running && currentTurnId) {
+        await window.seecoder.turn.followUp(currentTurnId, text);
+        set({ toast: '已加入当前任务的追加要求' });
+        return;
+      }
+      set({ running: true, streamingText: '' });
+      const turnId = (await window.seecoder.turn.start(
+        selectedThread.id,
+        text,
+        attachments,
+      )) as string;
+      set({ currentTurnId: turnId });
+      setAttachments([]);
+    } catch (error) {
+      set({ running: false, currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
     }
-    set({ running: true, streamingText: '' });
-    const turnId = (await window.seecoder.turn.start(
-      selectedThread.id,
-      text,
-      attachments,
-    )) as string;
-    set({ currentTurnId: turnId });
-    setAttachments([]);
   }
   async function toggleMode(): Promise<void> {
     const next: ExecutionMode = mode === 'plan' ? 'guided' : mode === 'guided' ? 'auto' : 'plan';
@@ -658,6 +682,7 @@ function App(): React.JSX.Element {
             onNew={newThread}
             onOpenThread={selectThread}
             onToast={(value) => set({ toast: value })}
+            onModelChange={(value) => set({ model: value })}
           />
         )}
         {page === 'task' && (
@@ -666,6 +691,7 @@ function App(): React.JSX.Element {
             setValue={setComposer}
             running={running}
             mode={mode}
+            model={model}
             attachments={attachments}
             onAttach={attach}
             onMode={toggleMode}
@@ -1349,6 +1375,7 @@ function Composer({
   setValue,
   running,
   mode,
+  model,
   attachments,
   onAttach,
   onMode,
@@ -1361,6 +1388,7 @@ function Composer({
   setValue: (value: string) => void;
   running: boolean;
   mode: ExecutionMode;
+  model: string;
   attachments: AttachmentRef[];
   onAttach: () => void;
   onMode: () => void;
@@ -1423,7 +1451,7 @@ function Composer({
               计划
             </button>
             <button data-action="model-settings" className="composer-tool" onClick={onSettings}>
-              gpt-4o-mini
+              {model}
               <ChevronDown size={12} />
             </button>
           </div>
@@ -1751,6 +1779,7 @@ function WorkspacePage({
   onNew,
   onOpenThread,
   onToast,
+  onModelChange,
 }: {
   page: string;
   workspace: string;
@@ -1760,6 +1789,7 @@ function WorkspacePage({
   onNew: () => void;
   onOpenThread: (thread: Thread) => Promise<void>;
   onToast: (value: string) => void;
+  onModelChange: (value: string) => void;
 }): React.JSX.Element {
   void onRefreshGit;
   const [schedules, setSchedules] = useState<ScheduleDefinition[]>([]);
@@ -1773,6 +1803,7 @@ function WorkspacePage({
     contextWindow: number;
     maxOutputTokens: number;
     hasApiKey: boolean;
+    logPath?: string;
   }>();
   useEffect(() => {
     if (page === 'scheduled') void window.seecoder.schedule.list().then(setSchedules);
@@ -1975,7 +2006,8 @@ function WorkspacePage({
         onSave={async (next) => {
           const value = await window.seecoder.settings.update(next);
           setSettings(value);
-          onToast('设置已保存，API Key 仅保存在当前进程');
+          onModelChange(value.model);
+          onToast(value.hasApiKey ? '设置已保存，API Key 已加密持久化' : '设置已保存');
         }}
       />
     );
@@ -2014,6 +2046,8 @@ function SettingsPage({
         contextWindow: number;
         maxOutputTokens: number;
         hasApiKey: boolean;
+        keyStorage?: 'environment' | 'os' | 'none';
+        logPath?: string;
       }
     | undefined;
   onSave: (next: {
@@ -2021,18 +2055,33 @@ function SettingsPage({
     baseUrl?: string;
     contextWindow?: number;
     maxOutputTokens?: number;
-    temporaryApiKey?: string;
+    apiKey?: string;
+    clearApiKey?: boolean;
   }) => Promise<void>;
 }): React.JSX.Element {
   const [model, setModel] = useState(settings?.model ?? 'gpt-4o-mini');
   const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? '');
   const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
   useEffect(() => {
     if (settings) {
       setModel(settings.model);
       setBaseUrl(settings.baseUrl);
     }
   }, [settings]);
+  async function save(): Promise<void> {
+    setSaving(true);
+    setSaveError(undefined);
+    try {
+      await onSave({ model, baseUrl, ...(key ? { apiKey: key } : {}) });
+      setKey('');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '保存失败，请检查配置');
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <div className="workspace-page">
       <PageHeader icon={Settings2} title="设置" subtitle="模型、权限和本地数据" />
@@ -2046,23 +2095,50 @@ function SettingsPage({
           <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
         </label>
         <label>
-          临时 API Key（不会写入磁盘）
+          API Key（加密持久保存）
           <div className="input-with-icon">
             <KeyRound size={15} />
             <input
               type="password"
               value={key}
               onChange={(event) => setKey(event.target.value)}
-              placeholder={settings?.hasApiKey ? '当前进程已有 Key' : 'SEECODER_API_KEY'}
+              placeholder={settings?.hasApiKey ? '已保存，留空保持不变' : '输入 API Key'}
             />
           </div>
         </label>
         <button
+          data-action="save-settings"
           className="primary-button"
-          onClick={() => void onSave({ model, baseUrl, ...(key ? { temporaryApiKey: key } : {}) })}
+          disabled={saving}
+          onClick={() => void save()}
         >
-          保存设置
+          {saving ? '保存中…' : '保存设置'}
         </button>
+        {settings?.hasApiKey && (
+          <button
+            data-action="clear-api-key"
+            className="small-button"
+            disabled={saving}
+            onClick={() => {
+              setSaving(true);
+              setSaveError(undefined);
+              void onSave({ clearApiKey: true })
+                .then(() => setKey(''))
+                .catch((error) => setSaveError(error instanceof Error ? error.message : '清除失败，请重试'))
+                .finally(() => setSaving(false));
+            }}
+          >
+            清除已保存 API Key
+          </button>
+        )}
+        {saveError && <div className="settings-error">{saveError}</div>}
+        {settings?.logPath && (
+          <div className="settings-note">
+            <strong>后台日志</strong>
+            <code title={settings.logPath}>{settings.logPath}</code>
+            <span>API Key 使用操作系统安全存储加密，日志仅记录事件类型、耗时和错误码，不记录 Key 或完整文件内容。</span>
+          </div>
+        )}
       </div>
     </div>
   );

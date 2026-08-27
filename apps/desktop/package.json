@@ -1,6 +1,7 @@
 {
   "name": "@seecoder/desktop",
   "version": "0.1.0",
+  "productName": "SeeCoder",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -19,4 +20,3 @@
   },
   "main": "./out/main/main.js"
 }
-
