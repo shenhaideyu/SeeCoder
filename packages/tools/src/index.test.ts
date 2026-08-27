@@ -15,6 +15,19 @@ describe('WorkspacePolicy', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('does not expose credential files to tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-secret-'));
+    try {
+      await writeFile(join(root, '.env'), 'API_KEY=do-not-read', 'utf8');
+      const registry = new ToolRegistry();
+      const listed = await registry.get('list_files')!.execute({ path: '.', depth: 2 }, { workspace: root });
+      expect(listed.output).not.toContain('.env');
+      const read = await registry.get('read_file')!.execute({ path: '.env' }, { workspace: root });
+      expect(read.ok).toBe(false);
+      expect(read.error?.message).toContain('凭据');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('auto approves only safe workspace actions', () => {
     const policy = new WorkspacePolicy('C:/workspace');
     expect(policy.canAutoApprove({ id: '1', name: 'read_file', args: { path: 'a.ts' } }, 'auto')).toBe(true);
