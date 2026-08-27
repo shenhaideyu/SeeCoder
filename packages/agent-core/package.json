@@ -1,0 +1,13 @@
+{
+  "name": "@seecoder/agent-core",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@seecoder/model": "workspace:*",
+    "@seecoder/protocol": "workspace:*",
+    "@seecoder/storage": "workspace:*",
+    "@seecoder/tools": "workspace:*"
+  },
+  "exports": { ".": "./src/index.ts" }
+}
+

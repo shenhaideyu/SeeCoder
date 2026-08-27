@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+release/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.vite/
+.idea/
+*.tsbuildinfo
+SeeCoder/
+sessions/
+snapshots/
+推免考核题目学生版.pdf

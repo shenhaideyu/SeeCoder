@@ -1,0 +1,10 @@
+{
+  "name": "@seecoder/tools",
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@seecoder/protocol": "workspace:*",
+    "zod": "3.24.4"
+  },
+  "exports": { ".": "./src/index.ts" }
+}

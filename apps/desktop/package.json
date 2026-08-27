@@ -1,0 +1,22 @@
+{
+  "name": "@seecoder/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@seecoder/agent-core": "workspace:*",
+    "@seecoder/model": "workspace:*",
+    "@seecoder/protocol": "workspace:*",
+    "@seecoder/storage": "workspace:*",
+    "@seecoder/tools": "workspace:*",
+    "@monaco-editor/react": "^4.7.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.3.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.0"
+  },
+  "main": "./out/main/main.js"
+}
+

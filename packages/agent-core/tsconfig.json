@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "types": ["node"] },
+  "references": [
+    { "path": "../protocol" },
+    { "path": "../model" },
+    { "path": "../storage" },
+    { "path": "../tools" }
+  ],
+  "include": ["src/**/*.ts"]
+}
+
