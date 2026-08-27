@@ -881,17 +881,19 @@ function App(): React.JSX.Element {
             <div className="inspector-tabs">
               {(
                 [
-                  ['changes', 'Changes', GitBranch],
-                  ['files', 'Files', FolderOpen],
-                  ['terminal', 'Terminal', Terminal],
-                  ['preview', 'Preview', ExternalLink],
-                  ['trace', 'Trace', Activity],
+                  ['changes', '变更', GitBranch],
+                  ['files', '文件', FolderOpen],
+                  ['terminal', '终端', Terminal],
+                  ['preview', '预览', ExternalLink],
+                  ['trace', '轨迹', Activity],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
                   key={key}
                   data-action={`inspector-${key}`}
                   className={inspector === key ? 'active' : ''}
+                  title={label}
+                  aria-label={label}
                   onClick={() => {
                     setInspector(key);
                     if (key === 'files') void loadFiles();
@@ -1883,11 +1885,16 @@ function InspectorContent({
   onToast: (value: string) => void;
 }): React.JSX.Element {
   const gitBlocked = gitText.startsWith('Git 操作已禁用') || gitText.startsWith('Git 状态读取失败');
+  const gitLines = gitText.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  const gitReady = !gitBlocked && gitLines[0]?.startsWith('##');
+  const gitBranch = gitReady ? gitLines[0]!.replace(/^##\s*/, '') : '';
+  const gitChanges = gitReady ? gitLines.slice(1) : [];
+  const hasStagedChanges = gitChanges.some((line) => line[0] !== ' ' && line[0] !== '?');
   if (type === 'files')
     return (
       <div className="inspector-body">
         <div className="panel-title">
-          工作区文件<span className="panel-sub">{files.length} 个条目</span>
+          工作区文件<span className="panel-sub">{files.length === 200 ? '200+ 个条目' : `${files.length} 个条目`}</span>
         </div>
         <div className="workspace-card">
           <FolderOpen size={18} />
@@ -1928,7 +1935,7 @@ function InspectorContent({
     return (
       <div className="inspector-body">
         <div className="panel-title">
-          变更预览<span className="panel-sub">{changes.length} 个 ChangeSet</span>
+          <span>变更</span>
           <button
             className="small-button"
             data-action="refresh-git"
@@ -1937,19 +1944,35 @@ function InspectorContent({
             刷新 Git
           </button>
         </div>
-        <div className="git-status">{gitText || '等待 git status…'}</div>
-        <div className="page-toolbar git-actions">
-          <button className="small-button" data-action="stage-all" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>Stage All</button>
-          <button className="small-button" data-action="commit" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { const message = window.prompt('Commit message', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? 'Commit 已执行')); await onGitRefresh(); } }}>Commit</button>
-          <button className="small-button" data-action="push" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? 'Push 已执行')); } }}>Push</button>
-        </div>
+        <section className="change-section" aria-label="工作区 Git 变更">
+          <div className="change-section-heading">
+            <span><GitBranch size={13} /><strong>工作区 Git</strong><b>{gitReady ? `${gitChanges.length} 项` : '未就绪'}</b></span>
+            {gitBranch && <code title={gitBranch}>{gitBranch}</code>}
+          </div>
+          <div className={`git-status ${gitReady && gitChanges.length === 0 ? 'clean' : ''}`}>
+            {gitBlocked || !gitReady
+              ? gitText || '正在读取 Git 状态…'
+              : gitChanges.length
+                ? gitChanges.join('\n')
+                : '工作区干净，没有未提交变更。'}
+          </div>
+          <div className="git-actions">
+            <button className="small-button" data-action="stage-all" disabled={gitBlocked || !gitReady || gitChanges.length === 0} title={gitBlocked ? '请先切换到 Git 仓库根目录' : gitChanges.length === 0 ? '没有可暂存的变更' : '暂存当前工作区的全部变更'} onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>全部暂存</button>
+            <button className="small-button" data-action="commit" disabled={gitBlocked || !gitReady || !hasStagedChanges} title={!hasStagedChanges ? '请先暂存要提交的文件' : '提交已暂存的变更'} onClick={async () => { const message = window.prompt('提交说明', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? '提交已执行')); await onGitRefresh(); } }}>提交</button>
+            <button className="small-button" data-action="push" disabled={gitBlocked || !gitReady} title={gitBlocked ? '请先切换到 Git 仓库根目录' : '推送当前分支'} onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? '推送已执行')); } }}>推送</button>
+          </div>
+        </section>
+        <section className="change-section task-changes" aria-label="当前任务改动">
+          <div className="change-section-heading">
+            <span><Code2 size={13} /><strong>当前任务</strong><b>{changes.length} 个 ChangeSet</b></span>
+          </div>
         {changes.length === 0 ? (
-          <div className="empty-panel">
+          <div className="empty-panel change-empty">
             <div className="empty-icon">
               <GitBranch size={18} />
             </div>
-            <strong>还没有 ChangeSet</strong>
-            <span>Agent 修改文件后，Diff 会出现在这里。</span>
+            <strong>本任务没有修改文件</strong>
+            <span>工作区现有 Git 变更仍显示在上方，两者互不混淆。</span>
           </div>
         ) : (
           changes.map((change) => (
@@ -1996,6 +2019,7 @@ function InspectorContent({
             </div>
           ))
         )}
+        </section>
       </div>
     );
   return <div />;

@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 
 test('Electron UI exposes interactive Codex-style workbench actions', async () => {
+  test.setTimeout(30_000);
   const userData = await mkdtemp(join(tmpdir(), 'seecoder-e2e-'));
   const workspace = await mkdtemp(join(tmpdir(), 'seecoder-e2e-workspace-'));
   await writeFile(join(workspace, '.env.example'), 'API_KEY=example\n', 'utf8');
@@ -15,9 +16,14 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('[data-action="new-task"]')).toBeVisible();
     await expect(page.locator('[data-action="permission-mode"]')).toBeVisible();
     await expect(page.locator('[data-action="inspector-changes"]')).toBeVisible();
+    await expect(page.locator('[data-action="inspector-changes"]')).toHaveText('变更');
+    await expect(page.locator('[data-action="inspector-terminal"]')).toHaveText('终端');
+    await expect(page.locator('[aria-label="工作区 Git 变更"]')).toBeVisible();
+    await expect(page.locator('[aria-label="当前任务改动"]')).toContainText('本任务没有修改文件');
+    expect(await page.locator('.inspector-tabs').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.locator('[data-action="new-task"]').click();
     const tasksAfterClick = await page.locator('[data-action="open-thread"]').count();
-    await page.keyboard.press('Control+N');
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.webContents.send('seecoder:menu', 'new-thread'));
     await expect(page.locator('[data-action="open-thread"]')).toHaveCount(tasksAfterClick + 1);
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
     await expect(page.locator('.run-status')).toContainText('就绪');

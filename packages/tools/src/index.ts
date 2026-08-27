@@ -175,13 +175,19 @@ function applyFilePatch(before: string, file: PatchFile): string {
   return source.join(eol);
 }
 
+const ignoredTraversalDirectories = new Set([
+  '.git', '.idea', '.venv', 'venv', 'node_modules', '__pycache__', '.pytest_cache',
+  '.mypy_cache', '.ruff_cache', '.cache', 'dist', 'out', 'build', 'builds', 'generated', 'coverage',
+  '.next', '.nuxt', 'target',
+]);
+
 async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new Error('操作已取消');
   if (output.length >= max || depth < 0) return;
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
     if (signal?.aborted) throw new Error('操作已取消');
-    if (output.length >= max || entry.isSymbolicLink() || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name) || isSensitivePath(entry.name)) continue;
+    if (output.length >= max || entry.isSymbolicLink() || (entry.isDirectory() && ignoredTraversalDirectories.has(entry.name)) || isSensitivePath(entry.name)) continue;
     const full = join(current, entry.name);
     if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max, signal);
     else output.push(relative(root, full));

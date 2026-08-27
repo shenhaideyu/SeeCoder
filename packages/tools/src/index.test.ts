@@ -39,6 +39,21 @@ describe('WorkspacePolicy', () => {
 });
 
 describe('file tools', () => {
+  it('keeps dependency, cache, and build directories out of project traversal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-list-clean-'));
+    try {
+      await mkdir(join(root, 'src'), { recursive: true });
+      await writeFile(join(root, 'src', 'main.ts'), 'export {}', 'utf8');
+      for (const directory of ['.venv', '__pycache__', '.pytest_cache', 'node_modules', 'builds', 'generated']) {
+        await mkdir(join(root, directory), { recursive: true });
+        await writeFile(join(root, directory, 'noise.txt'), 'noise', 'utf8');
+      }
+      const output = await new ToolRegistry().get('list_files')!.execute({ path: '.', depth: 3 }, { workspace: root });
+      expect(output).toMatchObject({ ok: true });
+      expect((output.output as string[]).map((path) => path.replace(/\\/g, '/'))).toEqual(['src/main.ts']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('stops a workspace search when the task is cancelled', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-search-cancel-'));
     try {
