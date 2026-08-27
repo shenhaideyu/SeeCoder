@@ -33,3 +33,38 @@ test('自然任务在预算内完成时通过', () => {
   ];
   assert.equal(evaluateScenario(scenario, events).pass, true);
 });
+
+test('复杂任务必须包含约定的实施与验证工具证据', () => {
+  const prompt = '修复问题并运行测试。';
+  const scenario = {
+    id: 'complex',
+    prompt,
+    requiredTools: ['apply_patch', 'run_command', 'finish'],
+  };
+  const events = [
+    { type: 'message.user', turnId: 'turn-3', text: prompt },
+    { type: 'model.completed', turnId: 'turn-3', inputTokens: 900 },
+    { type: 'tool.requested', turnId: 'turn-3', call: { name: 'apply_patch', args: {} } },
+    { type: 'turn.completed', turn: { id: 'turn-3' } },
+  ];
+  const result = evaluateScenario(scenario, events);
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.failures, ['缺少必要工具证据：run_command', '缺少必要工具证据：finish']);
+});
+
+test('探索预算信号不计为工具执行失败', () => {
+  const prompt = '先调查再修复。';
+  const scenario = { id: 'budget', prompt, limits: { maxFailedTools: 0 } };
+  const events = [
+    { type: 'message.user', turnId: 'turn-4', text: prompt },
+    {
+      type: 'tool.completed',
+      turnId: 'turn-4',
+      result: { ok: false, error: { code: 'exploration_budget_exhausted' } },
+    },
+    { type: 'turn.completed', turn: { id: 'turn-4' } },
+  ];
+  const result = evaluateScenario(scenario, events);
+  assert.equal(result.pass, true);
+  assert.equal(result.metrics.failedTools, 0);
+});

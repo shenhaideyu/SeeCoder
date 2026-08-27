@@ -11,6 +11,11 @@ const sideEffectTools = new Set([
   'write_file', 'apply_patch', 'run_command', 'git_stage', 'git_unstage',
   'git_revert', 'git_commit', 'git_push', 'checkpoint_restore',
 ]);
+const controlFlowErrorCodes = new Set(['exploration_budget_exhausted']);
+
+function toolErrorCode(event) {
+  return event.result?.error?.code ?? event.result?.code;
+}
 
 export function unwrap(record) {
   return record?.payload ?? record?.event ?? record;
@@ -31,7 +36,9 @@ export function evaluateScenario(scenario, events) {
   const signatures = requested.map((event) => `${event.call?.name}:${JSON.stringify(event.call?.args ?? {})}`);
   const duplicates = signatures.length - new Set(signatures).size;
   const sideEffects = requested.filter((event) => sideEffectTools.has(event.call?.name)).length;
-  const failedTools = completed.filter((event) => event.result?.ok === false).length;
+  const failedTools = completed.filter((event) => (
+    event.result?.ok === false && !controlFlowErrorCodes.has(toolErrorCode(event))
+  )).length;
   const maxInputTokens = Math.max(0, ...models.map((event) => Number(event.inputTokens ?? 0)));
   const metrics = {
     status: terminal?.type?.replace('turn.', '') ?? 'running',
@@ -59,6 +66,9 @@ export function evaluateScenario(scenario, events) {
   };
   const failures = [];
   if (metrics.status !== 'completed') failures.push(`状态为 ${metrics.status}`);
+  for (const requiredTool of scenario.requiredTools ?? []) {
+    if (!metrics.tools.includes(requiredTool)) failures.push(`缺少必要工具证据：${requiredTool}`);
+  }
   for (const [limitName, limit] of Object.entries(limits)) {
     const metricName = metricByLimit[limitName];
     if (typeof limit === 'number' && metricName && typeof metrics[metricName] === 'number' && metrics[metricName] > limit) {

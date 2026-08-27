@@ -33,7 +33,8 @@
     "id": "stale-progress-recovery",
     "level": "complex",
     "mode": "guided",
-    "prompt": "最近有同学反馈，聊天页面偶尔一直显示正在处理，但刷新后任务其实已经结束。请定位状态同步链路里最可能的根因，做一个最小修复并补上回归测试。完成后自己运行相关测试，不要顺手重构无关模块。",
+    "prompt": "聊天页有用户反馈：任务结束后偶尔还显示“正在处理”，刷新才恢复。请根据代码和现有测试找根因，只做最小修复，补回归测试并运行相关测试。",
+    "requiredTools": ["apply_patch", "write_file", "run_command", "finish"],
     "limits": {
       "maxIterations": 14,
       "maxToolCalls": 28,
