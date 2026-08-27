@@ -304,6 +304,18 @@ const resultOutput = (value: unknown): unknown =>
   value && typeof value === 'object' && 'output' in value
     ? (value as { output?: unknown }).output
     : value;
+const formatCommandOutput = (value: unknown): string => {
+  const output = resultOutput(value);
+  if (typeof output === 'string') return output;
+  if (output && typeof output === 'object') {
+    const command = output as { stdout?: unknown; stderr?: unknown; exitCode?: unknown };
+    if (typeof command.stdout === 'string' || typeof command.stderr === 'string') {
+      const body = [command.stdout, command.stderr].filter((part): part is string => typeof part === 'string' && part.length > 0).join('\n');
+      return body || `退出码：${String(command.exitCode ?? '未知')}`;
+    }
+  }
+  return JSON.stringify(output ?? '', null, 2);
+};
 
 function App(): React.JSX.Element {
   const state = useStore();
@@ -447,9 +459,10 @@ function App(): React.JSX.Element {
     };
     if (!selected.cancelled && selected.workspace) {
       setWorkspace(selected.workspace);
+      const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
       const created = (await window.seecoder.thread.create('新工作区任务')) as Thread;
       set({
-        threads: [created, ...threads],
+        threads: [created, ...workspaceThreads.filter((thread) => thread.id !== created.id)],
         selectedThread: created,
         events: [],
         approvals: [],
@@ -495,8 +508,8 @@ function App(): React.JSX.Element {
       set({ running: false, currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
     }
   }
-  async function toggleMode(): Promise<void> {
-    const next: ExecutionMode = mode === 'plan' ? 'guided' : mode === 'guided' ? 'auto' : 'plan';
+  async function setExecutionMode(next: ExecutionMode): Promise<void> {
+    if (next === mode) return;
     await window.seecoder.settings.update({ mode: next });
     set({
       mode: next,
@@ -543,10 +556,19 @@ function App(): React.JSX.Element {
     setFilePreview({ path, text: typeof output?.text === 'string' ? output.text : '无法读取文本内容' });
   }
   async function loadGit(): Promise<void> {
-    const value = (await window.seecoder.git.status()) as { output?: unknown };
-    const output = resultOutput(value);
-    setGitText(typeof output === 'string' ? output : JSON.stringify(output ?? '', null, 2));
+    setGitText('正在读取 Git 状态…');
+    try {
+      const value = (await window.seecoder.git.status()) as { output?: unknown };
+      setGitText(formatCommandOutput(value));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法读取 Git 状态';
+      setGitText(`Git 状态读取失败：${message}`);
+      set({ toast: message });
+    }
   }
+  useEffect(() => {
+    if (page === 'task' && selectedThread) void loadGit();
+  }, [page, selectedThread?.id]);
   async function copyText(text: string): Promise<void> {
     await navigator.clipboard?.writeText(text);
     set({ toast: '已复制到剪贴板' });
@@ -713,7 +735,7 @@ function App(): React.JSX.Element {
             model={model}
             attachments={attachments}
             onAttach={attach}
-            onMode={toggleMode}
+            onModeSelect={setExecutionMode}
             onPlan={togglePlan}
             onSend={send}
             onCancel={() => currentTurnId && void window.seecoder.turn.cancel(currentTurnId)}
@@ -778,7 +800,7 @@ function App(): React.JSX.Element {
         </aside>
       )}
       {toast && (
-        <div className="toast">
+        <div className="toast" role="status" aria-live="polite">
           <Check size={14} />
           {toast}
         </div>
@@ -1016,6 +1038,16 @@ function TaskPage({
           <button data-action="rename-thread" className="crumb-title" onClick={onRename}>
             {selectedThread?.title ?? 'SeeCoder'}
           </button>
+          {selectedThread?.workspacePath && (
+            <span
+              className="workspace-context"
+              title={selectedThread.workspacePath}
+              aria-label={`当前工作区：${selectedThread.workspacePath}`}
+            >
+              <FolderOpen size={12} />
+              {selectedThread.workspacePath.split(/[\\/]/).pop()}
+            </span>
+          )}
           <button data-action="thread-menu" className="icon-button" onClick={onMenu}>
             <MoreHorizontal size={16} />
           </button>
@@ -1435,7 +1467,7 @@ function Composer({
   model,
   attachments,
   onAttach,
-  onMode,
+  onModeSelect,
   onPlan,
   onSend,
   onCancel,
@@ -1448,12 +1480,15 @@ function Composer({
   model: string;
   attachments: AttachmentRef[];
   onAttach: () => void;
-  onMode: () => void;
+  onModeSelect: (mode: ExecutionMode) => void;
   onPlan: () => void;
   onSend: () => void;
   onCancel: () => void;
   onSettings: () => void;
 }): React.JSX.Element {
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const modeLabel = mode === 'plan' ? 'Plan' : mode === 'guided' ? 'Guided' : 'Auto';
+  const modeDescription = mode === 'plan' ? '只读分析与计划' : mode === 'guided' ? '写入和命令逐次确认' : '低风险动作自动执行';
   return (
     <div className="composer-wrap">
       <div className="composer">
@@ -1493,12 +1528,35 @@ function Composer({
             <button
               data-action="permission-mode"
               className="composer-tool mode-tool"
-              onClick={onMode}
+              title={`当前 ${modeLabel}：${modeDescription}。点击选择执行模式`}
+              aria-haspopup="menu"
+              aria-expanded={modeMenuOpen}
+              onClick={() => setModeMenuOpen((value) => !value)}
             >
               <ShieldCheck size={13} />
-              <span>{mode === 'plan' ? 'Plan' : mode === 'guided' ? 'Guided' : 'Auto'}</span>
+              <span>{modeLabel}</span>
               <ChevronDown size={12} />
             </button>
+            {modeMenuOpen && (
+              <div className="mode-menu" role="menu">
+                {([
+                  ['plan', 'Plan', '只读分析与计划，不修改工作区'],
+                  ['guided', 'Guided', '每次写入和命令都请求确认'],
+                  ['auto', 'Auto', '工作区内低风险动作自动执行'],
+                ] as const).map(([value, label, description]) => (
+                  <button
+                    key={value}
+                    data-action={`mode-${value}`}
+                    className={mode === value ? 'selected' : ''}
+                    role="menuitemradio"
+                    aria-checked={mode === value}
+                    onClick={() => { onModeSelect(value); setModeMenuOpen(false); }}
+                  >
+                    <strong>{label}</strong><span>{description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <button
               data-action="plan-toggle"
               className={`composer-tool ${mode === 'plan' ? 'selected' : ''}`}
@@ -1814,12 +1872,16 @@ function TerminalPanel({
             if (event.key !== 'Enter' || !command.trim()) return;
             const current = command.trim();
             setCommand('');
-            const value = await window.seecoder.terminal.run(current);
-            const output = resultOutput(value);
-            setLocalLines((previous) => [...previous, `> ${current}\n${typeof output === 'string' ? output : JSON.stringify(output)}\n`].slice(-200));
-            onToast(
-              typeof output === 'object' ? JSON.stringify(output) : String(output ?? '命令已执行'),
-            );
+            try {
+              const value = await window.seecoder.terminal.run(current);
+              const formatted = formatCommandOutput(value);
+              setLocalLines((previous) => [...previous, `> ${current}\n${formatted}\n`].slice(-200));
+              onToast(formatted || '命令已执行');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : '命令执行失败';
+              setLocalLines((previous) => [...previous, `> ${current}\n[未执行] ${message}\n`].slice(-200));
+              onToast(message);
+            }
           }}
           placeholder="输入命令并回车…"
         />
