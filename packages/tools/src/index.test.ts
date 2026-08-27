@@ -18,6 +18,7 @@ describe('WorkspacePolicy', () => {
   it('auto approves only safe workspace actions', () => {
     const policy = new WorkspacePolicy('C:/workspace');
     expect(policy.canAutoApprove({ id: '1', name: 'read_file', args: { path: 'a.ts' } }, 'auto')).toBe(true);
+    expect(policy.canAutoApprove({ id: '1b', name: 'read_file', args: { path: 'a.ts' } }, 'guided')).toBe(true);
     expect(policy.canAutoApprove({ id: '2', name: 'run_command', args: { command: 'pnpm test', cwd: '.' } }, 'auto')).toBe(true);
     expect(policy.canAutoApprove({ id: '3', name: 'run_command', args: { command: 'Remove-Item -Recurse .git', cwd: '.' } }, 'auto')).toBe(false);
     expect(policy.canAutoApprove({ id: '4', name: 'write_file', args: { path: 'a.ts' } }, 'guided')).toBe(false);

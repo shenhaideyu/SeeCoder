@@ -50,6 +50,8 @@ export class WorkspacePolicy {
   }
 
   canAutoApprove(call: ToolCall, mode: PermissionMode): boolean {
+    const readOnly = ['list_files', 'read_file', 'search_text', 'git_diff', 'set_plan', 'finish', 'delegate'];
+    if (readOnly.includes(call.name)) return true;
     if (mode === 'guided') return false;
     if (!['write_file', 'apply_patch', 'run_command', 'set_plan'].includes(call.name)) return true;
     if (call.name === 'set_plan') return true;
