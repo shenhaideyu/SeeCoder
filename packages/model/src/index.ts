@@ -62,6 +62,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           const message = (await response.text()).slice(0, 1000);
           const retryable = [429, 502, 503, 504].includes(response.status);
           if (retryable && attempt < 2) {
+            yield { type: 'retry', attempt: attempt + 1 };
             await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
             continue;
           }
@@ -139,6 +140,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           return;
         }
         if (attempt < 2) {
+          yield { type: 'retry', attempt: attempt + 1 };
           await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
           continue;
         }
@@ -176,7 +178,11 @@ export class FakeModelProvider implements ModelProvider {
 export function estimateTokens(messages: ModelMessage[]): number {
   let tokens = 0;
   for (const message of messages) {
-    for (const char of message.content) tokens += char.charCodeAt(0) <= 0x7f ? 0.25 : 1;
+    const blocks = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content;
+    for (const block of blocks) {
+      const text = block.type === 'text' ? block.text : '[image]';
+      for (const char of text) tokens += char.charCodeAt(0) <= 0x7f ? 0.25 : 1;
+    }
     tokens += 4;
   }
   return Math.ceil(tokens);

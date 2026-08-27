@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://seecoder.local/contracts/agent-events-v2.schema.json",
+  "title": "SeeCoder Agent Event Envelope V2",
+  "type": "object",
+  "required": ["version", "id", "seq", "type", "threadId", "timestamp", "payload"],
+  "properties": {
+    "version": { "const": 2 },
+    "id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 1 },
+    "type": { "type": "string", "minLength": 1 },
+    "threadId": { "type": "string", "minLength": 1 },
+    "turnId": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false
+}

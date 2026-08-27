@@ -50,7 +50,7 @@ export class WorkspacePolicy {
   }
 
   canAutoApprove(call: ToolCall, mode: PermissionMode): boolean {
-    const readOnly = ['list_files', 'read_file', 'search_text', 'git_diff', 'set_plan', 'finish', 'delegate'];
+    const readOnly = ['list_files', 'read_file', 'read_files', 'search_text', 'git_diff', 'set_plan', 'finish', 'delegate', 'ask_user', 'checkpoint', 'review_changes', 'compact_context'];
     if (readOnly.includes(call.name)) return true;
     if (mode === 'guided') return false;
     if (!['write_file', 'apply_patch', 'run_command', 'set_plan'].includes(call.name)) return true;
@@ -153,7 +153,7 @@ async function collectFiles(root: string, current: string, output: string[], dep
   }
 }
 
-function commandRunner(command: string, cwd: string, context: ToolContext, timeoutMs = 60_000): Promise<ToolResult> {
+export function commandRunner(command: string, cwd: string, context: ToolContext, timeoutMs = 60_000): Promise<ToolResult> {
   const started = Date.now();
   return new Promise((resolvePromise) => {
     const windows = process.platform === 'win32';
@@ -217,6 +217,18 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
+      name: 'read_files', description: '批量读取工作区内文本文件', sideEffect: false, risk: 'low',
+      parameters: z.object({ paths: z.array(z.string().min(1)).min(1).max(30) }),
+      async execute(raw, context) {
+        const started = Date.now(); const args = raw as { paths: string[] }; const outputs: Array<{ path: string; text?: string; error?: string }> = [];
+        for (const input of args.paths) {
+          try { const path = await new WorkspacePolicy(context.workspace).path(input); const text = await readFile(path, 'utf8'); outputs.push({ path: relative(context.workspace, path), text: text.split(/\r?\n/).slice(0, 400).join('\n') }); }
+          catch (error) { outputs.push({ path: input, error: error instanceof Error ? error.message : '读取失败' }); }
+        }
+        return result(true, outputs, Date.now() - started);
+      },
+    },
+    {
       name: 'search_text', description: '在工作区文本文件中搜索字符串或正则', sideEffect: false, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
@@ -265,6 +277,26 @@ export function createToolDefinitions(): ToolDefinition[] {
       name: 'delegate', description: '委派只读 Explore 或 Review 子 Agent（由 Core 调度）', sideEffect: false, risk: 'low',
       parameters: z.object({ role: z.enum(['explore', 'review']), task: z.string(), focusPaths: z.array(z.string()).optional() }),
       async execute() { return result(false, undefined, 0, { code: 'delegate_unhandled', message: 'delegate 必须由 Agent Core 调度' }); },
+    },
+    {
+      name: 'ask_user', description: '向用户提出一个结构化问题并暂停当前任务', sideEffect: false, risk: 'low',
+      parameters: z.object({ question: z.string().min(1).max(2000), choices: z.array(z.string().min(1).max(200)).max(8).optional() }),
+      async execute() { return result(false, undefined, 0, { code: 'ask_user_unhandled', message: 'ask_user 必须由 Agent Core 调度' }); },
+    },
+    {
+      name: 'checkpoint', description: '创建一个用户可恢复的检查点', sideEffect: false, risk: 'low',
+      parameters: z.object({}),
+      async execute() { return result(false, undefined, 0, { code: 'checkpoint_unhandled', message: 'checkpoint 必须由 Agent Core 调度' }); },
+    },
+    {
+      name: 'review_changes', description: '启动只读代码变更审查', sideEffect: false, risk: 'low',
+      parameters: z.object({ scope: z.string().max(100).optional() }),
+      async execute() { return result(false, undefined, 0, { code: 'review_unhandled', message: 'review_changes 必须由 Agent Core 调度' }); },
+    },
+    {
+      name: 'compact_context', description: '主动压缩历史上下文并保留任务摘要', sideEffect: false, risk: 'low',
+      parameters: z.object({}),
+      async execute() { return result(true, { compacted: true }, 0); },
     },
   ];
 }

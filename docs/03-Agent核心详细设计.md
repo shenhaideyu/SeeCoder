@@ -14,5 +14,6 @@
 
 ## 工具
 
-`list_files`、`read_file`、`search_text`、`write_file`、`apply_patch`、`run_command`、`git_diff`、`set_plan`、`delegate`、`finish`。副作用工具带唯一 `callId`，结果已存在时不重复执行。
+`list_files`、`read_file`、`read_files`、`search_text`、`write_file`、`apply_patch`、`run_command`、`git_diff`、`set_plan`、`delegate`、`ask_user`、`checkpoint`、`review_changes`、`compact_context`、`finish`。副作用工具带唯一 `callId`，结果已存在时不重复执行；每次写入前创建 Checkpoint，恢复时校验 afterHash，发现外部修改立即拒绝。
 
+Turn 可在启动时绑定模式，计划任务固定绑定 `plan`。Follow-up 进入下一轮模型上下文，Review 通过只读子 Agent 生成 Finding 事件，模型请求事件记录耗时、结束原因、token 与重试次数。
