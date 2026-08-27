@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { commandRunner, ToolRegistry, WorkspacePolicy } from './index';
+import { commandRisk, commandRunner, ToolRegistry, WorkspacePolicy } from './index';
 
 describe('WorkspacePolicy', () => {
   it('rejects paths outside the workspace', async () => {
@@ -52,6 +52,15 @@ describe('file tools', () => {
       expect(output).toMatchObject({ ok: true });
       expect((output.output as string[]).map((path) => path.replace(/\\/g, '/'))).toEqual(['src/main.ts']);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('labels read-only and test commands without presenting them as high risk', () => {
+    expect(commandRisk('git log --oneline -15')).toBe('low');
+    expect(commandRisk('pnpm test:unit')).toBe('low');
+    expect(commandRisk('node --test frontend/tests/')).toBe('low');
+    expect(commandRisk('node --version; node --test frontend/tests/agentStatus.test.mjs 2>&1 | Out-String')).toBe('low');
+    expect(commandRisk('Get-ChildItem tests')).toBe('medium');
+    expect(commandRisk('git push origin main')).toBe('high');
   });
 
   it('stops a workspace search when the task is cancelled', async () => {

@@ -4,7 +4,7 @@ import { resolve as resolvePath } from 'node:path';
 import { estimateTokens, type ModelConfig } from '@seecoder/model';
 import type { ModelMessage, ModelProvider, AgentEvent, Approval, AttachmentRef, ChangeSet, Checkpoint, ContentBlock, Item, PlanStep, Thread, ToolCall, ToolResult, Turn, SubagentRole, SubagentState, ExecutionMode, ReviewFinding } from '@seecoder/protocol';
 import type { SessionStore } from '@seecoder/storage';
-import { restoreChangeSet, ToolRegistry, WorkspacePolicy, type ToolContext } from '@seecoder/tools';
+import { commandRisk, restoreChangeSet, ToolRegistry, WorkspacePolicy, type ToolContext } from '@seecoder/tools';
 
 export interface AgentCoreOptions {
   workspace: string;
@@ -201,7 +201,7 @@ export class AgentCore {
       if (!item) continue;
       if (item.kind === 'user_message') messages.push({ role: 'user', content: item.text });
       if (item.kind === 'assistant_message') messages.push({ role: 'assistant', content: item.text, ...(item.toolCalls ? { toolCalls: item.toolCalls } : {}) });
-      if (item.kind === 'tool_result') messages.push({ role: 'tool', content: JSON.stringify(item.result), toolCallId: item.callId });
+      if (item.kind === 'tool_result') messages.push({ role: 'tool', content: serializeToolResultForModel(item.result), toolCallId: item.callId });
       if (item.kind === 'changes') this.changeSets.set(item.changeSet.id, item.changeSet);
       if (item.kind === 'compaction') {
         messages.length = 0;
@@ -209,7 +209,19 @@ export class AgentCore {
         else messages.push({ role: 'user', content: `[历史压缩摘要]\n${item.summary}` });
       }
     }
-    this.messages.set(threadId, messages);
+    this.messages.set(threadId, sanitizeModelMessages(messages));
+    const lastStarted = [...history].reverse().find((record) => record.event.type === 'turn.started');
+    if (lastStarted?.event.type === 'turn.started' && !this.activeThreadTurns.has(threadId)) {
+      const turnId = lastStarted.event.turn.id;
+      const terminal = history.some((record) => (
+        record.event.type === 'turn.completed' || record.event.type === 'turn.failed' || record.event.type === 'turn.cancelled'
+      ) && record.event.turn.id === turnId);
+      if (!terminal) {
+        const interrupted: Turn = { ...lastStarted.event.turn, status: 'failed', completedAt: now() };
+        const error = { code: 'interrupted', message: '应用在任务结束前退出，后台执行已停止。请重新尝试。', retryable: true };
+        await this.emit({ type: 'turn.failed', timestamp: now(), turn: interrupted, error, threadId }, { kind: 'error', id: itemId(), error, createdAt: now() });
+      }
+    }
     return thread;
   }
 
@@ -291,7 +303,9 @@ export class AgentCore {
       ?? ('child' in event ? this.turns.get(event.child.parentTurnId)?.threadId : undefined)
       ?? ('threadId' in event ? event.threadId : undefined);
     const routed = threadId ? { ...event, threadId } : event;
-    if (threadId) await this.options.store.append(threadId, { event: routed, ...(item ? { item } : {}) });
+    // 流式文本只服务实时 UI；message.completed 已保存完整回复。
+    // 不把每个 delta 追加到 JSONL，避免长回复产生数千次磁盘写入和巨大会话文件。
+    if (threadId && event.type !== 'message.delta') await this.options.store.append(threadId, { event: routed, ...(item ? { item } : {}) });
     this.listeners.forEach((listener) => listener(routed));
   }
 
@@ -317,6 +331,9 @@ export class AgentCore {
     turn.status = 'running';
     let noProgress = 0;
     let finished = false;
+    let consecutiveReadOnlyIterations = 0;
+    let explorationReminderSent = false;
+    let truncatedResponses = 0;
     try {
       for (let iteration = 1; iteration <= 24 && !finished; iteration += 1) {
         if (controller.signal.aborted) throw new AgentRunError('cancelled', '用户取消了任务', false);
@@ -328,6 +345,10 @@ export class AgentCore {
             threadMessages.push({ role: 'user', content: `[用户追加要求]\n${followUp}` });
             await this.emit({ type: 'message.user', timestamp: now(), turnId: turn.id, text: followUp, threadId: turn.threadId });
           }
+        }
+        if (consecutiveReadOnlyIterations >= 4 && !explorationReminderSent) {
+          threadMessages.push({ role: 'user', content: '[执行约束提醒]\n你已经连续多轮只读探索。请基于现有证据立即选择最小可验证修复，或明确说明仍缺少的唯一关键信息；不要继续重复读取。' });
+          explorationReminderSent = true;
         }
         const contextMessages = (await this.compactMessages(turn, threadMessages, false)).messages;
         const request = { messages: [{ role: 'system' as const, content: await this.systemPrompt(this.turnModes.get(turn.id) ?? this.mode) }, ...contextMessages], tools: this.toolSchemas(), model: this.options.model.model, temperature: this.options.model.temperature, maxOutputTokens: this.options.model.maxOutputTokens };
@@ -352,22 +373,51 @@ export class AgentCore {
         await this.emit({ type: 'model.completed', timestamp: now(), turnId: turn.id, iteration, durationMs: Date.now() - requestStarted, ...(finishReason ? { finishReason } : {}), ...(inputTokens !== undefined ? { inputTokens } : {}), ...(outputTokens !== undefined ? { outputTokens } : {}), retries });
         if (modelError) throw new AgentRunError(modelError.code, modelError.message, modelError.retryable);
         const parsedCalls = [...calls.entries()].map(([id, value]) => ({ id, name: value.name, arguments: value.args }));
-      if (text || parsedCalls.length) {
-        this.messages.get(turn.threadId)?.push({ role: 'assistant', content: text, ...(parsedCalls.length ? { toolCalls: parsedCalls } : {}) });
+        if (text || parsedCalls.length) {
+          this.messages.get(turn.threadId)?.push({ role: 'assistant', content: text, ...(parsedCalls.length ? { toolCalls: parsedCalls } : {}) });
           const item: Item = { kind: 'assistant_message', id: itemId(), text, ...(parsedCalls.length ? { toolCalls: parsedCalls } : {}), createdAt: now() };
           if (text) await this.emit({ type: 'message.completed', timestamp: now(), turnId: turn.id, text }, item);
           else await this.emit({ type: 'assistant.tool_calls', timestamp: now(), turnId: turn.id, calls: parsedCalls }, item);
         }
+        if (finishReason === 'length' && !calls.size) {
+          truncatedResponses += 1;
+          if (truncatedResponses >= 3) throw new AgentRunError('output_limit', '模型连续三次达到输出上限，任务未能可靠完成', false);
+          const current = this.messages.get(turn.threadId) ?? [];
+          current.push({ role: 'user', content: '[系统恢复提示]\n上一响应达到输出上限，不能视为任务完成。请不要重复长篇分析；立即执行最小必要操作，完成验证后调用 finish。' });
+          await this.compactMessages(turn, current, true);
+          continue;
+        }
         if (!calls.size) { finished = true; break; }
         let hadSuccess = false;
+        let hadExplorationCall = false;
+        let hadActionCall = false;
+        let explorationBudgetBlocked = false;
         for (const [callId, raw] of calls) {
           if (!raw.name) { noProgress += 1; continue; }
-          const result = await this.executeCall(turn, { id: callId, name: raw.name, args: this.parseArgs(raw.args) }, controller.signal);
-          this.messages.get(turn.threadId)?.push({ role: 'tool', content: JSON.stringify(result), toolCallId: callId, toolName: raw.name });
+          const args = this.parseArgs(raw.args);
+          const explorationCall = isExplorationCall(raw.name, args);
+          if (explorationCall) hadExplorationCall = true;
+          else if (!['set_plan', 'compact_context', 'checkpoint'].includes(raw.name)) hadActionCall = true;
+          const result = await this.executeCall(
+            turn,
+            { id: callId, name: raw.name, args },
+            controller.signal,
+            explorationCall && consecutiveReadOnlyIterations >= 7
+              ? fail('exploration_budget_exhausted', '只读探索预算已用完。请使用现有证据实施最小修复、运行验证或明确唯一阻塞点；不要继续读取。')
+              : undefined,
+          );
+          this.messages.get(turn.threadId)?.push({ role: 'tool', content: serializeToolResultForModel(result), toolCallId: callId, toolName: raw.name });
           if (controller.signal.aborted) throw new AgentRunError('cancelled', '用户取消了任务', false);
-          if (result.ok) { hadSuccess = true; noProgress = 0; } else noProgress += 1;
+          if (result.ok) { hadSuccess = true; noProgress = 0; }
+          else if (result.error?.code === 'exploration_budget_exhausted') { explorationBudgetBlocked = true; noProgress = 0; }
+          else noProgress += 1;
           if (raw.name === 'finish' && result.ok) finished = true;
         }
+        consecutiveReadOnlyIterations = hadActionCall
+          ? 0
+          : hadExplorationCall
+            ? explorationBudgetBlocked ? Math.max(7, consecutiveReadOnlyIterations) : hadSuccess ? consecutiveReadOnlyIterations + 1 : consecutiveReadOnlyIterations
+            : consecutiveReadOnlyIterations;
         if (!hadSuccess && noProgress >= 3) throw new Error('连续三次工具调用失败，判定为无进展');
       }
       if (!finished && turn.iteration >= 24) throw new AgentRunError('iteration_limit', '已达到 24 次模型迭代上限，任务未能可靠完成', false);
@@ -399,7 +449,7 @@ export class AgentCore {
     try { return raw ? JSON.parse(raw) : {}; } catch { return { __invalid: raw.slice(0, 2000) }; }
   }
 
-  private async executeCall(turn: Turn, call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+  private async executeCall(turn: Turn, call: ToolCall, signal: AbortSignal, forcedResult?: ToolResult): Promise<ToolResult> {
     const turnCalls = this.executedCalls.get(turn.id) ?? new Map<string, ToolResult>();
     this.executedCalls.set(turn.id, turnCalls);
     const existing = turnCalls.get(call.id);
@@ -419,19 +469,21 @@ export class AgentCore {
         this.ledgers.get(turn.threadId)?.addTest(`${finalValue.ok ? '通过' : '失败'}: ${command}`);
         await this.persistLedger(turn.threadId);
       }
-      if (!finalValue.ok && finalValue.error) {
+      if (!finalValue.ok && finalValue.error && finalValue.error.code !== 'exploration_budget_exhausted') {
         this.ledgers.get(turn.threadId)?.addError(`${finalValue.error.code}: ${finalValue.error.message}`);
         await this.persistLedger(turn.threadId);
       }
       return finalValue;
     };
+    if (forcedResult) return complete(forcedResult);
     if (!definition) return complete(fail('unknown_tool', `未知工具 ${call.name}`));
     const parsed = definition.parameters.safeParse(call.args);
     if (!parsed.success) return complete(fail('invalid_args', parsed.error.message));
     const turnMode = this.turnModes.get(turn.id) ?? this.mode;
     if (turnMode === 'plan' && definition.sideEffect) return complete(fail('plan_read_only', 'Plan 模式禁止写文件、运行命令或其他副作用操作'), parsed.data);
     if (!this.policy.canAutoApprove(call, turnMode === 'plan' ? 'guided' : turnMode)) {
-      const approval: Approval = { id: randomUUID(), turnId: turn.id, call, reason: `${definition.name} 可能产生文件或进程副作用`, risk: definition.risk, status: 'pending' };
+      const risk = call.name === 'run_command' ? commandRisk(String((parsed.data as { command?: unknown }).command ?? '')) : definition.risk;
+      const approval: Approval = { id: randomUUID(), turnId: turn.id, call, reason: turnMode === 'guided' ? 'Guided 模式要求在执行前确认' : `${definition.name} 可能产生文件或进程副作用`, risk, status: 'pending' };
       turn.status = 'waitingApproval';
       await this.emit({ type: 'approval.requested', timestamp: now(), approval }, { kind: 'approval', id: itemId(), approval, createdAt: now() });
       const decision = await new Promise<{ allow: boolean; reason?: string }>((resolve) => this.approvals.set(approval.id, { approval, resolve }));
@@ -557,7 +609,11 @@ export class AgentCore {
     const limit = this.options.model.contextWindow || 128000;
     const beforeTokens = estimateTokens(messages);
     if ((!force && beforeTokens <= limit * 0.7) || messages.length <= 8) return { messages, compacted: false, beforeTokens, afterTokens: beforeTokens };
-    const keep = messages.slice(-8); const old = messages.slice(0, -8); const ledgerSummary = this.ledgers.get(turn.threadId)?.summary() ?? '{}'; const summary = `ContextLedger:\n${ledgerSummary}\n${old.map((message) => `${message.role}: ${typeof message.content === 'string' ? message.content.slice(0, 500) : '[多媒体内容]'}`).join('\n')}`.slice(0, 6000);
+    let keepStart = Math.max(0, messages.length - 8);
+    // Chat Completions 要求 tool 消息紧跟包含对应 tool_calls 的 assistant 消息。
+    // 多工具调用时固定 slice 可能从一组 tool 结果中间截断，导致下一轮直接 400。
+    while (keepStart > 0 && messages[keepStart]?.role === 'tool') keepStart -= 1;
+    const keep = messages.slice(keepStart); const old = messages.slice(0, keepStart); const ledgerSummary = this.ledgers.get(turn.threadId)?.summary() ?? '{}'; const summary = `ContextLedger:\n${ledgerSummary}\n${old.map((message) => `${message.role}: ${typeof message.content === 'string' ? message.content.slice(0, 500) : '[多媒体内容]'}`).join('\n')}`.slice(0, 6000);
     const compacted: ModelMessage[] = [{ role: 'user', content: `[历史压缩摘要]\n${summary}` }, ...keep];
     this.messages.set(turn.threadId, compacted);
     await this.emit({ type: 'context.compacted', timestamp: now(), turnId: turn.id, summary }, { kind: 'compaction', id: itemId(), summary, messages: compacted, createdAt: now() });
@@ -575,5 +631,51 @@ class AgentRunError extends Error {
 }
 
 function fail(code: string, message: string): ToolResult { return { ok: false, error: { code, message, retryable: false }, durationMs: 0 }; }
+function serializeToolResultForModel(result: ToolResult): string {
+  const serialized = JSON.stringify(result);
+  if (serialized.length <= 16_000) return serialized;
+  return JSON.stringify({
+    ok: result.ok,
+    output: `[工具输出过长，已为模型裁剪；完整结果保留在执行轨迹]\n${serialized.slice(0, 10_000)}\n…\n${serialized.slice(-4_000)}`,
+    ...(result.error ? { error: result.error } : {}),
+    durationMs: result.durationMs,
+  });
+}
+function isExplorationCall(name: string, args: unknown): boolean {
+  if (['list_files', 'read_file', 'read_files', 'search_text', 'git_diff', 'delegate', 'review_changes'].includes(name)) return true;
+  if (name !== 'run_command') return false;
+  const command = String((args as { command?: unknown } | undefined)?.command ?? '');
+  return /^\s*git\s+(status|diff|log|show|branch)\b/i.test(command);
+}
+function sanitizeModelMessages(messages: ModelMessage[]): ModelMessage[] {
+  const safe: ModelMessage[] = [];
+  let pending: Set<string> | undefined;
+  let group: ModelMessage[] = [];
+  const flushCompleteGroup = (): void => {
+    if (pending?.size === 0) safe.push(...group);
+    pending = undefined;
+    group = [];
+  };
+  for (const message of messages) {
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      flushCompleteGroup();
+      pending = new Set(message.toolCalls.map((call) => call.id));
+      group = [message];
+      continue;
+    }
+    if (message.role === 'tool') {
+      if (pending?.has(message.toolCallId ?? '')) {
+        pending.delete(message.toolCallId!);
+        group.push(message);
+        if (pending.size === 0) flushCompleteGroup();
+      }
+      continue;
+    }
+    flushCompleteGroup();
+    safe.push(message);
+  }
+  flushCompleteGroup();
+  return safe;
+}
 function hash(value: string | null): string | null { return value === null ? null : createHash('sha256').update(value).digest('hex'); }
 function isChanges(value: unknown): value is { kind: 'changes'; files: Array<{ path: string; before: string | null; after: string | null }> } { return Boolean(value && typeof value === 'object' && (value as { kind?: string }).kind === 'changes' && Array.isArray((value as { files?: unknown }).files)); }

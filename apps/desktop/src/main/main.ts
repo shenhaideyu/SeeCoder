@@ -47,7 +47,10 @@ class MainLogger {
               : undefined;
     const base = { type: event.type, threadId: event.threadId, turnId };
     if (event.type === 'tool.requested') this.write('INFO', 'agent.tool.requested', { ...base, callId: event.call.id, tool: event.call.name });
-    else if (event.type === 'tool.completed') this.write(event.result.ok ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, durationMs: event.result.durationMs, error: event.result.error?.code });
+    else if (event.type === 'tool.completed') {
+      const controlled = event.result.error?.code === 'exploration_budget_exhausted';
+      this.write(event.result.ok || controlled ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, controlled, durationMs: event.result.durationMs, error: event.result.error?.code });
+    }
     else if (event.type === 'tool.output') this.write('INFO', 'agent.tool.output', { ...base, callId: event.callId, stream: event.stream, bytes: event.text.length });
     else if (event.type === 'model.completed') this.write('INFO', 'agent.model.completed', { ...base, iteration: event.iteration, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens, retries: event.retries, finishReason: event.finishReason });
     else if (event.type === 'subagent.updated') this.write(event.child.status === 'failed' ? 'WARN' : 'INFO', 'agent.subagent.updated', { ...base, childId: event.child.id, role: event.child.role, status: event.child.status, iteration: event.child.iteration, durationMs: event.child.durationMs, inputTokens: event.child.inputTokens, outputTokens: event.child.outputTokens, currentAction: event.child.currentAction, error: event.child.errorCode });

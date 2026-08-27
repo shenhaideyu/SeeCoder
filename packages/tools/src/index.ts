@@ -90,6 +90,15 @@ export function isHighRiskCommand(command: string): boolean {
   return /(remove-item|rm\s+-rf|rmdir|del\s+\/s|format(-volume)?|shutdown|reg\s+|git\s+(reset|clean|push)|curl\s+|wget\s+|npm\s+(install|i\b)|pnpm\s+(add|install)|yarn\s+(add|install)|invoke-webrequest)/i.test(command);
 }
 
+export function commandRisk(command: string): ToolDefinition['risk'] {
+  if (isHighRiskCommand(command)) return 'high';
+  const normalized = command.replace(/\s*2>&1\s*\|\s*Out-String\s*$/i, '');
+  const safe = /^\s*(git\s+(status|diff|log|show|branch)\b|(?:pnpm|npm|yarn)\s+(test|run\s+(test|lint|typecheck|build))\b|node\s+(--version\b|--test\b)|pytest\b|python\s+-m\s+pytest\b)/i;
+  const parts = normalized.split(';').map((part) => part.trim()).filter(Boolean);
+  if (parts.length && parts.every((part) => safe.test(part))) return 'low';
+  return 'medium';
+}
+
 async function atomicWrite(path: string, content: string): Promise<void> {
   const temporary = `${path}.seecoder-${Date.now()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
@@ -380,7 +389,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'run_command', description: '在工作区内运行 PowerShell 命令并流式返回输出', sideEffect: true, risk: 'high',
+      name: 'run_command', description: '在工作区内运行构建、测试或版本控制命令并流式返回输出；文件定位请优先使用 list_files、search_text 和 read_files', sideEffect: true, risk: 'high',
       parameters: z.object({ command: z.string().min(1), cwd: z.string().optional(), timeoutMs: z.number().int().min(1000).max(120000).optional() }),
       async execute(raw, context) { const args = raw as { command: string; cwd?: string; timeoutMs?: number }; try { const cwd = await new WorkspacePolicy(context.workspace).path(args.cwd); return await commandRunner(args.command, cwd, context, args.timeoutMs); } catch (error) { return result(false, undefined, 0, { code: 'command_denied', message: error instanceof Error ? error.message : '命令目录无效' }); } },
     },

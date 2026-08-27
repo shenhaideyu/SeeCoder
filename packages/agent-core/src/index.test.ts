@@ -22,6 +22,32 @@ class RecordingProvider implements ModelProvider {
 }
 
 describe('AgentCore', () => {
+  it('streams text live but persists only the completed assistant message', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-stream-storage-'));
+    try {
+      const store = new SessionStore(join(root, '.sessions'));
+      const provider = new RecordingProvider([[
+        { type: 'textDelta', text: '第一段' },
+        { type: 'textDelta', text: '第二段' },
+        { type: 'completed', finishReason: 'stop' },
+      ]]);
+      const core = new AgentCore({ workspace: root, provider, model, store, mode: 'auto' });
+      const live: string[] = [];
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'message.delta') live.push(event.text);
+        if (event.type === 'turn.completed') resolve();
+      }));
+      const thread = await core.createThread('流式持久化');
+      await core.startTurn(thread.id, '回复我');
+      await completed;
+
+      expect(live).toEqual(['第一段', '第二段']);
+      const history = await store.readEvents(thread.id);
+      expect(history.some((record) => record.event.type === 'message.delta')).toBe(false);
+      expect(history.some((record) => record.event.type === 'message.completed')).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('asks the model to keep natural tasks concise and avoid serial reads', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-efficient-prompt-'));
     try {
@@ -78,6 +104,100 @@ describe('AgentCore', () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(approvals).toHaveLength(1);
       await core.resolveApproval(approvals[0]!, 'allow'); await completed;
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not treat a truncated model response as task completion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-output-limit-'));
+    try {
+      const provider = new RecordingProvider([
+        [{ type: 'textDelta', text: '未完成的长响应' }, { type: 'completed', finishReason: 'length' }],
+        [{ type: 'textDelta', text: '已恢复并完成' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+      const thread = await core.createThread('截断恢复');
+      await core.startTurn(thread.id, '完成一个任务');
+      await completed;
+
+      expect(provider.requests).toHaveLength(2);
+      expect(provider.requests[1]!.messages.some((message) => String(message.content).includes('上一响应达到输出上限'))).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('turns repeated exploration into a bounded tool result instead of an endless read loop', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-exploration-budget-'));
+    try {
+      await writeFile(join(root, 'evidence.txt'), 'evidence', 'utf8');
+      const reads = Array.from({ length: 8 }, (_, index) => [
+        { type: 'toolCallDelta' as const, callId: `read-${index}`, name: 'read_file', argsDelta: '{"path":"evidence.txt"}' },
+        { type: 'completed' as const, finishReason: 'tool_calls' },
+      ]);
+      const provider = new RecordingProvider([
+        ...reads,
+        [{ type: 'toolCallDelta', callId: 'plan-after-budget', name: 'set_plan', argsDelta: '{"steps":[{"id":"fix","label":"实施最小修复","status":"running"}]}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'read-after-plan', name: 'read_file', argsDelta: '{"path":"evidence.txt"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'write-after-budget', name: 'write_file', argsDelta: '{"path":"fixed.txt","content":"fixed"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '已修复并验证' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model: { ...model, contextWindow: 200_000 }, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      const errors: string[] = [];
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'tool.completed' && event.result.error) errors.push(event.result.error.code);
+        if (event.type === 'turn.completed') resolve();
+      }));
+      const thread = await core.createThread('探索预算');
+      await core.startTurn(thread.id, '定位后做最小修复');
+      await completed;
+
+      expect(errors).toContain('exploration_budget_exhausted');
+      expect(errors.filter((code) => code === 'exploration_budget_exhausted')).toHaveLength(2);
+      expect(await readFile(join(root, 'fixed.txt'), 'utf8')).toBe('fixed');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('drops orphan tool messages when hydrating an interrupted legacy chain', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-hydrate-chain-'));
+    try {
+      const store = new SessionStore(join(root, '.sessions'));
+      const thread = { id: 'legacy-thread', title: '旧会话', workspacePath: root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      await store.saveThread(thread);
+      await store.append(thread.id, {
+        event: { type: 'context.compacted', timestamp: new Date().toISOString(), turnId: 'old-turn', threadId: thread.id, summary: '旧摘要' },
+        item: { kind: 'compaction', id: 'old-item', summary: '旧摘要', messages: [
+          { role: 'user', content: '原任务' },
+          { role: 'tool', content: '{"ok":true}', toolCallId: 'orphan' },
+        ], createdAt: new Date().toISOString() },
+      });
+      const provider = new RecordingProvider([[{ type: 'textDelta', text: '恢复完成' }, { type: 'completed', finishReason: 'stop' }]]);
+      const core = new AgentCore({ workspace: root, provider, model, store, mode: 'auto' });
+      await core.hydrateThread(thread.id);
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+      await core.startTurn(thread.id, '继续任务');
+      await completed;
+
+      expect(provider.requests[0]!.messages.some((message) => message.role === 'tool')).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('marks a persisted running turn as interrupted after process restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-interrupted-turn-'));
+    try {
+      const store = new SessionStore(join(root, '.sessions'));
+      const timestamp = new Date().toISOString();
+      const thread = { id: 'interrupted-thread', title: '中断任务', workspacePath: root, createdAt: timestamp, updatedAt: timestamp };
+      const turn = { id: 'interrupted-turn', threadId: thread.id, status: 'running' as const, startedAt: timestamp, iteration: 3 };
+      await store.saveThread(thread);
+      await store.append(thread.id, { event: { type: 'turn.started', timestamp, threadId: thread.id, turn } });
+      await store.append(thread.id, { event: { type: 'model.requested', timestamp, threadId: thread.id, turnId: turn.id, iteration: 3 } });
+
+      const core = new AgentCore({ workspace: root, provider: new FakeModelProvider([]), model, store, mode: 'auto' });
+      await core.hydrateThread(thread.id);
+      await core.hydrateThread(thread.id);
+      const events = await store.readEvents(thread.id);
+      const interrupted = events.filter((record) => record.event.type === 'turn.failed' && record.event.error.code === 'interrupted');
+      expect(interrupted).toHaveLength(1);
+      expect(interrupted[0]!.event.type === 'turn.failed' && interrupted[0]!.event.turn.status).toBe('failed');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -249,6 +369,40 @@ describe('AgentCore', () => {
       const compactResultIndex = restoredMessages.findIndex((message) => message.role === 'tool' && message.toolCallId === 'compact-now');
       expect(compactCallIndex).toBeGreaterThanOrEqual(0);
       expect(compactResultIndex).toBeGreaterThan(compactCallIndex);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps multi-tool assistant calls intact during automatic compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-tool-chain-'));
+    try {
+      await writeFile(join(root, 'large.txt'), 'x'.repeat(30_000), 'utf8');
+      const toolTurn = (prefix: string) => [
+        ...Array.from({ length: 4 }, (_, index) => ({ type: 'toolCallDelta' as const, callId: `${prefix}-${index}`, name: 'read_file', argsDelta: '{"path":"large.txt"}' })),
+        { type: 'completed' as const, finishReason: 'tool_calls' },
+      ];
+      const provider = new RecordingProvider([
+        toolTurn('first'),
+        toolTurn('second'),
+        [{ type: 'textDelta', text: '完成' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const compactModel = { ...model, contextWindow: 1_000 };
+      const core = new AgentCore({ workspace: root, provider, model: compactModel, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+      const thread = await core.createThread('多工具压缩');
+      await core.startTurn(thread.id, '读取大文件');
+      await completed;
+
+      const compactedRequest = provider.requests[2]!.messages.slice(1);
+      let pending = new Set<string>();
+      for (const message of compactedRequest) {
+        if (message.role === 'assistant') pending = new Set(message.toolCalls?.map((call) => call.id) ?? []);
+        else if (message.role === 'tool') {
+          expect(pending.has(message.toolCallId!)).toBe(true);
+          pending.delete(message.toolCallId!);
+          expect(String(message.content).length).toBeLessThan(16_000);
+        } else pending.clear();
+      }
+      expect(compactedRequest.some((message) => message.role === 'tool')).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
