@@ -49,6 +49,29 @@
 .activity-detail { padding:2px 8px 10px 39px; }
 .activity-technical { margin-bottom:6px; color:var(--faint); font-size:10px; }
 .activity-technical code { color:var(--brand); }
+.activity-group { border-color:var(--border); background:var(--surface-muted); }
+.activity-group .activity-title strong { font-weight:650; }
+.activity-group-detail { display:grid; gap:4px; padding:0 8px 10px 39px; }
+.activity-group-row { display:grid; grid-template-columns:14px minmax(80px,auto) minmax(0,1fr) auto; align-items:center; gap:8px; min-height:28px; padding:4px 8px; border-radius:6px; color:var(--muted); background:var(--surface); font-size:10px; }
+.activity-group-row svg { color:var(--success); }
+.activity-group.error .activity-group-row svg { color:var(--danger); }
+.activity-group-row code { overflow:hidden; color:var(--faint); font:9px ui-monospace,monospace; text-overflow:ellipsis; white-space:nowrap; }
+.activity-group-row time { color:var(--faint); font-size:9px; }
+
+/* Trace 使用阶段摘要承载常用信息，原始事件按需展开。 */
+.trace-list { gap:7px; }
+.trace-group { overflow:hidden; border:1px solid var(--border); border-radius:8px; background:var(--surface-muted); }
+.trace-group>summary { display:flex; min-height:50px; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; list-style:none; }
+.trace-group>summary::-webkit-details-marker { display:none; }
+.trace-group>summary:hover { background:var(--brand-soft); }
+.trace-group-copy { display:grid; min-width:0; flex:1; gap:3px; }
+.trace-group-copy strong { color:var(--text); font-size:11px; }
+.trace-group-copy small { overflow:hidden; color:var(--muted); font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.trace-metrics { display:grid; justify-items:end; gap:2px; color:var(--faint); font-size:8px; white-space:nowrap; }
+.trace-metrics b { color:var(--danger); font-weight:600; }
+.trace-group-detail { padding:3px 9px 8px; border-top:1px solid var(--border); background:var(--surface); }
+.trace-hidden { padding:6px 12px; color:var(--faint); font-size:9px; line-height:1.45; }
+.trace-dot { flex:0 0 auto; }
 .plan-card,.subagent-strip,.approval-card,.complete-banner,.review-summary,.input-card { box-shadow:0 6px 22px rgba(57,30,77,.055); }
 .complete-banner { margin-top:18px; }
 .failure-banner { border-color:rgba(201,48,79,.3); background:rgba(201,48,79,.075); }

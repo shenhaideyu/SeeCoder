@@ -35,6 +35,12 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('.composer-note')).toContainText('不会修改工作区');
     await expect(page.locator('.workspace-context')).toBeVisible();
 
+    await page.setViewportSize({ width: 1000, height: 720 });
+    await expect(page.locator('[data-action="composer"]')).toBeVisible();
+    await expect(page.locator('[data-action="toggle-inspector"]')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.setViewportSize({ width: 1480, height: 900 });
+
     await page.locator('[data-action="inspector-files"]').click();
     await expect(page.locator('[data-action="open-file"]').filter({ hasText: '.env.example' })).toHaveCount(1);
     await expect(page.locator('[data-action="open-file"]').filter({ hasText: /^\.env$/ })).toHaveCount(0);

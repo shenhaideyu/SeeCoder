@@ -62,6 +62,7 @@ import type {
   ScheduleDefinition,
   SubagentState,
   Thread,
+  ToolResult,
 } from '@seecoder/protocol';
 import type { SeeCoderApi } from '../preload/preload';
 import './styles.css';
@@ -176,7 +177,8 @@ interface ActivityRecord {
 }
 type ConversationRecord =
   | { id: string; kind: 'message'; message: Extract<AgentEvent, { type: 'message.completed' | 'message.user' }> }
-  | { id: string; kind: 'activity'; activity: ActivityRecord };
+  | { id: string; kind: 'activity'; activity: ActivityRecord }
+  | { id: string; kind: 'activity-group'; activities: ActivityRecord[] };
 interface InputRequest {
   requestId: string;
   question: string;
@@ -364,6 +366,9 @@ const toolPresentation: Record<string, { label: string; description: string }> =
   ask_user: { label: '请求用户确认', description: '等待补充信息' },
   finish: { label: '完成任务', description: '汇总变更与验证证据' },
 };
+
+const isToolControlSignal = (result: ToolResult | undefined): boolean =>
+  result?.error?.code === 'exploration_budget_exhausted';
 
 function friendlyAgentError(message: string): { title: string; summary: string } {
   if (/tool_call_id|deserialize|invalid_request_error/i.test(message)) {
@@ -1187,7 +1192,23 @@ function TaskPage({
         records.push({ id, kind: 'activity', activity });
       }
     });
-    return records;
+    const grouped: ConversationRecord[] = [];
+    let exploration: ActivityRecord[] = [];
+    const flushExploration = () => {
+      if (exploration.length === 1) grouped.push({ id: exploration[0]!.id, kind: 'activity', activity: exploration[0]! });
+      else if (exploration.length > 1) grouped.push({ id: `group-${exploration[0]!.id}`, kind: 'activity-group', activities: exploration });
+      exploration = [];
+    };
+    for (const record of records) {
+      const name = record.kind === 'activity' ? record.activity.requested?.call.name : undefined;
+      const canGroup = record.kind === 'activity'
+        && Boolean(record.activity.completed)
+        && ['list_files', 'read_file', 'read_files', 'search_text', 'git_diff'].includes(name ?? '');
+      if (canGroup) exploration.push(record.activity);
+      else { flushExploration(); grouped.push(record); }
+    }
+    flushExploration();
+    return grouped;
   }, [events]);
   const latestTurnResult = useMemo(
     () => [...events].reverse().find(({ event }) => event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled'),
@@ -1302,6 +1323,13 @@ function TaskPage({
         <div className="message-stack">
           {conversationRecords.map((record) => record.kind === 'message' ? (
             <MessageCard key={record.id} message={record.message} onCopy={onCopy} onFeedback={onFeedback} />
+          ) : record.kind === 'activity-group' ? (
+            <ActivityGroupCard
+              key={record.id}
+              records={record.activities}
+              expanded={Boolean(expanded[record.id])}
+              onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
+            />
           ) : (
             <ActivityCard
               key={record.id}
@@ -1532,7 +1560,8 @@ function ActivityCard({
     : detail;
   const isTool = Boolean(record.requested || record.completed);
   const isSuccess = record.completed?.result.ok ?? false;
-  const isError = Boolean(record.completed && !record.completed.result.ok);
+  const isControlled = isToolControlSignal(record.completed?.result);
+  const isError = Boolean(record.completed && !record.completed.result.ok && !isControlled);
   const toolName = record.requested?.call.name;
   if (toolName === 'finish') return <></>;
   const presentation = toolName ? toolPresentation[toolName] : undefined;
@@ -1542,7 +1571,7 @@ function ActivityCard({
   const status = record.completed
     ? record.completed.result.ok
       ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
-      : '执行失败，展开查看详情'
+      : isControlled ? '探索已按预算停止，请使用现有证据继续' : '执行失败，展开查看详情'
     : record.auxiliary?.type === 'checkpoint.created'
       ? '可恢复'
       : isTool
@@ -1558,6 +1587,8 @@ function ActivityCard({
             <RotateCcw size={14} />
           ) : isSuccess ? (
             <Check size={14} />
+          ) : isControlled ? (
+            <Zap size={14} />
           ) : isError ? (
             <X size={14} />
           ) : (
@@ -1590,6 +1621,49 @@ function ActivityCard({
     </div>
   );
 }
+
+function ActivityGroupCard({ records, expanded, onToggle }: { records: ActivityRecord[]; expanded: boolean; onToggle: () => void }): React.JSX.Element {
+  const counts = records.reduce<Record<string, number>>((result, record) => {
+    const name = record.requested?.call.name ?? 'tool';
+    result[name] = (result[name] ?? 0) + 1;
+    return result;
+  }, {});
+  const summary = Object.entries(counts).map(([name, count]) => `${toolPresentation[name]?.label ?? name} ${count}`).join(' · ');
+  const limited = records.filter((record) => isToolControlSignal(record.completed?.result)).length;
+  const failed = records.filter((record) => record.completed && !record.completed.result.ok && !isToolControlSignal(record.completed.result)).length;
+  const latest = records[records.length - 1];
+  return (
+    <div className={`activity activity-group ${failed ? 'error' : 'success'}`}>
+      <button className="activity-head" data-action="toggle-activity-group" aria-expanded={expanded} onClick={onToggle}>
+        <div className="activity-icon">{failed ? <X size={14} /> : <Check size={14} />}</div>
+        <div className="activity-title">
+          <strong>探索项目 · {records.length} 次操作</strong>
+          <span>{failed ? `${failed} 项失败 · ${summary}` : limited ? `${limited} 次已按预算停止 · ${summary}` : summary}</span>
+        </div>
+        <span className="activity-time">{latest ? timeLabel(latest.completed?.timestamp ?? latest.requested?.timestamp ?? new Date().toISOString()) : ''}</span>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {expanded && (
+        <div className="activity-group-detail">
+          {records.map((record) => {
+            const name = record.requested?.call.name ?? 'tool';
+            const ok = record.completed?.result.ok ?? false;
+            const controlled = isToolControlSignal(record.completed?.result);
+            return (
+              <div className="activity-group-row" key={record.id}>
+                {ok ? <Check size={12} /> : controlled ? <Zap size={12} /> : <X size={12} />}
+                <span>{toolPresentation[name]?.label ?? name}</span>
+                <code>{name}</code>
+                <time>{timeLabel(record.completed?.timestamp ?? record.requested?.timestamp ?? new Date().toISOString())}</time>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function approvalPresentation(approval: Approval): { title: string; summary: string; preview?: string } {
   const args = approval.call.args && typeof approval.call.args === 'object' ? approval.call.args as Record<string, unknown> : {};
   if (approval.call.name === 'run_command') return { title: '运行命令', summary: String(args.cwd ?? '工作区根目录'), preview: String(args.command ?? '') };
@@ -2039,7 +2113,7 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
           : { id: item.id, event: item.event });
       }
     }
-    return result.slice(-80);
+    return result.slice(-160);
   }, [events]);
 
   function label(row: { event: AgentEvent; count?: number }): string {
@@ -2048,7 +2122,7 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
     if (event.type === 'model.completed') return `模型完成 · 第 ${event.iteration} 轮 · ${event.durationMs}ms · 重试 ${event.retries}`;
     if (event.type === 'model.requested') return `模型请求 · 第 ${event.iteration} 轮`;
     if (event.type === 'tool.requested') return `调用工具 · ${event.call.name}`;
-    if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : '失败'}`;
+    if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : isToolControlSignal(event.result) ? '已限制' : '失败'}`;
     if (event.type === 'usage.updated') return `Token · ${event.inputTokens} 输入 / ${event.outputTokens} 输出`;
     if (event.type === 'turn.completed') return '任务完成';
     if (event.type === 'turn.failed') return `任务失败 · ${event.error.code}`;
@@ -2056,27 +2130,105 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
     return event.type;
   }
 
+  const groups = useMemo(() => {
+    type TraceRow = { id: string; event: AgentEvent; count?: number };
+    type TraceGroup = {
+      id: string;
+      iteration?: number;
+      rows: TraceRow[];
+      tools: Map<string, number>;
+      failures: number;
+      durationMs?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      terminal?: 'completed' | 'failed' | 'cancelled';
+    };
+    const result: TraceGroup[] = [];
+    let current: TraceGroup | undefined;
+    for (const row of rows) {
+      const event = row.event;
+      if (event.type === 'model.requested') {
+        current = { id: row.id, iteration: event.iteration, rows: [], tools: new Map(), failures: 0 };
+        result.push(current);
+      }
+      if (!current) {
+        current = { id: `setup-${row.id}`, rows: [], tools: new Map(), failures: 0 };
+        result.push(current);
+      }
+      current.rows.push(row);
+      if (event.type === 'tool.requested') {
+        current.tools.set(event.call.name, (current.tools.get(event.call.name) ?? 0) + 1);
+      } else if (event.type === 'tool.completed' && !event.result.ok && !isToolControlSignal(event.result)) {
+        current.failures += 1;
+      } else if (event.type === 'usage.updated') {
+        current.inputTokens = event.inputTokens;
+        current.outputTokens = event.outputTokens;
+      } else if (event.type === 'model.completed') {
+        current.durationMs = event.durationMs;
+        if (typeof event.inputTokens === 'number') current.inputTokens = event.inputTokens;
+        if (typeof event.outputTokens === 'number') current.outputTokens = event.outputTokens;
+      } else if (event.type === 'turn.completed') current.terminal = 'completed';
+      else if (event.type === 'turn.failed') current.terminal = 'failed';
+      else if (event.type === 'turn.cancelled') current.terminal = 'cancelled';
+    }
+    return result.slice(-16);
+  }, [rows]);
+
+  function groupSummary(group: (typeof groups)[number]): string {
+    const tools = [...group.tools.entries()]
+      .map(([name, count]) => `${toolPresentation[name]?.label ?? name}${count > 1 ? ` ×${count}` : ''}`)
+      .join(' · ');
+    if (tools) return tools;
+    if (group.terminal === 'completed') return '任务已完成并保存轨迹';
+    if (group.terminal === 'failed') return '任务以失败状态结束';
+    if (group.terminal === 'cancelled') return '任务已取消';
+    return group.iteration ? '模型分析与生成' : '准备任务与上下文';
+  }
+
   return (
     <div className="inspector-body">
       <div className="panel-title">
         执行轨迹
-        <span className="panel-sub">{events.length} 个原始事件 · {rows.length} 条记录</span>
+        <span className="panel-sub">{groups.length} 个阶段 · {events.length} 个原始事件</span>
       </div>
       <div className="trace-list">
-        {rows.map((row) => (
-          <div className="trace-row" key={row.id}>
-            <span className={`trace-dot ${row.event.type.includes('failed') ? 'danger' : row.event.type.includes('completed') ? 'success' : ''}`} />
-            <span className="truncate">{label(row)}</span>
-            <time>{timeLabel(row.event.timestamp)}</time>
-          </div>
-        ))}
+        {groups.map((group) => {
+          const details = group.rows.filter(({ event }) => event.type !== 'tool.output' && event.type !== 'message.delta');
+          const hidden = group.rows.length - details.length;
+          return (
+            <details className={`trace-group ${group.failures ? 'error' : ''}`} key={group.id}>
+              <summary>
+                <span className={`trace-dot ${group.terminal === 'completed' ? 'success' : group.terminal === 'failed' ? 'danger' : ''}`} />
+                <span className="trace-group-copy">
+                  <strong>{group.iteration ? `第 ${group.iteration} 轮` : '任务准备'}</strong>
+                  <small>{groupSummary(group)}</small>
+                </span>
+                <span className="trace-metrics">
+                  {group.failures > 0 && <b>{group.failures} 失败</b>}
+                  {typeof group.inputTokens === 'number' && <span>{Math.round(group.inputTokens / 100) / 10}k token</span>}
+                  {typeof group.durationMs === 'number' && <span>{Math.round(group.durationMs / 100) / 10}s</span>}
+                </span>
+              </summary>
+              <div className="trace-group-detail">
+                {details.map((row) => (
+                  <div className="trace-row" key={row.id}>
+                    <span className={`trace-dot ${row.event.type.includes('failed') ? 'danger' : row.event.type.includes('completed') ? 'success' : ''}`} />
+                    <span className="truncate">{label(row)}</span>
+                    <time>{timeLabel(row.event.timestamp)}</time>
+                  </div>
+                ))}
+                {hidden > 0 && <div className="trace-hidden">已收起 {hidden} 条流式输出；完整内容仍保留在会话记录中。</div>}
+              </div>
+            </details>
+          );
+        })}
         {children.map((child) => (
           <div className="trace-child" key={child.id}>
             <Users size={13} />
             <span>{child.role} · {child.status} · {child.iteration ?? 0} 轮 · {Math.round((child.durationMs ?? 0) / 100) / 10}s</span>
           </div>
         ))}
-        {!rows.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}
+        {!groups.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}
       </div>
     </div>
   );
