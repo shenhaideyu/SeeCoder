@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OpenAICompatibleProvider } from './index';
+import { OpenAICompatibleProvider, serializeModelMessages } from './index';
 
 describe('OpenAICompatibleProvider', () => {
+  it('serializes tool messages to the Chat Completions wire format', () => {
+    expect(serializeModelMessages([
+      { role: 'assistant', content: '', toolCalls: [{ id: 'call-1', name: 'read_file', arguments: '{"path":"a.ts"}' }] },
+      { role: 'tool', content: '{"ok":true}', toolCallId: 'call-1', toolName: 'read_file' },
+    ])).toEqual([
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+      { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1', name: 'read_file' },
+    ]);
+  });
+
   it('reassembles streamed text and tool calls', async () => {
     process.env.SEECODER_TEST_KEY = 'test-key';
     const data = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;

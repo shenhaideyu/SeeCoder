@@ -1,4 +1,4 @@
-import type { ModelEvent, ModelMessage, ModelProvider, ModelRequest } from '@seecoder/protocol';
+import type { ContentBlock, ModelEvent, ModelMessage, ModelProvider, ModelRequest } from '@seecoder/protocol';
 
 export interface ModelConfig {
   baseUrl: string;
@@ -26,6 +26,32 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+type OpenAIMessage = {
+  role: ModelMessage['role'];
+  content: string | Array<Record<string, unknown>>;
+  tool_call_id?: string;
+  name?: string;
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+};
+
+function serializeContent(content: ModelMessage['content']): OpenAIMessage['content'] {
+  if (typeof content === 'string') return content;
+  return content.map((block: ContentBlock) => block.type === 'text'
+    ? { type: 'text', text: block.text }
+    : { type: 'image_url', image_url: { url: block.data } });
+}
+
+/** 将内部 camelCase 消息转换为 Chat Completions 的 snake_case 消息格式。 */
+export function serializeModelMessages(messages: ModelMessage[]): OpenAIMessage[] {
+  return messages.map((message) => {
+    const output: OpenAIMessage = { role: message.role, content: serializeContent(message.content) };
+    if (message.toolCallId) output.tool_call_id = message.toolCallId;
+    if (message.toolName) output.name = message.toolName;
+    if (message.toolCalls?.length) output.tool_calls = message.toolCalls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }));
+    return output;
+  });
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
   constructor(private readonly config: ModelConfig) {}
 
@@ -38,7 +64,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     const body = {
       model: this.config.model || request.model,
-      messages: request.messages,
+      messages: serializeModelMessages(request.messages),
       tools: request.tools,
       temperature: this.config.temperature,
       max_tokens: this.config.maxOutputTokens,
