@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
 import { existsSync } from 'node:fs';
 import { appendFile, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentCore } from '@seecoder/agent-core';
 import { OpenAICompatibleProvider, type ModelConfig } from '@seecoder/model';
@@ -54,6 +54,11 @@ const modelConfig: ModelConfig = {
 };
 const storeRoot = () => join(app.getPath('userData'), 'sessions-data');
 const settingsPath = () => join(app.getPath('userData'), 'config', 'settings.json');
+const sameWorkspace = (left: string, right: string): boolean => {
+  const a = resolve(left);
+  const b = resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+};
 const toolRegistry = new ToolRegistry();
 const send = (event: AgentEvent): void => { mainWindow?.webContents.send('seecoder:event', event); };
 
@@ -80,11 +85,22 @@ const textArg = (value: unknown, name: string, max = 100_000): string => {
 const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 function commandContext(onOutput?: ToolContext['onOutput']): ToolContext { return onOutput ? { workspace, onOutput } : { workspace }; }
 async function runWorkspaceCommand(command: string, cwd = workspace, timeoutMs = 30_000, onOutput?: ToolContext['onOutput']) {
-  const resolved = await new WorkspacePolicy(workspace).path(cwd);
-  return commandRunner(command, resolved, commandContext(onOutput), timeoutMs);
+  const commandName = command.trim().split(/\s+/)[0]?.slice(0, 40) || 'unknown';
+  const started = Date.now();
+  logger.write('INFO', 'workspace.command.started', { command: commandName, cwd });
+  try {
+    const resolved = await new WorkspacePolicy(workspace).path(cwd);
+    const result = await commandRunner(command, resolved, commandContext(onOutput), timeoutMs);
+    logger.write(result.ok ? 'INFO' : 'WARN', 'workspace.command.completed', { command: commandName, ok: result.ok, durationMs: Date.now() - started, error: result.error?.code });
+    return result;
+  } catch (error) {
+    logger.write('WARN', 'workspace.command.rejected', { command: commandName, durationMs: Date.now() - started, message: error instanceof Error ? error.message : '命令被拒绝' });
+    throw error;
+  }
 }
 
 interface PersistedSettings {
+  workspace?: string;
   model?: string;
   baseUrl?: string;
   contextWindow?: number;
@@ -109,6 +125,7 @@ function decryptApiKey(value: string): string {
 async function loadPersistedSettings(): Promise<void> {
   try {
     const value = JSON.parse(await readFile(settingsPath(), 'utf8')) as PersistedSettings;
+    if (typeof value.workspace === 'string' && existsSync(value.workspace)) workspace = value.workspace;
     if (typeof value.model === 'string' && value.model.length <= 200) modelConfig.model = value.model;
     if (typeof value.baseUrl === 'string' && value.baseUrl.length <= 1000) modelConfig.baseUrl = value.baseUrl;
     if (typeof value.contextWindow === 'number') modelConfig.contextWindow = Math.max(8_000, Math.min(1_000_000, value.contextWindow));
@@ -148,7 +165,7 @@ async function savePersistedSettings(options: { apiKey?: string; clearApiKey?: b
     if (apiKeySource === 'os') delete process.env[modelConfig.apiKeyEnv];
     apiKeySource = process.env[modelConfig.apiKeyEnv] ? 'environment' : 'none';
   }
-  const payload: PersistedSettings = { model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, ...(persistedApiKeyEncrypted ? { apiKeyEncrypted: persistedApiKeyEncrypted } : {}) };
+  const payload: PersistedSettings = { workspace, model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, ...(persistedApiKeyEncrypted ? { apiKeyEncrypted: persistedApiKeyEncrypted } : {}) };
   await writeFile(temporary, JSON.stringify(payload, null, 2), 'utf8');
   await rename(temporary, target);
 }
@@ -178,6 +195,7 @@ function startScheduleLoop(): void {
       const list = await readSchedules();
       let changed = false;
       for (const item of list) {
+        if (!sameWorkspace(item.projectPath, workspace)) continue;
         if (!item.enabled || item.cadence === 'manual' || runningSchedules.has(item.id)) continue;
         if (item.nextRunAt && Date.parse(item.nextRunAt) > nowMs) continue;
         runningSchedules.add(item.id);
@@ -223,7 +241,16 @@ function registerMenu(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('workspace:select', async () => { const selected = await selectWorkspace(); if (!selected) return { cancelled: true }; workspace = selected; createCore(); return { cancelled: false, workspace }; });
+  ipcMain.handle('workspace:select', async () => {
+    const selected = await selectWorkspace();
+    if (!selected) return { cancelled: true };
+    core.cancelAll();
+    workspace = selected;
+    await savePersistedSettings();
+    createCore();
+    logger.write('INFO', 'workspace.changed', { workspace });
+    return { cancelled: false, workspace };
+  });
   ipcMain.handle('workspace:open', async () => { await shell.openPath(workspace); return workspace; });
   ipcMain.handle('thread:create', async (_event, title?: string) => core.createThread(typeof title === 'string' && title.length <= 120 ? title : undefined));
   ipcMain.handle('thread:list', async () => (await core.listThreads()).map((thread) => ({ ...thread, pinned: thread.pinned ?? false, archived: thread.archived ?? false, unread: thread.unread ?? false })));
@@ -264,10 +291,10 @@ function registerIpc(): void {
   });
   ipcMain.handle('preview:open', async (_event, url: string) => { const target = textArg(url, 'url', 1000); if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(`${target}/`)) throw new Error('Preview 只允许 localhost 地址'); await shell.openExternal(target); return target; });
   ipcMain.handle('extension:list', async () => listExtensions());
-  ipcMain.handle('schedule:list', async () => readSchedules());
-  ipcMain.handle('schedule:save', async (_event, input: ScheduleDefinition) => { const list = await readSchedules(); const nextAt = input.enabled ? (input.nextRunAt ?? nextScheduleAt(input.cadence)) : undefined; const value: ScheduleDefinition = { ...input, ...(nextAt ? { nextRunAt: nextAt } : {}) }; const next = [...list.filter((item) => item.id !== input.id), value]; await saveSchedules(next); return next; });
+  ipcMain.handle('schedule:list', async () => (await readSchedules()).filter((item) => sameWorkspace(item.projectPath, workspace)));
+  ipcMain.handle('schedule:save', async (_event, input: ScheduleDefinition) => { if (!input || !sameWorkspace(input.projectPath, workspace)) throw new Error('计划任务必须属于当前工作区'); const list = await readSchedules(); const nextAt = input.enabled ? (input.nextRunAt ?? nextScheduleAt(input.cadence)) : undefined; const value: ScheduleDefinition = { ...input, ...(nextAt ? { nextRunAt: nextAt } : {}) }; const next = [...list.filter((item) => item.id !== input.id), value]; await saveSchedules(next); return next; });
   ipcMain.handle('schedule:toggle', async (_event, id: string, enabled: boolean) => { const list = await readSchedules(); const next = list.map((item) => item.id === id ? { ...item, enabled } : item); await saveSchedules(next); return next; });
-  ipcMain.handle('schedule:run', async (_event, id: string) => { const item = (await readSchedules()).find((value) => value.id === id); if (!item) throw new Error('计划不存在'); const thread = (await core.listThreads()).find((value) => value.workspacePath === item.projectPath) ?? await core.createThread(`计划：${item.prompt.slice(0, 40)}`); return core.startTurn(thread.id, item.prompt, 'plan'); });
+  ipcMain.handle('schedule:run', async (_event, id: string) => { const item = (await readSchedules()).find((value) => value.id === id); if (!item) throw new Error('计划不存在'); if (!sameWorkspace(item.projectPath, workspace)) throw new Error('该计划属于其他工作区，请先切换工作区'); const thread = (await core.listThreads()).find((value) => sameWorkspace(value.workspacePath, item.projectPath)) ?? await core.createThread(`计划：${item.prompt.slice(0, 40)}`); return core.startTurn(thread.id, item.prompt, 'plan'); });
   ipcMain.handle('settings:read', async () => ({ workspace, mode: core.getMode(), model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, hasApiKey: Boolean(process.env[modelConfig.apiKeyEnv]), keyStorage: apiKeySource, logPath: join(app.getPath('userData'), 'logs', 'main.log') }));
   ipcMain.handle('settings:update', async (_event, next: { mode?: ExecutionMode; model?: string; baseUrl?: string; contextWindow?: number; maxOutputTokens?: number; apiKey?: string; clearApiKey?: boolean }) => {
     const input = next && typeof next === 'object' ? next : {};

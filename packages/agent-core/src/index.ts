@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { estimateTokens, type ModelConfig } from '@seecoder/model';
 import type { ModelMessage, ModelProvider, AgentEvent, Approval, AttachmentRef, ChangeSet, Checkpoint, ContentBlock, Item, PlanStep, Thread, ToolCall, ToolResult, Turn, SubagentRole, SubagentState, ExecutionMode, ReviewFinding } from '@seecoder/protocol';
 import type { SessionStore } from '@seecoder/storage';
@@ -43,6 +44,10 @@ export class ContextLedger {
 
 const now = () => new Date().toISOString();
 const itemId = () => randomUUID();
+const workspaceKey = (value: string): string => {
+  const normalized = resolvePath(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+};
 
 const schemas: Record<string, unknown> = {
   list_files: { type: 'object', properties: { path: { type: 'string' }, depth: { type: 'integer' } } },
@@ -125,9 +130,14 @@ export class AgentCore {
     await this.emit({ type: 'user.input.resolved', timestamp: now(), turnId: pending.turnId, requestId, answer: answer.slice(0, 10_000) });
   }
 
-  async listThreads(): Promise<Thread[]> { return this.options.store.listThreads(); }
+  async listThreads(): Promise<Thread[]> {
+    const current = workspaceKey(this.options.workspace);
+    return (await this.options.store.listThreads()).filter((thread) => workspaceKey(thread.workspacePath) === current);
+  }
 
   async readThreadEvents(threadId: string): Promise<AgentEvent[]> {
+    const thread = this.threads.get(threadId) ?? await this.options.store.readThread(threadId);
+    if (!thread || workspaceKey(thread.workspacePath) !== workspaceKey(this.options.workspace)) return [];
     return (await this.options.store.readEvents(threadId)).map((record) => record.event);
   }
 
@@ -176,7 +186,7 @@ export class AgentCore {
 
   async hydrateThread(threadId: string): Promise<Thread | null> {
     const thread = await this.options.store.readThread(threadId);
-    if (!thread) return null;
+    if (!thread || workspaceKey(thread.workspacePath) !== workspaceKey(this.options.workspace)) return null;
     this.threads.set(threadId, thread);
     const ledger = this.ledgers.get(threadId) ?? new ContextLedger();
     this.ledgers.set(threadId, ledger);
@@ -240,6 +250,14 @@ export class AgentCore {
   cancelTurn(turnId: string): void {
     this.controllers.get(turnId)?.abort();
     for (const controller of this.children.values()) controller.abort();
+  }
+
+  /** 工作区切换或窗口关闭时取消所有未完成执行，避免旧工作区继续写入。 */
+  cancelAll(): void {
+    for (const controller of this.controllers.values()) controller.abort();
+    for (const controller of this.children.values()) controller.abort();
+    for (const pending of this.approvals.values()) pending.resolve({ allow: false, reason: '工作区已切换' });
+    this.approvals.clear();
   }
 
   private async emit(event: AgentEvent, item?: Item): Promise<void> {
