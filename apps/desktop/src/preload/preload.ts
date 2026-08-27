@@ -2,7 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { AgentEvent, AttachmentRef, ExecutionMode, ScheduleDefinition } from '@seecoder/protocol';
 
 const api = {
-  workspace: { select: () => ipcRenderer.invoke('workspace:select'), open: () => ipcRenderer.invoke('workspace:open') },
+  workspace: {
+    select: () => ipcRenderer.invoke('workspace:select'),
+    list: () => ipcRenderer.invoke('workspace:list'),
+    switch: (workspace: string) => ipcRenderer.invoke('workspace:switch', workspace),
+    open: () => ipcRenderer.invoke('workspace:open'),
+  },
   thread: {
     create: (title?: string) => ipcRenderer.invoke('thread:create', title), list: () => ipcRenderer.invoke('thread:list'), hydrate: (threadId: string) => ipcRenderer.invoke('thread:hydrate', threadId), history: (threadId: string) => ipcRenderer.invoke('thread:history', threadId),
     rename: (threadId: string, title: string) => ipcRenderer.invoke('thread:rename', threadId, title), flag: (threadId: string, flag: 'pinned' | 'archived') => ipcRenderer.invoke('thread:flag', threadId, flag), fork: (threadId: string) => ipcRenderer.invoke('thread:fork', threadId), search: (query: string) => ipcRenderer.invoke('thread:search', query), export: (threadId: string, format: 'markdown' | 'json') => ipcRenderer.invoke('thread:export', threadId, format),

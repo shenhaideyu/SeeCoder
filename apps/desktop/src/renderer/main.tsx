@@ -75,7 +75,12 @@ const previewThread: Thread = {
 };
 const previewResult = (output: unknown) => Promise.resolve({ ok: true, output, durationMs: 0 });
 const previewApi: SeeCoderApi = {
-  workspace: { select: async () => ({ cancelled: true }), open: async () => 'Preview' },
+  workspace: {
+    select: async () => ({ cancelled: true }),
+    list: async () => ({ current: 'Preview', recent: ['Preview'] }),
+    switch: async (workspace: string) => ({ workspace }),
+    open: async () => 'Preview',
+  },
   thread: {
     create: async (title?: string) => ({
       ...previewThread,
@@ -298,7 +303,14 @@ const useStore = create<UiState>((set) => ({
         event.type === 'turn.failed' ||
         event.type === 'turn.cancelled'
       )
-        return { events: next, running: false, streamingText: '', currentTurnId: undefined };
+        return {
+          events: next,
+          running: false,
+          streamingText: '',
+          currentTurnId: undefined,
+          approvals: state.approvals.filter((item) => item.turnId !== event.turn.id),
+          inputRequests: state.inputRequests.filter((item) => item.turnId !== event.turn.id),
+        };
       return { events: next };
     }),
 }));
@@ -425,6 +437,7 @@ function App(): React.JSX.Element {
   const set = state.set;
   const addEvent = state.addEvent;
   const [workspace, setWorkspace] = useState('未选择工作区');
+  const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
   const [page, setPage] = useState<
     'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about'
   >('task');
@@ -453,6 +466,8 @@ function App(): React.JSX.Element {
     void (async () => {
       const settings = await window.seecoder.settings.read();
       setWorkspace(settings.workspace);
+      const workspaceList = await window.seecoder.workspace.list();
+      setRecentWorkspaces(workspaceList.recent);
       set({ mode: settings.mode, model: settings.model });
       const list = (await window.seecoder.thread.list()) as Thread[];
       if (list.length) {
@@ -543,23 +558,27 @@ function App(): React.JSX.Element {
       workspace?: string;
     };
     if (!selected.cancelled && selected.workspace) {
-      setWorkspace(selected.workspace);
-      const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
-      const created = (await window.seecoder.thread.create('新工作区任务')) as Thread;
-      set({
-        threads: [created, ...workspaceThreads.filter((thread) => thread.id !== created.id)],
-        selectedThread: created,
-        events: [],
-        approvals: [],
-        inputRequests: [],
-        plans: [],
-        changes: [],
-        children: [],
-        terminal: [],
-        reviewFindings: [],
-      });
-      setPage('task');
+      await loadWorkspace(selected.workspace);
     }
+  }
+  async function switchRecentWorkspace(nextWorkspace: string): Promise<void> {
+    if (nextWorkspace === workspace) return;
+    const selected = await window.seecoder.workspace.switch(nextWorkspace);
+    await loadWorkspace(selected.workspace);
+  }
+  async function loadWorkspace(nextWorkspace: string): Promise<void> {
+    setWorkspace(nextWorkspace);
+    const workspaceList = await window.seecoder.workspace.list();
+    setRecentWorkspaces(workspaceList.recent);
+    const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
+    const selected = workspaceThreads[0] ?? (await window.seecoder.thread.create('新工作区任务')) as Thread;
+    set({
+      threads: workspaceThreads.length ? workspaceThreads : [selected],
+      selectedThread: selected,
+      events: [], approvals: [], inputRequests: [], plans: [], changes: [], children: [], terminal: [], reviewFindings: [], streamingText: '', running: false, currentTurnId: undefined,
+    });
+    await loadThread(selected);
+    setPage('task');
   }
   async function send(): Promise<void> {
     const text = composer.trim();
@@ -758,12 +777,14 @@ function App(): React.JSX.Element {
     <div className={`app-shell ${theme}`}>
       <Sidebar
         workspace={workspace}
+        recentWorkspaces={recentWorkspaces}
         page={page}
         setPage={setPage}
         threads={visibleThreads}
         selectedThread={selectedThread}
         onThread={selectThread}
         onWorkspace={chooseWorkspace}
+        onWorkspaceSwitch={switchRecentWorkspace}
         onNew={newThread}
         search={search}
         setSearch={setSearch}
@@ -898,12 +919,14 @@ function App(): React.JSX.Element {
 
 function Sidebar({
   workspace,
+  recentWorkspaces,
   page,
   setPage,
   threads,
   selectedThread,
   onThread,
   onWorkspace,
+  onWorkspaceSwitch,
   onNew,
   search,
   setSearch,
@@ -911,6 +934,7 @@ function Sidebar({
   onTheme,
 }: {
   workspace: string;
+  recentWorkspaces: string[];
   page: string;
   setPage: (
     page: 'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about',
@@ -919,12 +943,14 @@ function Sidebar({
   selectedThread: Thread | undefined;
   onThread: (thread: Thread) => void;
   onWorkspace: () => void;
+  onWorkspaceSwitch: (workspace: string) => void;
   onNew: () => void;
   search: string;
   setSearch: (value: string) => void;
   onNotify: () => void;
   onTheme: () => void;
 }): React.JSX.Element {
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const nav = [
     ['pulls', '拉取请求', GitBranch],
     ['sites', '站点 / 预览', ExternalLink],
@@ -966,11 +992,26 @@ function Sidebar({
           <span className="notification-dot" />
         </button>
       </div>
-      <button className="workspace-button" data-action="choose-workspace" onClick={onWorkspace}>
+      <div className="workspace-switcher">
+      <button className="workspace-button" data-action="workspace-menu" aria-expanded={workspaceMenuOpen} title={workspace} onClick={() => setWorkspaceMenuOpen((value) => !value)}>
         <FolderOpen size={16} />
-        <span className="truncate">{workspace.split(/[\\/]/).pop()}</span>
+        <span className="workspace-button-label"><strong className="truncate">{workspace.split(/[\\/]/).pop()}</strong><small className="truncate">{workspace}</small></span>
         <ChevronDown size={14} />
       </button>
+      {workspaceMenuOpen && (
+        <div className="workspace-menu" role="menu">
+          <div className="workspace-menu-title">工作区</div>
+          {recentWorkspaces.map((item) => (
+            <button key={item} role="menuitem" data-action="switch-workspace" className={`workspace-option ${item === workspace ? 'active' : ''}`} title={item} onClick={() => { setWorkspaceMenuOpen(false); onWorkspaceSwitch(item); }}>
+              <FolderOpen size={14} /><span><strong className="truncate">{item.split(/[\\/]/).pop()}</strong><small className="truncate">{item}</small></span>{item === workspace && <Check size={13} />}
+            </button>
+          ))}
+          <button className="workspace-option browse" role="menuitem" data-action="choose-workspace" onClick={() => { setWorkspaceMenuOpen(false); onWorkspace(); }}>
+            <Plus size={14} /><span><strong>添加工作区…</strong><small>选择本地项目文件夹</small></span>
+          </button>
+        </div>
+      )}
+      </div>
       <button className="new-task" data-action="new-task" onClick={onNew}>
         <Plus size={16} />
         新建任务<span className="shortcut">Ctrl N</span>
@@ -1128,6 +1169,14 @@ function TaskPage({
   const failure = latestTurnResult?.event.type === 'turn.failed'
     ? friendlyAgentError(latestTurnResult.event.error.message)
     : undefined;
+  const conversationRef = useRef<HTMLElement>(null);
+  const autoFollowRef = useRef(true);
+  useEffect(() => {
+    const container = conversationRef.current;
+    if (!container || !autoFollowRef.current) return;
+    const frame = window.requestAnimationFrame(() => container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversationRecords.length, streamingText, approvals.length, inputRequests.length, running]);
   return (
     <>
       <header className="topbar">
@@ -1179,7 +1228,14 @@ function TaskPage({
           </button>
         </div>
       </header>
-      <section className="conversation">
+      <section
+        ref={conversationRef}
+        className="conversation"
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          autoFollowRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+        }}
+      >
         {!hasConversation && <div className="welcome">
           <div className="welcome-orb">
             <Sparkles size={23} />
@@ -1477,6 +1533,22 @@ function ActivityCard({
     </div>
   );
 }
+function approvalPresentation(approval: Approval): { title: string; summary: string; preview?: string } {
+  const args = approval.call.args && typeof approval.call.args === 'object' ? approval.call.args as Record<string, unknown> : {};
+  if (approval.call.name === 'run_command') return { title: '运行命令', summary: String(args.cwd ?? '工作区根目录'), preview: String(args.command ?? '') };
+  if (approval.call.name === 'write_file') {
+    const content = String(args.content ?? '');
+    return { title: '写入文件', summary: `${String(args.path ?? '未知文件')} · ${content.length} 个字符` };
+  }
+  if (approval.call.name === 'apply_patch') {
+    const patch = String(args.patch ?? '');
+    const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]).filter(Boolean);
+    return { title: '应用代码修改', summary: files.length ? files.join('、') : '修改工作区文件', preview: patch.slice(0, 1200) };
+  }
+  const presentation = toolPresentation[approval.call.name];
+  return { title: presentation?.label ?? approval.call.name, summary: approval.reason };
+}
+
 function ApprovalCard({
   approval,
   onResolve,
@@ -1484,6 +1556,7 @@ function ApprovalCard({
   approval: Approval;
   onResolve: (decision: 'allow' | 'deny') => void;
 }): React.JSX.Element {
+  const presentation = approvalPresentation(approval);
   return (
     <div className="approval-card">
       <div className="approval-top">
@@ -1491,20 +1564,18 @@ function ApprovalCard({
           <ShieldCheck size={16} />
         </div>
         <div>
-          <strong>需要你的确认</strong>
-          <span>
-            {approval.call.name} · {approval.reason}
-          </span>
+          <strong>{presentation.title}</strong>
+          <span>{presentation.summary}</span>
         </div>
         <span className={`risk ${approval.risk}`}>
           {approval.risk === 'high' ? '高风险' : approval.risk === 'medium' ? '中风险' : '低风险'}
         </span>
       </div>
-      <div className="approval-code">
-        <code>
-          {approval.call.name}({JSON.stringify(approval.call.args)})
-        </code>
-      </div>
+      {presentation.preview && <pre className="approval-code">{presentation.preview}</pre>}
+      <details className="approval-details">
+        <summary>查看技术详情</summary>
+        <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
+      </details>
       <div className="approval-actions">
         <button className="deny" data-action="deny-approval" onClick={() => onResolve('deny')}>
           <X size={14} />
