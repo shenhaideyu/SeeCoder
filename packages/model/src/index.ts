@@ -9,7 +9,11 @@ export interface ModelConfig {
   maxOutputTokens: number;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+  const onAbort = () => { clearTimeout(timer); reject(new Error('模型重试已取消')); };
+  signal.addEventListener('abort', onAbort, { once: true });
+});
 
 function parseJsonLine(line: string): Record<string, unknown> | null {
   const value = line.trim();
@@ -89,7 +93,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           const retryable = [429, 502, 503, 504].includes(response.status);
           if (retryable && attempt < 2) {
             yield { type: 'retry', attempt: attempt + 1 };
-            await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
+            await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100), signal);
             continue;
           }
           yield { type: 'error', code: `http_${response.status}`, message, retryable };
@@ -167,7 +171,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
         if (attempt < 2) {
           yield { type: 'retry', attempt: attempt + 1 };
-          await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
+          await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100), signal);
           continue;
         }
         yield {

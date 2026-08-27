@@ -163,13 +163,15 @@ function applyFilePatch(before: string, file: PatchFile): string {
   return source.join('\n');
 }
 
-async function collectFiles(root: string, current: string, output: string[], depth: number, max: number): Promise<void> {
+async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error('操作已取消');
   if (output.length >= max || depth < 0) return;
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
-    if (output.length >= max || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name) || isSensitivePath(entry.name)) continue;
+    if (signal?.aborted) throw new Error('操作已取消');
+    if (output.length >= max || entry.isSymbolicLink() || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name) || isSensitivePath(entry.name)) continue;
     const full = join(current, entry.name);
-    if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max);
+    if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max, signal);
     else output.push(relative(root, full));
   }
 }
@@ -224,7 +226,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       parameters: z.object({ path: z.string().optional(), depth: z.number().int().min(0).max(5).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path?: string; depth?: number };
-        try { const path = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, path, files, args.depth ?? 2, 200); return result(true, files, Date.now() - started); }
+        try { const path = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal); return result(true, files, Date.now() - started); }
         catch (error) { return result(false, undefined, Date.now() - started, { code: 'path_denied', message: error instanceof Error ? error.message : '路径无效' }); }
       },
     },
@@ -243,6 +245,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { paths: string[] }; const outputs: Array<{ path: string; text?: string; error?: string }> = [];
         for (const input of args.paths) {
+          if (context.signal?.aborted) return result(false, outputs, Date.now() - started, { code: 'cancelled', message: '批量读取已取消' });
           try { const path = await new WorkspacePolicy(context.workspace).path(input); const text = await readFile(path, 'utf8'); outputs.push({ path: relative(context.workspace, path), text: text.split(/\r?\n/).slice(0, 400).join('\n') }); }
           catch (error) { outputs.push({ path: input, error: error instanceof Error ? error.message : '读取失败' }); }
         }
@@ -253,7 +256,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       name: 'search_text', description: '在工作区文本文件中搜索字符串或正则', sideEffect: false, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
-        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
       },
     },
     {

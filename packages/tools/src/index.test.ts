@@ -39,6 +39,16 @@ describe('WorkspacePolicy', () => {
 });
 
 describe('file tools', () => {
+  it('stops a workspace search when the task is cancelled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-search-cancel-'));
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const tool = new ToolRegistry().get('search_text');
+      await expect(tool!.execute({ query: 'anything' }, { workspace: root, signal: controller.signal })).rejects.toThrow('操作已取消');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('writes atomically and returns a change record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-tools-'));
     try {

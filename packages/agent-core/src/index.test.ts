@@ -49,6 +49,30 @@ describe('AgentCore', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('cancels a turn waiting for approval without leaving a zombie task', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-cancel-'));
+    try {
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'cancel-write', name: 'write_file', argsDelta: '{"path":"blocked.txt","content":"no"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '已重新开始。' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'guided' });
+      let turnId = '';
+      const approval = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'approval.requested') resolve(); }));
+      const cancelled = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.cancelled') resolve(); }));
+      const thread = await core.createThread('取消审批');
+      turnId = await core.startTurn(thread.id, '写文件');
+      await approval;
+      await expect(core.startTurn(thread.id, '并发任务')).rejects.toThrow('已有执行中的 Turn');
+      core.cancelTurn(turnId);
+      await cancelled;
+      await expect(readFile(join(root, 'blocked.txt'), 'utf8')).rejects.toThrow();
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+      await expect(core.startTurn(thread.id, '取消后可再次执行')).resolves.toBeTypeOf('string');
+      await completed;
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('can restore a recorded ChangeSet', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-revert-'));
     try {
