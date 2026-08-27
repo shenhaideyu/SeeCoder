@@ -92,3 +92,4 @@ button { color: inherit; border: 0; cursor: pointer; }
 @media (max-width: 1220px) { .app-shell { grid-template-columns: 220px minmax(520px, 1fr) 350px; }.conversation, .composer-wrap { padding-right: 35px; padding-left: 35px; } }
 .revert-button { display: grid; place-items: center; margin-left: 4px; padding: 3px; border-radius: 5px; color: var(--faint); background: transparent; }
 .revert-button:hover { color: var(--warning); background: rgba(242,184,75,.1); }
+.terminal-empty { display: grid; place-items: center; height: 260px; color: var(--faint); font: 10px ui-monospace, monospace; }

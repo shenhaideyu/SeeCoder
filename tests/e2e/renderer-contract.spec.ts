@@ -9,5 +9,6 @@ test('Renderer contract contains the three-pane SeeCoder surface', async () => {
   expect(source).toContain('Terminal');
   expect(source).toContain('Trace');
   expect(source).toContain('approval.requested');
+  expect(source).toContain('DiffEditor');
+  expect(source).toContain('XTerm');
 });
-

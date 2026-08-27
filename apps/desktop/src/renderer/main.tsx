@@ -1,6 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { create } from 'zustand';
+import { DiffEditor } from '@monaco-editor/react';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal as XTerm } from '@xterm/xterm';
+import '@xterm/xterm/css/xterm.css';
 import { Activity, AlertTriangle, Bot, Check, ChevronDown, ChevronRight, CircleDot, Code2, Command, FolderOpen, GitBranch, History, ListChecks, Loader2, MessageSquare, PanelRight, Plus, RotateCcw, Search, Send, Settings2, ShieldCheck, Sparkles, Square, Terminal, Users, X, Zap } from 'lucide-react';
 import type { AgentEvent, Approval, ChangeSet, PlanStep, SubagentState, Thread } from '@seecoder/protocol';
 import type { SeeCoderApi } from '../preload/preload';
@@ -144,10 +148,25 @@ function ActivityCard({ item, expanded, onToggle }: { item: TimelineItem; expand
 function ApprovalCard({ approval, onResolve }: { approval: Approval; onResolve: (decision: 'allow' | 'deny') => void }): React.JSX.Element { return <div className="approval-card"><div className="approval-top"><div className="approval-icon"><ShieldCheck size={16} /></div><div><strong>需要你的确认</strong><span>{approval.call.name} · {approval.reason}</span></div><span className={`risk ${approval.risk}`}>{approval.risk === 'high' ? '高风险' : approval.risk === 'medium' ? '中风险' : '低风险'}</span></div><div className="approval-code"><code>{approval.call.name}({JSON.stringify(approval.call.args)})</code></div><div className="approval-actions"><button className="deny" onClick={() => onResolve('deny')}><X size={14} />拒绝</button><button className="allow" onClick={() => onResolve('allow')}><Check size={14} />允许一次</button></div></div>; }
 
 function InspectorContent({ type, changes, terminal, children, workspace, events, onRevert }: { type: string; changes: ChangeSet[]; terminal: string[]; children: SubagentState[]; workspace: string; events: TimelineItem[]; onRevert: (changeSetId: string) => void }): React.JSX.Element {
-  if (type === 'terminal') return <div className="inspector-body terminal-body"><div className="panel-title"><span>执行输出</span><span className="live-dot">● LIVE</span></div><pre className="terminal-output">{terminal.length ? terminal.join('') : '等待命令执行…'}</pre></div>;
+  if (type === 'terminal') return <div className="inspector-body terminal-body"><div className="panel-title"><span>执行输出</span><span className="live-dot">● LIVE</span></div>{terminal.length ? <TerminalView lines={terminal} /> : <div className="terminal-empty">等待命令执行…</div>}</div>;
   if (type === 'files') return <div className="inspector-body"><div className="panel-title">工作区上下文</div><div className="workspace-card"><FolderOpen size={18} /><div><strong>{workspace.split(/[\\/]/).pop()}</strong><span className="truncate">{workspace}</span></div></div><div className="file-stat"><span>工具事件</span><strong>{events.filter((item) => item.type.startsWith('tool.')).length}</strong></div><div className="file-stat"><span>变更文件</span><strong>{changes.reduce((sum, item) => sum + item.files.length, 0)}</strong></div><div className="hint-box"><Search size={15} /><span>SeeCoder 会优先搜索相关文件，再逐步加载上下文。</span></div></div>;
   if (type === 'trace') return <div className="inspector-body"><div className="panel-title">执行轨迹<span className="panel-sub">事件流</span></div><div className="trace-list">{events.slice(-30).map((item) => <div className="trace-row" key={item.id}><span className={`trace-dot ${item.type.includes('failed') ? 'danger' : item.type.includes('completed') ? 'success' : ''}`} /><span className="truncate">{item.type}</span><time>{timeLabel(item.event.timestamp)}</time></div>)}{children.map((child) => <div className="trace-child" key={child.id}><Users size={13} /><span>{child.role} · {child.status}</span></div>)}</div></div>;
-  return <div className="inspector-body"><div className="panel-title">变更预览<span className="panel-sub">{changes.length} 个 ChangeSet</span></div>{changes.length === 0 ? <div className="empty-panel"><div className="empty-icon"><GitBranch size={18} /></div><strong>还没有变更</strong><span>Agent 修改文件后，Diff 会出现在这里。</span></div> : changes.map((change) => <div className="change-card" key={change.id}><div className="change-heading"><span className="change-dot" />ChangeSet <code>{change.id.slice(0, 8)}</code><span className="change-time">{timeLabel(change.createdAt)}</span><button className="revert-button" title="撤销本轮修改" onClick={() => onRevert(change.id)}><RotateCcw size={12} /></button></div>{change.files.map((file) => <div className="diff-file" key={file.path}><div className="diff-file-name"><Code2 size={13} />{file.path}</div><div className="diff-lines">{(file.after ?? '').split('\n').slice(0, 12).map((line, index) => <div className="diff-line add" key={`${index}-${line}`}><span>+</span>{line || ' '}</div>)}</div></div>)}</div>)}</div>;
+  return <div className="inspector-body"><div className="panel-title">变更预览<span className="panel-sub">{changes.length} 个 ChangeSet</span></div>{changes.length === 0 ? <div className="empty-panel"><div className="empty-icon"><GitBranch size={18} /></div><strong>还没有变更</strong><span>Agent 修改文件后，Diff 会出现在这里。</span></div> : changes.map((change) => <div className="change-card" key={change.id}><div className="change-heading"><span className="change-dot" />ChangeSet <code>{change.id.slice(0, 8)}</code><span className="change-time">{timeLabel(change.createdAt)}</span><button className="revert-button" title="撤销本轮修改" onClick={() => onRevert(change.id)}><RotateCcw size={12} /></button></div>{change.files.map((file) => <div className="diff-file" key={file.path}><div className="diff-file-name"><Code2 size={13} />{file.path}</div><DiffEditor height="180px" language={languageFor(file.path)} theme="vs-dark" original={file.before ?? ''} modified={file.after ?? ''} options={{ readOnly: true, minimap: { enabled: false }, renderSideBySide: false, lineNumbers: 'on', padding: { top: 8, bottom: 8 }, scrollbar: { vertical: 'auto' } }} /></div>)}</div>)}</div>;
+}
+
+function languageFor(path: string): string {
+  const extension = path.split('.').pop()?.toLowerCase();
+  return extension === 'ts' || extension === 'tsx' ? 'typescript' : extension === 'js' || extension === 'jsx' ? 'javascript' : extension === 'json' ? 'json' : extension === 'css' ? 'css' : extension === 'md' ? 'markdown' : 'plaintext';
+}
+
+function TerminalView({ lines }: { lines: string[] }): React.JSX.Element {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!container.current) return undefined;
+    const terminal = new XTerm({ convertEol: true, disableStdin: true, cursorBlink: false, fontSize: 11, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', theme: { background: '#0b080e', foreground: '#bfddca', cursor: '#8247d6' } });
+    const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(container.current); fit.fit(); terminal.write(lines.join('')); return () => terminal.dispose();
+  }, [lines]);
+  return <div className="terminal-output" ref={container} />;
 }
 
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
