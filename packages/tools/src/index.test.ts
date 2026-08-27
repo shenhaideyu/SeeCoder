@@ -49,6 +49,18 @@ describe('file tools', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('searches project text without exposing credential files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-search-'));
+    try {
+      await writeFile(join(root, 'public.txt'), 'needle in public code', 'utf8');
+      await writeFile(join(root, '.env'), 'needle=private', 'utf8');
+      const output = await new ToolRegistry().get('search_text')!.execute({ query: 'needle' }, { workspace: root });
+      expect(output.ok).toBe(true);
+      expect(output.output).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'public.txt' })]));
+      expect(JSON.stringify(output.output)).not.toContain('.env');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('writes atomically and returns a change record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-tools-'));
     try {

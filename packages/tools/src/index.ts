@@ -176,6 +176,52 @@ async function collectFiles(root: string, current: string, output: string[], dep
   }
 }
 
+async function searchWithRg(
+  query: string,
+  base: string,
+  workspace: string,
+  glob: string | undefined,
+  max: number,
+  signal?: AbortSignal,
+): Promise<Array<{ path: string; line: number; text: string }> | null> {
+  if (signal?.aborted) throw new Error('操作已取消');
+  return new Promise((resolvePromise, reject) => {
+    const args = ['--line-number', '--no-heading', '--color', 'never', '--max-columns', '300'];
+    if (glob) args.push('--glob', glob);
+    for (const excluded of ['!.env', '!.env.*', '!*.pem', '!*.key', '!*.p12', '!*.pfx', '!*secret*', '!*credential*', '!*token*', '!*apikey*', '!*api_key*']) args.push('--glob', excluded);
+    args.push('--', query, '.');
+    const child = spawn('rg', args, { cwd: base, windowsHide: true });
+    const matches: Array<{ path: string; line: number; text: string }> = [];
+    let buffer = '';
+    let unavailable = false;
+    const onAbort = () => child.kill();
+    const consume = (chunk: string, flush = false) => {
+      buffer += chunk;
+      const lines = buffer.split(/\r?\n/);
+      if (!flush) buffer = lines.pop() ?? '';
+      else buffer = '';
+      for (const line of lines) {
+        const match = line.match(/^(.*?):(\d+):(.*)$/);
+        if (!match || matches.length >= max) continue;
+        matches.push({ path: relative(workspace, resolve(base, match[1]!)), line: Number(match[2]), text: match[3]!.slice(0, 300) });
+      }
+      if (matches.length >= max) child.kill();
+    };
+    child.stdout.on('data', (chunk: Buffer) => consume(chunk.toString('utf8')));
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      unavailable = error.code === 'ENOENT';
+      if (!unavailable) reject(error);
+    });
+    child.on('close', () => {
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted) reject(new Error('操作已取消'));
+      else if (unavailable) resolvePromise(null);
+      else { consume('', true); resolvePromise(matches); }
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export function commandRunner(command: string, cwd: string, context: ToolContext, timeoutMs = 60_000): Promise<ToolResult> {
   const started = Date.now();
   return new Promise((resolvePromise) => {
@@ -256,7 +302,10 @@ export function createToolDefinitions(): ToolDefinition[] {
       name: 'search_text', description: '在工作区文本文件中搜索字符串或正则', sideEffect: false, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
-        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path);
+        const fastMatches = await searchWithRg(args.query, base, context.workspace, args.glob, max, context.signal);
+        if (fastMatches) return result(true, fastMatches, Date.now() - started);
+        const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
       },
     },
     {
