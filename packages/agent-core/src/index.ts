@@ -325,7 +325,7 @@ export class AgentCore {
             await this.emit({ type: 'message.user', timestamp: now(), turnId: turn.id, text: followUp, threadId: turn.threadId });
           }
         }
-        const contextMessages = await this.compactIfNeeded(turn, threadMessages);
+        const contextMessages = (await this.compactMessages(turn, threadMessages, false)).messages;
         const request = { messages: [{ role: 'system' as const, content: await this.systemPrompt(this.turnModes.get(turn.id) ?? this.mode) }, ...contextMessages], tools: this.toolSchemas(), model: this.options.model.model, temperature: this.options.model.temperature, maxOutputTokens: this.options.model.maxOutputTokens };
         const requestStarted = Date.now();
         await this.emit({ type: 'model.requested', timestamp: now(), turnId: turn.id, iteration });
@@ -437,7 +437,10 @@ export class AgentCore {
     else if (call.name === 'ask_user') value = await this.askUser(turn, parsed.data as { question: string; choices?: string[] }, signal);
     else if (call.name === 'checkpoint') value = await this.createCheckpoint(turn);
     else if (call.name === 'review_changes') value = await this.runReview(turn, (parsed.data as { scope?: string }).scope ?? '最近一轮', signal);
-    else if (call.name === 'compact_context') value = { ok: true, output: { compacted: true }, durationMs: 0 };
+    else if (call.name === 'compact_context') {
+      const compacted = await this.compactMessages(turn, this.messages.get(turn.threadId) ?? [], true);
+      value = { ok: true, output: { compacted: compacted.compacted, beforeTokens: compacted.beforeTokens, afterTokens: compacted.afterTokens }, durationMs: 0 };
+    }
     else value = await definition.execute(parsed.data, context);
     return complete({ ...value, durationMs: value.durationMs || Date.now() - started }, parsed.data);
   }
@@ -525,14 +528,15 @@ export class AgentCore {
     } finally { this.children.delete(id); }
   }
 
-  private async compactIfNeeded(turn: Turn, messages: ModelMessage[]): Promise<ModelMessage[]> {
+  private async compactMessages(turn: Turn, messages: ModelMessage[], force: boolean): Promise<{ messages: ModelMessage[]; compacted: boolean; beforeTokens: number; afterTokens: number }> {
     const limit = this.options.model.contextWindow || 128000;
-    if (estimateTokens(messages) <= limit * 0.7 || messages.length <= 12) return messages;
+    const beforeTokens = estimateTokens(messages);
+    if ((!force && beforeTokens <= limit * 0.7) || messages.length <= 8) return { messages, compacted: false, beforeTokens, afterTokens: beforeTokens };
     const keep = messages.slice(-8); const old = messages.slice(0, -8); const ledgerSummary = this.ledgers.get(turn.threadId)?.summary() ?? '{}'; const summary = `ContextLedger:\n${ledgerSummary}\n${old.map((message) => `${message.role}: ${typeof message.content === 'string' ? message.content.slice(0, 500) : '[多媒体内容]'}`).join('\n')}`.slice(0, 6000);
     const compacted: ModelMessage[] = [{ role: 'user', content: `[历史压缩摘要]\n${summary}` }, ...keep];
     this.messages.set(turn.threadId, compacted);
-    await this.emit({ type: 'context.compacted', timestamp: now(), turnId: turn.id, summary });
-    return compacted;
+    await this.emit({ type: 'context.compacted', timestamp: now(), turnId: turn.id, summary }, { kind: 'compaction', id: itemId(), summary, createdAt: now() });
+    return { messages: compacted, compacted: true, beforeTokens, afterTokens: estimateTokens(compacted) };
   }
 }
 

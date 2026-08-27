@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ToolRegistry, WorkspacePolicy } from './index';
+import { commandRunner, ToolRegistry, WorkspacePolicy } from './index';
 
 describe('WorkspacePolicy', () => {
   it('rejects paths outside the workspace', async () => {
@@ -74,6 +74,16 @@ describe('file tools', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('creates a new file below a canonicalized Windows workspace path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-new-file-'));
+    try {
+      const tool = new ToolRegistry().get('write_file');
+      const output = await tool!.execute({ path: 'src/new.txt', content: 'created' }, { workspace: root });
+      expect(output.ok).toBe(true);
+      expect(await readFile(join(root, 'src', 'new.txt'), 'utf8')).toBe('created');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('applies a unified patch and rejects stale context', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-patch-'));
     try {
@@ -87,6 +97,26 @@ describe('file tools', () => {
       const rejected = await tool!.execute({ patch: stale }, { workspace: root });
       expect(rejected.ok).toBe(false);
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('one\nchanged\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('limits git diff to the selected workspace inside a parent repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-git-scope-'));
+    const workspace = join(root, 'project');
+    try {
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(root, 'outside.txt'), 'before', 'utf8');
+      await writeFile(join(workspace, 'inside.txt'), 'before', 'utf8');
+      expect((await commandRunner('git init', root, { workspace: root })).ok).toBe(true);
+      expect((await commandRunner('git add -A', root, { workspace: root })).ok).toBe(true);
+      await writeFile(join(root, 'outside.txt'), 'outside change', 'utf8');
+      await writeFile(join(workspace, 'inside.txt'), 'inside change', 'utf8');
+      const output = await new ToolRegistry().get('git_diff')!.execute({}, { workspace });
+      const stdout = (output.output as { stdout?: string } | undefined)?.stdout ?? '';
+      expect(output.ok).toBe(true);
+      expect(stdout).toContain('inside change');
+      expect(stdout).not.toContain('outside change');
+      expect(stdout).not.toContain('outside.txt');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

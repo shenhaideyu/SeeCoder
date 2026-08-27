@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
 import { existsSync } from 'node:fs';
-import { appendFile, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { appendFile, readdir, readFile, writeFile, mkdir, realpath, rename } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentCore } from '@seecoder/agent-core';
@@ -124,6 +124,25 @@ async function runWorkspaceCommand(command: string, cwd = workspace, timeoutMs =
     logger.write('WARN', 'workspace.command.rejected', { command: commandName, durationMs: Date.now() - started, message: error instanceof Error ? error.message : '命令被拒绝' });
     throw error;
   }
+}
+
+async function scopedGitRoot(): Promise<string> {
+  const probe = await runWorkspaceCommand('git rev-parse --show-toplevel');
+  const output = probe.output as { stdout?: unknown } | undefined;
+  const root = typeof output?.stdout === 'string' ? output.stdout.trim() : '';
+  if (!probe.ok || !root) throw new Error('当前工作区不是 Git 仓库');
+  const [canonicalWorkspace, canonicalRoot] = await Promise.all([
+    realpath(workspace).catch(() => resolve(workspace)),
+    realpath(root).catch(() => resolve(root)),
+  ]);
+  if (!sameWorkspace(canonicalWorkspace, canonicalRoot)) {
+    throw new Error('Git 操作已禁用：当前目录属于上级仓库。请切换到仓库根目录，避免操作工作区外文件。');
+  }
+  return canonicalRoot;
+}
+
+async function runScopedGitCommand(command: string, timeoutMs = 30_000) {
+  return runWorkspaceCommand(command, await scopedGitRoot(), timeoutMs);
 }
 
 interface PersistedSettings {
@@ -312,16 +331,16 @@ function registerIpc(): void {
   ipcMain.handle('files:read', async (_event, path: string, startLine?: number, endLine?: number) => toolRegistry.get('read_file')?.execute({ path: textArg(path, 'path', 1000), startLine, endLine }, { workspace }));
   ipcMain.handle('files:search', async (_event, query: string, path?: string) => toolRegistry.get('search_text')?.execute({ query: textArg(query, 'query', 500), path }, { workspace }));
   ipcMain.handle('attachment:select', async () => { const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile', 'multiSelections'], filters: [{ name: '文本与图片', extensions: ['txt', 'md', 'json', 'ts', 'tsx', 'js', 'jsx', 'css', 'html', 'png', 'jpg', 'jpeg'] }] }); if (result.canceled) return []; const policy = new WorkspacePolicy(workspace); const values: AttachmentRef[] = []; for (const path of result.filePaths.slice(0, 4)) { const stat = await (await import('node:fs/promises')).stat(path); if (stat.size > 5 * 1024 * 1024 || !policy.isInside(path)) continue; const mimeType = /\.(png|jpe?g)$/i.test(path) ? 'image/' + (path.toLowerCase().endsWith('.png') ? 'png' : 'jpeg') : 'text/plain'; values.push({ id: randomUUID(), kind: mimeType.startsWith('image/') ? 'image' : 'text', name: path.split(/[\\/]/).pop() ?? path, path, mimeType, size: stat.size }); } return values; });
-  ipcMain.handle('git:status', async () => runWorkspaceCommand('git status --short --branch'));
-  ipcMain.handle('git:diff', async (_event, scope: 'unstaged' | 'staged' | 'branch' | 'last-turn' = 'unstaged') => runWorkspaceCommand(scope === 'staged' ? 'git diff --cached' : 'git diff'));
-  ipcMain.handle('git:branches', async () => runWorkspaceCommand('git branch --format="%(refname:short)"'));
-  ipcMain.handle('git:checkout', async (_event, branch: string) => { const name = textArg(branch, 'branch', 200); if (!/^[\w./-]+$/.test(name)) throw new Error('分支名称包含不允许的字符'); return runWorkspaceCommand(`git switch ${psQuote(name)}`, workspace, 60_000); });
-  ipcMain.handle('git:stage', async (_event, path?: string) => runWorkspaceCommand(path ? `git add -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git add -A'));
-  ipcMain.handle('git:unstage', async (_event, path?: string) => runWorkspaceCommand(path ? `git restore --staged -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git restore --staged .'));
-  ipcMain.handle('git:revert', async (_event, path: string) => runWorkspaceCommand(`git restore -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(textArg(path, 'path', 1000))))}`));
-  ipcMain.handle('git:commit', async (_event, message: string) => runWorkspaceCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, workspace, 60_000));
-  ipcMain.handle('git:push', async () => runWorkspaceCommand('git push', workspace, 120_000));
-  ipcMain.handle('git:prStatus', async () => runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000));
+  ipcMain.handle('git:status', async () => runScopedGitCommand('git status --short --branch'));
+  ipcMain.handle('git:diff', async (_event, scope: 'unstaged' | 'staged' | 'branch' | 'last-turn' = 'unstaged') => runScopedGitCommand(scope === 'staged' ? 'git diff --cached' : 'git diff'));
+  ipcMain.handle('git:branches', async () => runScopedGitCommand('git branch --format="%(refname:short)"'));
+  ipcMain.handle('git:checkout', async (_event, branch: string) => { const name = textArg(branch, 'branch', 200); if (!/^[\w./-]+$/.test(name)) throw new Error('分支名称包含不允许的字符'); return runScopedGitCommand(`git switch ${psQuote(name)}`, 60_000); });
+  ipcMain.handle('git:stage', async (_event, path?: string) => runScopedGitCommand(path ? `git add -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git add -A'));
+  ipcMain.handle('git:unstage', async (_event, path?: string) => runScopedGitCommand(path ? `git restore --staged -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git restore --staged .'));
+  ipcMain.handle('git:revert', async (_event, path: string) => runScopedGitCommand(`git restore -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(textArg(path, 'path', 1000))))}`));
+  ipcMain.handle('git:commit', async (_event, message: string) => runScopedGitCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, 60_000));
+  ipcMain.handle('git:push', async () => runScopedGitCommand('git push', 120_000));
+  ipcMain.handle('git:prStatus', async () => { await scopedGitRoot(); return runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000); });
   ipcMain.handle('terminal:run', async (_event, command: string, cwd?: string) => {
     const value = textArg(command, 'command', 20_000);
     if (isHighRiskCommand(value)) throw new Error('终端命令被 SeeCoder 安全策略拒绝：请使用受控 Git/依赖操作入口并确认风险。');

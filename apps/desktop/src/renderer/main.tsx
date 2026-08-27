@@ -183,6 +183,7 @@ interface InputRequest {
   choices?: string[];
   turnId: string;
 }
+type RunPhase = 'idle' | 'preparing' | 'model' | 'tool' | 'approval' | 'input' | 'review';
 interface UiState {
   threads: Thread[];
   selectedThread: Thread | undefined;
@@ -195,6 +196,7 @@ interface UiState {
   children: SubagentState[];
   terminal: string[];
   running: boolean;
+  phase: RunPhase;
   currentTurnId: string | undefined;
   mode: ExecutionMode;
   model: string;
@@ -222,6 +224,7 @@ const useStore = create<UiState>((set) => ({
   children: [],
   terminal: [],
   running: false,
+  phase: 'idle',
   currentTurnId: undefined,
   mode: 'guided',
   model: 'gpt-4o-mini',
@@ -237,24 +240,30 @@ const useStore = create<UiState>((set) => ({
           events: next,
           streamingText: `${state.streamingText}${event.text}`,
           running: true,
+          phase: 'model',
           currentTurnId: event.turnId,
         };
       if (event.type === 'message.completed')
-        return { events: next, streamingText: '', running: true, currentTurnId: event.turnId };
+        return { events: next, streamingText: '', running: true, phase: 'preparing', currentTurnId: event.turnId };
       if (event.type === 'turn.started')
-        return { events: next, running: true, currentTurnId: event.turn.id };
+        return { events: next, running: true, phase: 'preparing', currentTurnId: event.turn.id };
+      if (event.type === 'model.requested')
+        return { events: next, running: true, phase: 'model', currentTurnId: event.turnId };
+      if (event.type === 'tool.requested')
+        return { events: next, running: true, phase: 'tool', currentTurnId: event.turnId };
       if (event.type === 'approval.requested')
         return {
           events: next,
           approvals: [...state.approvals, event.approval],
           running: true,
+          phase: 'approval',
           currentTurnId: event.approval.turnId,
         };
       if (event.type === 'approval.resolved')
-        return {
-          events: next,
-          approvals: state.approvals.filter((item) => item.id !== event.approvalId),
-        };
+        {
+          const approvals = state.approvals.filter((item) => item.id !== event.approvalId);
+          return { events: next, approvals, phase: approvals.length ? 'approval' : 'preparing' };
+        }
       if (event.type === 'user.input.requested')
         return {
           events: next,
@@ -268,13 +277,15 @@ const useStore = create<UiState>((set) => ({
             },
           ],
           running: true,
+          phase: 'input',
           currentTurnId: event.turnId,
         };
       if (event.type === 'user.input.resolved')
-        return {
-          events: next,
-          inputRequests: state.inputRequests.filter((item) => item.requestId !== event.requestId),
-        };
+        {
+          const inputRequests = state.inputRequests.filter((item) => item.requestId !== event.requestId);
+          return { events: next, inputRequests, phase: inputRequests.length ? 'input' : 'preparing' };
+        }
+      if (event.type === 'review.started') return { events: next, phase: 'review' };
       if (event.type === 'plan.updated') return { events: next, plans: event.steps };
       if (event.type === 'changes.created')
         return { events: next, changes: [...state.changes, event.changeSet] };
@@ -306,6 +317,7 @@ const useStore = create<UiState>((set) => ({
         return {
           events: next,
           running: false,
+          phase: 'idle',
           streamingText: '',
           currentTurnId: undefined,
           approvals: state.approvals.filter((item) => item.turnId !== event.turn.id),
@@ -428,6 +440,7 @@ function App(): React.JSX.Element {
     children,
     terminal,
     running,
+    phase,
     currentTurnId,
     mode,
     model,
@@ -527,6 +540,9 @@ function App(): React.JSX.Element {
       plans: [],
       reviewFindings: [],
       streamingText: '',
+      running: false,
+      phase: 'idle',
+      currentTurnId: undefined,
     });
     history.forEach(addEvent);
   }
@@ -549,6 +565,9 @@ function App(): React.JSX.Element {
       terminal: [],
       reviewFindings: [],
       streamingText: '',
+      running: false,
+      phase: 'idle',
+      currentTurnId: undefined,
     });
     setPage('task');
   }
@@ -575,7 +594,7 @@ function App(): React.JSX.Element {
     set({
       threads: workspaceThreads.length ? workspaceThreads : [selected],
       selectedThread: selected,
-      events: [], approvals: [], inputRequests: [], plans: [], changes: [], children: [], terminal: [], reviewFindings: [], streamingText: '', running: false, currentTurnId: undefined,
+      events: [], approvals: [], inputRequests: [], plans: [], changes: [], children: [], terminal: [], reviewFindings: [], streamingText: '', running: false, phase: 'idle', currentTurnId: undefined,
     });
     await loadThread(selected);
     setPage('task');
@@ -592,7 +611,7 @@ function App(): React.JSX.Element {
         set({ toast: '已加入当前任务的追加要求' });
         return;
       }
-      set({ running: true, streamingText: '' });
+      set({ running: true, phase: 'preparing', streamingText: '' });
       const turnId = (await window.seecoder.turn.start(
         selectedThread.id,
         text,
@@ -609,7 +628,7 @@ function App(): React.JSX.Element {
       }
       setAttachments([]);
     } catch (error) {
-      set({ running: false, currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
+      set({ running: false, phase: 'idle', currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
     }
   }
   async function setExecutionMode(next: ExecutionMode): Promise<void> {
@@ -629,7 +648,7 @@ function App(): React.JSX.Element {
       set({ mode: 'plan', toast: '下一轮将只读分析并生成计划' });
     }
   }
-  async function replan(): Promise<void> { if (!selectedThread) return; set({ running: true }); const turnId = (await window.seecoder.turn.start(selectedThread.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
+  async function replan(): Promise<void> { if (!selectedThread) return; set({ running: true, phase: 'preparing' }); const turnId = (await window.seecoder.turn.start(selectedThread.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
   function editPlanStep(id: string): void { const label = window.prompt('编辑计划步骤'); if (label?.trim()) set({ plans: plans.map((step) => step.id === id ? { ...step, label: label.trim() } : step), toast: '计划步骤已更新（将在下一轮同步给模型）' }); }
   async function resolveApproval(approval: Approval, decision: 'allow' | 'deny'): Promise<void> {
     await window.seecoder.approval.resolve(
@@ -665,8 +684,10 @@ function App(): React.JSX.Element {
       const value = (await window.seecoder.git.status()) as { output?: unknown };
       setGitText(formatCommandOutput(value));
     } catch (error) {
-      const message = error instanceof Error ? error.message : '无法读取 Git 状态';
-      setGitText(`Git 状态读取失败：${message}`);
+      const raw = error instanceof Error ? error.message : '无法读取 Git 状态';
+      const marker = 'Git 操作已禁用';
+      const message = raw.includes(marker) ? raw.slice(raw.indexOf(marker)) : `Git 状态读取失败：${raw}`;
+      setGitText(message);
       set({ toast: message });
     }
   }
@@ -751,7 +772,7 @@ function App(): React.JSX.Element {
       setPage('task');
       setInspector('trace');
       if (selectedThread) {
-        set({ running: true });
+        set({ running: true, phase: 'preparing' });
         const turnId = (await window.seecoder.turn.start(selectedThread.id, '请调用 review_changes 审查当前工作区变更，并按严重度输出发现。')) as string;
         set({ currentTurnId: turnId });
       } else set({ toast: '请先选择任务' });
@@ -797,6 +818,7 @@ function App(): React.JSX.Element {
             selectedThread={selectedThread}
             mode={mode}
             running={running}
+            phase={phase}
             streamingText={streamingText}
             events={events}
             plans={plans}
@@ -1077,6 +1099,7 @@ function TaskPage({
   selectedThread,
   mode,
   running,
+  phase,
   streamingText,
   events,
   plans,
@@ -1104,6 +1127,7 @@ function TaskPage({
   selectedThread: Thread | undefined;
   mode: ExecutionMode;
   running: boolean;
+  phase: RunPhase;
   streamingText: string;
   events: TimelineItem[];
   plans: PlanStep[];
@@ -1169,6 +1193,9 @@ function TaskPage({
   const failure = latestTurnResult?.event.type === 'turn.failed'
     ? friendlyAgentError(latestTurnResult.event.error.message)
     : undefined;
+  const phaseText: Record<RunPhase, string> = {
+    idle: '就绪', preparing: '准备下一步', model: '调用模型', tool: '执行工具', approval: '等待确认', input: '等待输入', review: '审查变更',
+  };
   const conversationRef = useRef<HTMLElement>(null);
   const autoFollowRef = useRef(true);
   useEffect(() => {
@@ -1200,7 +1227,7 @@ function TaskPage({
           </button>
         </div>
         <div className="top-actions">
-          <span className={`run-status ${running ? 'running' : ''}`}><span className="status-dot" />{running ? '运行中' : '就绪'}</span>
+          <span className={`run-status ${running ? 'running' : ''} phase-${phase}`}><span className="status-dot" />{phaseText[phase]}</span>
           <button data-action="branch" className="ghost-button" onClick={onBranch}>
             <GitBranch size={14} />
             {selectedThread?.branch ?? 'main'}
@@ -1489,7 +1516,9 @@ function ActivityCard({
     ?? toolName
     ?? (record.completed ? `工具调用 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? '已创建恢复点' : '已整理上下文');
   const status = record.completed
-    ? record.completed.result.ok ? (presentation?.description ?? '已完成') : '执行失败，展开查看详情'
+    ? record.completed.result.ok
+      ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
+      : '执行失败，展开查看详情'
     : record.auxiliary?.type === 'checkpoint.created' ? '可恢复' : isTool ? '执行中' : '已记录';
   return (
     <div
@@ -1827,6 +1856,7 @@ function InspectorContent({
   onGitRefresh: () => Promise<void>;
   onToast: (value: string) => void;
 }): React.JSX.Element {
+  const gitBlocked = gitText.startsWith('Git 操作已禁用') || gitText.startsWith('Git 状态读取失败');
   if (type === 'files')
     return (
       <div className="inspector-body">
@@ -1883,9 +1913,9 @@ function InspectorContent({
         </div>
         <div className="git-status">{gitText || '等待 git status…'}</div>
         <div className="page-toolbar git-actions">
-          <button className="small-button" data-action="stage-all" onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>Stage All</button>
-          <button className="small-button" data-action="commit" onClick={async () => { const message = window.prompt('Commit message', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? 'Commit 已执行')); await onGitRefresh(); } }}>Commit</button>
-          <button className="small-button" data-action="push" onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? 'Push 已执行')); } }}>Push</button>
+          <button className="small-button" data-action="stage-all" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>Stage All</button>
+          <button className="small-button" data-action="commit" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { const message = window.prompt('Commit message', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? 'Commit 已执行')); await onGitRefresh(); } }}>Commit</button>
+          <button className="small-button" data-action="push" disabled={gitBlocked} title={gitBlocked ? '请先切换到 Git 仓库根目录' : undefined} onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? 'Push 已执行')); } }}>Push</button>
         </div>
         {changes.length === 0 ? (
           <div className="empty-panel">

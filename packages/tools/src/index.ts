@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, readdir, realpath, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z, type ZodTypeAny } from 'zod';
 import type { ChangeFile, PermissionMode, ToolCall, ToolResult } from '@seecoder/protocol';
 
@@ -41,9 +41,12 @@ export class WorkspacePolicy {
 
   async path(input = '.'): Promise<string> {
     const candidate = resolve(this.root, input);
-    const existing = await realpath(candidate).catch(() => candidate);
     const canonicalRoot = await realpath(this.root).catch(() => this.root);
-    const outside = relative(canonicalRoot, existing).startsWith('..') || isAbsolute(relative(canonicalRoot, existing));
+    const lexical = relative(this.root, candidate);
+    if (lexical.startsWith('..') || isAbsolute(lexical)) throw new Error(`路径越出工作区: ${input}`);
+    const existing = await canonicalizeFuturePath(candidate);
+    const canonicalRelative = relative(canonicalRoot, existing);
+    const outside = canonicalRelative.startsWith('..') || isAbsolute(canonicalRelative);
     if (outside) throw new Error(`路径越出工作区: ${input}`);
     if (isSensitivePath(input)) throw new Error(`出于安全原因，禁止访问凭据文件: ${input}`);
     return candidate;
@@ -173,6 +176,22 @@ async function collectFiles(root: string, current: string, output: string[], dep
     const full = join(current, entry.name);
     if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max, signal);
     else output.push(relative(root, full));
+  }
+}
+
+async function canonicalizeFuturePath(candidate: string): Promise<string> {
+  let current = candidate;
+  const missing: string[] = [];
+  while (true) {
+    try {
+      const existing = await realpath(current);
+      return resolve(existing, ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return candidate;
+      missing.unshift(basename(current));
+      current = parent;
+    }
   }
 }
 
@@ -334,7 +353,7 @@ export function createToolDefinitions(): ToolDefinition[] {
     {
       name: 'git_diff', description: '查看当前工作区 Git Diff', sideEffect: false, risk: 'low',
       parameters: z.object({ path: z.string().optional() }),
-      async execute(raw, context) { const args = raw as { path?: string }; const cwd = await new WorkspacePolicy(context.workspace).path('.'); const command = args.path ? `git diff -- ${JSON.stringify(args.path)}` : 'git diff'; return commandRunner(command, cwd, context, 30_000); },
+      async execute(raw, context) { const args = raw as { path?: string }; const cwd = await new WorkspacePolicy(context.workspace).path('.'); const command = args.path ? `git diff -- ${JSON.stringify(args.path)}` : 'git diff -- .'; return commandRunner(command, cwd, context, 30_000); },
     },
     {
       name: 'set_plan', description: '更新用户可见的执行计划', sideEffect: false, risk: 'low',

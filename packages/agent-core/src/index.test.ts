@@ -147,4 +147,54 @@ describe('AgentCore', () => {
       await rm(rootB, { recursive: true, force: true });
     }
   });
+
+  it('persists an explicit context compaction and reports token reduction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-compact-'));
+    try {
+      const textTurn = (index: number) => [{ type: 'textDelta' as const, text: `第 ${index} 轮 ${'上下文'.repeat(200)}` }, { type: 'completed' as const, finishReason: 'stop' }];
+      const provider = new FakeModelProvider([
+        ...Array.from({ length: 5 }, (_, index) => textTurn(index)),
+        [{ type: 'toolCallDelta', callId: 'compact-now', name: 'compact_context', argsDelta: '{}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '上下文已整理。' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const store = new SessionStore(join(root, '.sessions'));
+      const core = new AgentCore({ workspace: root, provider, model, store, mode: 'auto' });
+      const thread = await core.createThread('压缩测试');
+      const run = async (prompt: string) => {
+        const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+        await core.startTurn(thread.id, prompt);
+        await completed;
+      };
+      for (let index = 0; index < 5; index += 1) await run(`用户任务 ${index} ${'内容'.repeat(200)}`);
+      let metrics: { compacted?: boolean; beforeTokens?: number; afterTokens?: number } = {};
+      const unsubscribe = core.onEvent((event) => {
+        if (event.type === 'tool.completed' && event.callId === 'compact-now') metrics = event.result.output as typeof metrics;
+      });
+      await run('请主动压缩上下文');
+      unsubscribe();
+      expect(metrics.compacted).toBe(true);
+      expect(metrics.afterTokens).toBeLessThan(metrics.beforeTokens!);
+      const history = await store.readEvents(thread.id);
+      expect(history.some((record) => record.item?.kind === 'compaction')).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not replay a side effect when a model repeats the same call id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-idempotent-'));
+    try {
+      const repeated = [{ type: 'toolCallDelta' as const, callId: 'same-write', name: 'write_file', argsDelta: '{"path":"once.txt","content":"once"}' }, { type: 'completed' as const, finishReason: 'tool_calls' }];
+      const provider = new FakeModelProvider([repeated, repeated, [{ type: 'textDelta', text: '完成' }, { type: 'completed', finishReason: 'stop' }]]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      let executionCount = 0;
+      let executionResult: boolean | undefined;
+      let executionError = '';
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'tool.completed' && event.callId === 'same-write') { executionCount += 1; executionResult = event.result.ok; executionError = event.result.error?.message ?? ''; } if (event.type === 'turn.completed') resolve(); }));
+      const thread = await core.createThread('幂等测试');
+      await core.startTurn(thread.id, '只写一次');
+      await completed;
+      expect(executionCount).toBe(1);
+      expect(executionResult, executionError).toBe(true);
+      expect(await readFile(join(root, 'once.txt'), 'utf8')).toBe('once');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });
