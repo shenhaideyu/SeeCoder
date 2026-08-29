@@ -14,8 +14,14 @@ class RecordingProvider implements ModelProvider {
   readonly requests: ModelRequest[] = [];
   private cursor = 0;
   constructor(private readonly turns: ModelEvent[][]) {}
+  get agentRequests(): ModelRequest[] { return this.requests.filter((request) => request.purpose !== 'context_summary'); }
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     this.requests.push(structuredClone(request));
+    if (request.purpose === 'context_summary') {
+      yield { type: 'textDelta', text: JSON.stringify({ userIntent: '', requirements: [], activeDecisions: [], supersededDecisions: [], completedWork: [], unresolvedQuestions: [], narrative: '测试摘要' }) };
+      yield { type: 'completed', finishReason: 'stop' };
+      return;
+    }
     const events = this.turns[Math.min(this.cursor++, this.turns.length - 1)] ?? [];
     for (const event of events) yield event;
   }
@@ -346,7 +352,7 @@ describe('AgentCore', () => {
       for (let index = 0; index < 5; index += 1) await run(`用户任务 ${index} ${'内容'.repeat(200)}`);
       let metrics: { compacted?: boolean; beforeTokens?: number; afterTokens?: number } = {};
       const unsubscribe = core.onEvent((event) => {
-        if (event.type === 'tool.completed' && event.callId === 'compact-now') metrics = event.result.output as typeof metrics;
+        if (event.type === 'context.compacted' && event.metrics) metrics = event.metrics;
       });
       await run('请主动压缩上下文');
       unsubscribe();
@@ -361,10 +367,10 @@ describe('AgentCore', () => {
       const restoredCompleted = new Promise<void>((resolve) => restored.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
       await restored.startTurn(thread.id, '恢复后继续');
       await restoredCompleted;
-      const restoredMessages = restoredProvider.requests[0]?.messages ?? [];
+      const restoredMessages = restoredProvider.agentRequests[0]?.messages ?? [];
       const serialized = JSON.stringify(restoredMessages);
-      expect(serialized.match(/用户任务 0/g)).toHaveLength(1);
       expect(serialized).toContain('[历史压缩摘要]');
+      expect(serialized).toContain('上下文摘要');
       const compactCallIndex = restoredMessages.findIndex((message) => message.role === 'assistant' && message.toolCalls?.some((call) => call.id === 'compact-now'));
       const compactResultIndex = restoredMessages.findIndex((message) => message.role === 'tool' && message.toolCallId === 'compact-now');
       expect(compactCallIndex).toBeGreaterThanOrEqual(0);
@@ -392,7 +398,7 @@ describe('AgentCore', () => {
       await core.startTurn(thread.id, '读取大文件');
       await completed;
 
-      const compactedRequest = provider.requests[2]!.messages.slice(1);
+      const compactedRequest = provider.agentRequests[2]!.messages.slice(1);
       let pending = new Set<string>();
       for (const message of compactedRequest) {
         if (message.role === 'assistant') pending = new Set(message.toolCalls?.map((call) => call.id) ?? []);
@@ -467,6 +473,93 @@ describe('AgentCore', () => {
         expect.objectContaining({ role: 'assistant', toolCalls: [expect.objectContaining({ id: 'child-read-1', name: 'read_file' })] }),
         expect.objectContaining({ role: 'tool', toolCallId: 'child-read-1', toolName: 'read_file' }),
       ]));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('falls back deterministically when semantic summarization fails without failing the turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-summary-fallback-'));
+    try {
+      const textTurn = (index: number) => [{ type: 'textDelta' as const, text: `历史 ${index} ${'内容'.repeat(220)}` }, { type: 'completed' as const, finishReason: 'stop' }];
+      const provider = new FakeModelProvider([
+        ...Array.from({ length: 5 }, (_, index) => textTurn(index)),
+        [{ type: 'toolCallDelta', callId: 'compact-fallback', name: 'compact_context', argsDelta: '{}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '降级后仍完成' }, { type: 'completed', finishReason: 'stop' }],
+      ], [[{ type: 'error', code: 'network_error', message: '摘要服务不可用', retryable: true }]]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      const events: string[] = [];
+      const thread = await core.createThread('摘要失败降级');
+      const run = async (prompt: string) => {
+        const completed = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'turn.completed') resolve(); }));
+        await core.startTurn(thread.id, prompt);
+        await completed;
+      };
+      for (let index = 0; index < 5; index += 1) await run(`用户历史 ${index}`);
+      await run('压缩后继续');
+      expect(events).toContain('context.summary.failed');
+      expect(events).toContain('context.compacted');
+      expect(events.at(-1)).toBe('turn.completed');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('warns when finish follows a newer change than the latest successful validation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-stale-validation-'));
+    try {
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'write-before-test', name: 'write_file', argsDelta: '{"path":"value.txt","content":"one"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'test-revision-1', name: 'run_command', argsDelta: '{"command":"node --test"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'write-after-test', name: 'write_file', argsDelta: '{"path":"value.txt","content":"two"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'finish-stale', name: 'finish', argsDelta: '{"summary":"完成","verification":["node --test"]}' }, { type: 'completed', finishReason: 'tool_calls' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      let finishOutput: unknown;
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'tool.completed' && event.callId === 'finish-stale') finishOutput = event.result.output;
+        if (event.type === 'turn.completed') resolve();
+      }));
+      const thread = await core.createThread('验证 revision');
+      await core.startTurn(thread.id, '修改、测试、再次修改后完成');
+      await completed;
+      expect(finishOutput).toMatchObject({ verificationStatus: 'warning', warning: expect.stringContaining('没有成功验证') });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('cancels an in-flight summary request and leaves no active turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-cancel-summary-'));
+    try {
+      const scripted = [
+        ...Array.from({ length: 5 }, (_, index) => [{ type: 'textDelta' as const, text: `历史 ${index} ${'内容'.repeat(220)}` }, { type: 'completed' as const, finishReason: 'stop' }]),
+        [{ type: 'toolCallDelta' as const, callId: 'compact-cancel', name: 'compact_context', argsDelta: '{}' }, { type: 'completed' as const, finishReason: 'tool_calls' }],
+      ];
+      let cursor = 0;
+      const provider: ModelProvider = {
+        async *stream(request, signal) {
+          if (request.purpose === 'context_summary') {
+            if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+            yield { type: 'error', code: 'cancelled', message: '摘要已取消', retryable: false };
+            return;
+          }
+          for (const event of scripted[Math.min(cursor++, scripted.length - 1)] ?? []) yield event;
+        },
+      };
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      const thread = await core.createThread('取消摘要');
+      const run = async (prompt: string) => {
+        const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
+        await core.startTurn(thread.id, prompt);
+        await completed;
+      };
+      for (let index = 0; index < 5; index += 1) await run(`历史 ${index}`);
+      let turnId = '';
+      const cancelled = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'context.summary.requested') { turnId = event.turnId; core.cancelTurn(event.turnId); }
+        if (event.type === 'turn.cancelled' && event.turn.id === turnId) resolve();
+      }));
+      turnId = await core.startTurn(thread.id, '现在压缩，但我要取消');
+      await cancelled;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const nextTurnId = await core.startTurn(thread.id, '取消后可以重新开始');
+      expect(nextTurnId).not.toBe(turnId);
+      core.cancelTurn(nextTurnId);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

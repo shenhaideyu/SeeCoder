@@ -44,5 +44,46 @@
       "maxAnswerChars": 5000,
       "maxSideEffects": 8
     }
+  },
+  {
+    "id": "remember-earlier-decision",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "你还记得我们前几轮为什么决定不引入 Redis 吗？请结合当时涉及的文件和约束复述理由；如果历史里没有可靠证据就直说，不要猜。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 4,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 0,
+      "maxSideEffects": 0,
+      "maxSummaryFailures": 1
+    }
+  },
+  {
+    "id": "repeat-file-follow-up",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "再看一下刚才那个处理任务状态的文件。我主要想确认刷新后为什么不会丢状态，只解释关键逻辑，不要把整份文件重新贴出来。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 5,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 1,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "validation-freshness",
+    "level": "complex",
+    "mode": "auto",
+    "prompt": "先修复筛选按钮在窄窗口下被挤出的问题并跑相关测试。测试通过后，再把按钮文案改得更清楚，但这一步先不要重跑测试；最后请准确告诉我当前结果是否仍然经过验证。",
+    "requiredTools": ["run_command", "finish"],
+    "limits": {
+      "maxIterations": 12,
+      "maxToolCalls": 22,
+      "maxFailedTools": 2,
+      "maxDuplicateCalls": 2,
+      "maxSideEffects": 7
+    }
   }
 ]

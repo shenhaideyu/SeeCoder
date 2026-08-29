@@ -519,8 +519,8 @@ function App(): React.JSX.Element {
   }, [toast, set]);
   useEffect(() => {
     const describe = (value: unknown): string => {
-      if (value instanceof Error) return value.message;
-      if (typeof value === 'string') return value;
+      const message = value instanceof Error ? value.message : typeof value === 'string' ? value : '';
+      if (message) return message.split(/\r?\n/)[0]!.slice(0, 240);
       return '未知错误';
     };
     const onError = (event: ErrorEvent) => set({ toast: `操作失败：${describe(event.error ?? event.message)}` });
@@ -788,7 +788,19 @@ function App(): React.JSX.Element {
       await loadGit();
       setInspector('files');
     } else if (command === '/skills') setPage('plugins');
-    else if (command === '/compact') set({ toast: '下一轮将根据上下文预算自动压缩历史' });
+    else if (command === '/compact') {
+      setPage('task');
+      setInspector('trace');
+      if (selectedThread) {
+        set({ running: true, phase: 'preparing' });
+        try {
+          const turnId = (await window.seecoder.turn.start(selectedThread.id, '请立即调用 compact_context 整理当前对话上下文；完成后只简要报告压缩结果，不执行其他工具。')) as string;
+          set({ currentTurnId: turnId });
+        } catch (error) {
+          set({ running: false, phase: 'idle', toast: `压缩启动失败：${error instanceof Error ? error.message : '请稍后重试'}` });
+        }
+      } else set({ toast: '请先选择任务' });
+    }
   }
   useEffect(() => {
     const listener = () => void showCommandPalette();
@@ -1563,12 +1575,22 @@ function ActivityCard({
   const isControlled = isToolControlSignal(record.completed?.result);
   const isError = Boolean(record.completed && !record.completed.result.ok && !isControlled);
   const toolName = record.requested?.call.name;
-  if (toolName === 'finish') return <></>;
+  const finishOutput = toolName === 'finish' && record.completed?.result.output && typeof record.completed.result.output === 'object'
+    ? record.completed.result.output as { verificationStatus?: string; warning?: string }
+    : undefined;
+  const verificationWarning = finishOutput?.verificationStatus === 'warning' ? finishOutput.warning : undefined;
+  if (toolName === 'finish' && !verificationWarning) return <></>;
   const presentation = toolName ? toolPresentation[toolName] : undefined;
-  const label = presentation?.label
+  const label = verificationWarning ? '完成，但验证已过期'
+    : presentation?.label
     ?? toolName
     ?? (record.completed ? `工具调用 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? '已创建恢复点' : '已整理上下文');
-  const status = record.completed
+  const compactedMetrics = record.auxiliary?.type === 'context.compacted' ? record.auxiliary.metrics : undefined;
+  const status = verificationWarning
+    ? verificationWarning
+    : compactedMetrics
+      ? `约 ${compactedMetrics.beforeTokens} → ${compactedMetrics.afterTokens} tokens · ${compactedMetrics.summarySource === 'model' ? '模型摘要' : '确定性回退'}`
+      : record.completed
     ? record.completed.result.ok
       ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
       : isControlled ? '探索已按预算停止，请使用现有证据继续' : '执行失败，展开查看详情'
@@ -1579,11 +1601,13 @@ function ActivityCard({
         : '已记录';
   return (
     <div
-      className={`activity ${isError ? 'error' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
+      className={`activity ${isError ? 'error' : verificationWarning ? 'warning' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
     >
       <button className="activity-head" data-action="toggle-activity" aria-expanded={expanded} onClick={onToggle}>
         <div className="activity-icon">
-          {record.auxiliary?.type === 'checkpoint.created' ? (
+          {verificationWarning ? (
+            <AlertTriangle size={14} />
+          ) : record.auxiliary?.type === 'checkpoint.created' ? (
             <RotateCcw size={14} />
           ) : isSuccess ? (
             <Check size={14} />
@@ -2079,6 +2103,8 @@ function InspectorContent({
                     theme="vs-dark"
                     original={file.before ?? ''}
                     modified={file.after ?? ''}
+                    originalModelPath={`inmemory://seecoder/${change.id}/before/${encodeURIComponent(file.path)}`}
+                    modifiedModelPath={`inmemory://seecoder/${change.id}/after/${encodeURIComponent(file.path)}`}
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },
@@ -2124,6 +2150,13 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
     if (event.type === 'tool.requested') return `调用工具 · ${event.call.name}`;
     if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : isToolControlSignal(event.result) ? '已限制' : '失败'}`;
     if (event.type === 'usage.updated') return `Token · ${event.inputTokens} 输入 / ${event.outputTokens} 输出`;
+    if (event.type === 'context.summary.requested') return '上下文摘要 · 正在请求模型';
+    if (event.type === 'context.summary.completed') return `上下文摘要 · ${event.durationMs}ms · ${event.inputTokens ?? 0}/${event.outputTokens ?? 0} tokens`;
+    if (event.type === 'context.summary.failed') return `上下文摘要降级 · ${event.code}`;
+    if (event.type === 'context.retrieved') return `历史召回 · ${event.count} 条 · ${event.kinds.join('、')}`;
+    if (event.type === 'context.compacted') return event.metrics
+      ? `上下文压缩 · ${event.metrics.beforeTokens} → ${event.metrics.afterTokens} tokens`
+      : '上下文压缩完成';
     if (event.type === 'turn.completed') return '任务完成';
     if (event.type === 'turn.failed') return `任务失败 · ${event.error.code}`;
     if (event.type === 'subagent.updated') return `子 Agent · ${event.child.role} · ${event.child.status}`;

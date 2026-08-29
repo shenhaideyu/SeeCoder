@@ -189,11 +189,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
 export class FakeModelProvider implements ModelProvider {
   private cursor = 0;
 
-  constructor(private readonly turns: ModelEvent[][]) {}
+  constructor(private readonly turns: ModelEvent[][], private readonly summaryTurns: ModelEvent[][] = []) {}
 
   async *stream(_request: ModelRequest, _signal: AbortSignal): AsyncIterable<ModelEvent> {
-    void _request;
     void _signal;
+    if (_request.purpose === 'context_summary') {
+      const events = this.summaryTurns.shift() ?? [
+        { type: 'textDelta' as const, text: JSON.stringify({ userIntent: '', requirements: [], activeDecisions: [], supersededDecisions: [], completedWork: [], unresolvedQuestions: [], narrative: '模拟上下文摘要' }) },
+        { type: 'completed' as const, finishReason: 'stop' },
+      ];
+      for (const event of events) { await Promise.resolve(); yield event; }
+      return;
+    }
     const events = this.turns[Math.min(this.cursor++, this.turns.length - 1)] ?? [
       { type: 'textDelta', text: '模拟任务已完成。' },
       { type: 'completed', finishReason: 'stop' },

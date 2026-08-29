@@ -53,6 +53,11 @@ class MainLogger {
     }
     else if (event.type === 'tool.output') this.write('INFO', 'agent.tool.output', { ...base, callId: event.callId, stream: event.stream, bytes: event.text.length });
     else if (event.type === 'model.completed') this.write('INFO', 'agent.model.completed', { ...base, iteration: event.iteration, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens, retries: event.retries, finishReason: event.finishReason });
+    else if (event.type === 'context.summary.requested') this.write('INFO', 'agent.context.summary.requested', base);
+    else if (event.type === 'context.summary.completed') this.write('INFO', 'agent.context.summary.completed', { ...base, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens });
+    else if (event.type === 'context.summary.failed') this.write(event.code === 'cancelled' ? 'INFO' : 'WARN', 'agent.context.summary.failed', { ...base, code: event.code });
+    else if (event.type === 'context.retrieved') this.write('INFO', 'agent.context.retrieved', { ...base, count: event.count, kinds: event.kinds });
+    else if (event.type === 'context.compacted') this.write('INFO', 'agent.context.compacted', { ...base, ...event.metrics });
     else if (event.type === 'subagent.updated') this.write(event.child.status === 'failed' ? 'WARN' : 'INFO', 'agent.subagent.updated', { ...base, childId: event.child.id, role: event.child.role, status: event.child.status, iteration: event.child.iteration, durationMs: event.child.durationMs, inputTokens: event.child.inputTokens, outputTokens: event.child.outputTokens, currentAction: event.child.currentAction, error: event.child.errorCode });
     else if (event.type === 'turn.started' || event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') this.write(event.type === 'turn.failed' ? 'ERROR' : 'INFO', `agent.${event.type}`, { ...base, status: event.turn.status, iteration: event.turn.iteration, ...(event.type === 'turn.failed' ? { error: event.error.code } : {}) });
     else if (event.type === 'approval.requested' || event.type === 'approval.resolved' || event.type === 'checkpoint.created' || event.type === 'checkpoint.restored') this.write('INFO', `agent.${event.type}`, base);

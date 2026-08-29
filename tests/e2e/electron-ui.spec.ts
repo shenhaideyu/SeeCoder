@@ -35,6 +35,21 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('.composer-note')).toContainText('不会修改工作区');
     await expect(page.locator('.workspace-context')).toBeVisible();
 
+    const activeThread = (await page.evaluate(() => window.seecoder.thread.list()))[0]!;
+    await app.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0]?.webContents.send('seecoder:event', payload), {
+      type: 'changes.created',
+      threadId: activeThread.id,
+      timestamp: new Date().toISOString(),
+      changeSet: {
+        id: 'e2e-diff-lifecycle', threadId: activeThread.id, turnId: 'e2e-turn', createdAt: new Date().toISOString(),
+        files: [{ path: 'package.json', before: '{"name":"before"}', after: '{"name":"after"}' }],
+      },
+    });
+    await page.locator('[data-action="inspector-changes"]').click();
+    await expect(page.locator('.diff-file')).toBeVisible();
+    await page.locator('[data-action="new-task"]').click();
+    await expect(page.getByText(/TextModel got disposed/)).toHaveCount(0);
+
     await page.setViewportSize({ width: 1000, height: 720 });
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
     await expect(page.locator('[data-action="toggle-inspector"]')).toBeVisible();

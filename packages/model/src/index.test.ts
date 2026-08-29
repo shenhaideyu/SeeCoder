@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OpenAICompatibleProvider, serializeModelMessages } from './index';
+import { FakeModelProvider, OpenAICompatibleProvider, serializeModelMessages } from './index';
 
 describe('OpenAICompatibleProvider', () => {
   it('serializes tool messages to the Chat Completions wire format', () => {
@@ -33,5 +33,20 @@ describe('OpenAICompatibleProvider', () => {
     expect(events).toContainEqual({ type: 'usage', inputTokens: 4, outputTokens: 3 });
     vi.unstubAllGlobals();
     delete process.env.SEECODER_TEST_KEY;
+  });
+
+  it('keeps context-summary requests isolated from the main scripted cursor', async () => {
+    const provider = new FakeModelProvider([
+      [{ type: 'textDelta', text: '主任务第一轮' }, { type: 'completed', finishReason: 'stop' }],
+    ], [[
+      { type: 'textDelta', text: '{"userIntent":"摘要","requirements":[],"activeDecisions":[],"supersededDecisions":[],"completedWork":[],"unresolvedQuestions":[],"narrative":"摘要"}' },
+      { type: 'completed', finishReason: 'stop' },
+    ]]);
+    const summary = [];
+    for await (const event of provider.stream({ purpose: 'context_summary', messages: [], tools: [], model: 'fake', temperature: 0, maxOutputTokens: 100 }, new AbortController().signal)) summary.push(event);
+    const agent = [];
+    for await (const event of provider.stream({ purpose: 'agent', messages: [], tools: [], model: 'fake', temperature: 0, maxOutputTokens: 100 }, new AbortController().signal)) agent.push(event);
+    expect(summary).toContainEqual({ type: 'textDelta', text: expect.stringContaining('摘要') });
+    expect(agent).toContainEqual({ type: 'textDelta', text: '主任务第一轮' });
   });
 });

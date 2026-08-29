@@ -68,3 +68,20 @@ test('探索预算信号不计为工具执行失败', () => {
   assert.equal(result.pass, true);
   assert.equal(result.metrics.failedTools, 0);
 });
+
+test('评测会统计上下文压缩、召回和验证过期证据', () => {
+  const prompt = '继续刚才的决定，并确认这次修改是否仍经过测试。';
+  const scenario = { id: 'context', prompt, limits: { maxSummaryFailures: 0 } };
+  const events = [
+    { type: 'message.user', turnId: 'turn-5', text: prompt },
+    { type: 'context.retrieved', turnId: 'turn-5', count: 3 },
+    { type: 'context.compacted', turnId: 'turn-5', metrics: { beforeTokens: 9000, afterTokens: 4000 } },
+    { type: 'tool.completed', turnId: 'turn-5', result: { ok: true, output: { verificationStatus: 'warning' } } },
+    { type: 'turn.completed', turn: { id: 'turn-5' } },
+  ];
+  const result = evaluateScenario(scenario, events);
+  assert.equal(result.pass, true);
+  assert.equal(result.metrics.contextCompactions, 1);
+  assert.equal(result.metrics.retrievedEntries, 3);
+  assert.equal(result.metrics.verificationWarnings, 1);
+});

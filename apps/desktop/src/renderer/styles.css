@@ -133,3 +133,4 @@
 .markdown-gap { height:3px; }
 .markdown-list-item { display:grid; grid-template-columns:12px minmax(0,1fr); gap:3px; }
 .markdown-list-item>span { color:var(--brand); font-weight:700; }
+.activity.warning .activity-icon { color:var(--warning); background:rgba(166,101,0,.1); }

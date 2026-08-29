@@ -40,6 +40,10 @@ export function evaluateScenario(scenario, events) {
     event.result?.ok === false && !controlFlowErrorCodes.has(toolErrorCode(event))
   )).length;
   const maxInputTokens = Math.max(0, ...models.map((event) => Number(event.inputTokens ?? 0)));
+  const compactions = turnEvents.filter((event) => event.type === 'context.compacted');
+  const summaryFailures = turnEvents.filter((event) => event.type === 'context.summary.failed');
+  const retrievals = turnEvents.filter((event) => event.type === 'context.retrieved');
+  const verificationWarnings = completed.filter((event) => event.result?.output?.verificationStatus === 'warning');
   const metrics = {
     status: terminal?.type?.replace('turn.', '') ?? 'running',
     iterations: models.length,
@@ -47,6 +51,10 @@ export function evaluateScenario(scenario, events) {
     failedTools,
     duplicateCalls: duplicates,
     maxInputTokensPerRequest: maxInputTokens,
+    contextCompactions: compactions.length,
+    summaryFailures: summaryFailures.length,
+    retrievedEntries: retrievals.reduce((sum, event) => sum + Number(event.count ?? 0), 0),
+    verificationWarnings: verificationWarnings.length,
     answerChars: answers.join('\n').length,
     sideEffects,
     durationMs: terminal?.turn?.startedAt && terminal?.turn?.completedAt
@@ -63,6 +71,7 @@ export function evaluateScenario(scenario, events) {
     maxInputTokensPerRequest: 'maxInputTokensPerRequest',
     maxAnswerChars: 'answerChars',
     maxSideEffects: 'sideEffects',
+    maxSummaryFailures: 'summaryFailures',
   };
   const failures = [];
   if (metrics.status !== 'completed') failures.push(`状态为 ${metrics.status}`);
@@ -115,6 +124,8 @@ async function main() {
     iterations: result.metrics?.iterations ?? '-',
     tools: result.metrics?.toolCalls ?? '-',
     maxInput: result.metrics?.maxInputTokensPerRequest ?? '-',
+    compactions: result.metrics?.contextCompactions ?? '-',
+    retrieved: result.metrics?.retrievedEntries ?? '-',
     answerChars: result.metrics?.answerChars ?? '-',
     failures: result.failures.join('; '),
   })));
