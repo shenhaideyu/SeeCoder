@@ -5,6 +5,7 @@ import type { AgentEvent, SessionEvent, Thread } from '@seecoder/protocol';
 
 export class SessionStore {
   private readonly sequences = new Map<string, number>();
+  private readonly appendQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly root: string) {}
 
@@ -30,20 +31,29 @@ export class SessionStore {
   }
 
   async append(threadId: string, event: SessionEvent): Promise<void> {
-    const directory = this.threadDir(threadId);
-    await mkdir(directory, { recursive: true });
-    const next = (this.sequences.get(threadId) ?? 0) + 1;
-    this.sequences.set(threadId, next);
-    const persisted: SessionEvent = {
-      ...event,
-      version: 2,
-      id: event.id ?? randomUUID(),
-      seq: event.seq ?? next,
-      threadId: event.threadId ?? threadId,
-      event: { ...event.event, threadId: event.event.threadId ?? threadId },
-      payload: { ...event.event, threadId: event.event.threadId ?? threadId },
-    };
-    await appendFile(join(directory, 'events.jsonl'), `${JSON.stringify(persisted)}\n`, 'utf8');
+    const previous = this.appendQueues.get(threadId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const directory = this.threadDir(threadId);
+      await mkdir(directory, { recursive: true });
+      const next = (this.sequences.get(threadId) ?? 0) + 1;
+      this.sequences.set(threadId, next);
+      const persisted: SessionEvent = {
+        ...event,
+        version: 2,
+        id: event.id ?? randomUUID(),
+        seq: event.seq ?? next,
+        threadId: event.threadId ?? threadId,
+        event: { ...event.event, threadId: event.event.threadId ?? threadId },
+        payload: { ...event.event, threadId: event.event.threadId ?? threadId },
+      };
+      await appendFile(join(directory, 'events.jsonl'), `${JSON.stringify(persisted)}\n`, 'utf8');
+    });
+    this.appendQueues.set(threadId, current);
+    try {
+      await current;
+    } finally {
+      if (this.appendQueues.get(threadId) === current) this.appendQueues.delete(threadId);
+    }
   }
 
   async readEvents(threadId: string): Promise<SessionEvent[]> {
@@ -62,6 +72,7 @@ export class SessionStore {
             return [];
           }
         });
+      records.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
       const highest = records.reduce((max, record) => Math.max(max, record.seq ?? 0), 0);
       this.sequences.set(threadId, Math.max(this.sequences.get(threadId) ?? 0, highest));
       return records;

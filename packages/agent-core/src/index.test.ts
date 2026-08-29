@@ -131,6 +131,43 @@ describe('AgentCore', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it('adds one convergence reminder before the final three model iterations', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-convergence-'));
+    try {
+      const planningTurns = Array.from({ length: 21 }, (_, index) => [
+        {
+          type: 'toolCallDelta' as const,
+          callId: `plan-${index}`,
+          name: 'set_plan',
+          argsDelta: JSON.stringify({ steps: [{ id: 'finish', label: '完成剩余工作', status: 'running' }] }),
+        },
+        { type: 'completed' as const, finishReason: 'tool_calls' },
+      ]);
+      const provider = new RecordingProvider([
+        ...planningTurns,
+        [{ type: 'textDelta', text: '已收敛完成' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({
+        workspace: root,
+        provider,
+        model: { ...model, contextWindow: 200_000 },
+        store: new SessionStore(join(root, '.sessions')),
+        mode: 'auto',
+      });
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'turn.completed') resolve();
+      }));
+      const thread = await core.createThread('长任务收敛');
+      await core.startTurn(thread.id, '完成一个长任务');
+      await completed;
+
+      const reminder = '[迭代预算提醒]';
+      expect(provider.agentRequests).toHaveLength(22);
+      expect(provider.agentRequests[20]!.messages.some((message) => String(message.content).includes(reminder))).toBe(false);
+      expect(provider.agentRequests[21]!.messages.filter((message) => String(message.content).includes(reminder))).toHaveLength(1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('turns repeated exploration into a bounded tool result instead of an endless read loop', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-exploration-budget-'));
     try {

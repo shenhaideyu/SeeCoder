@@ -22,4 +22,42 @@ describe('SessionStore V2 JSONL', () => {
       expect(next.at(-1)?.payload?.type).toBe('message.user');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it('serializes concurrent appends per thread without reordering sequence numbers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-order-'));
+    try {
+      const store = new SessionStore(root);
+      await Promise.all(Array.from({ length: 40 }, (_, index) => store.append('thread-order', {
+        event: {
+          type: 'tool.output',
+          timestamp: `2026-01-01T00:00:${String(index).padStart(2, '0')}Z`,
+          callId: 'command-1',
+          stream: index % 2 ? 'stderr' : 'stdout',
+          text: String(index),
+          threadId: 'thread-order',
+        },
+      })));
+      const events = await store.readEvents('thread-order');
+      expect(events.map((record) => record.seq)).toEqual(Array.from({ length: 40 }, (_, index) => index + 1));
+      expect(events.map((record) => record.event.type === 'tool.output' ? record.event.text : '')).toEqual(Array.from({ length: 40 }, (_, index) => String(index)));
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('repairs previously persisted V2 records whose physical line order differs from seq', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-repair-order-'));
+    try {
+      const threadDir = join(root, 'sessions', 'thread-repair');
+      await (await import('node:fs/promises')).mkdir(threadDir, { recursive: true });
+      const record = (seq: number, text: string) => JSON.stringify({
+        version: 2,
+        seq,
+        threadId: 'thread-repair',
+        event: { type: 'tool.output', timestamp: '2026-01-01', callId: 'command-1', stream: 'stdout', text, threadId: 'thread-repair' },
+      });
+      await writeFile(join(threadDir, 'events.jsonl'), `${record(2, 'second')}\n${record(1, 'first')}\n`, 'utf8');
+      const events = await new SessionStore(root).readEvents('thread-repair');
+      expect(events.map((event) => event.seq)).toEqual([1, 2]);
+      expect(events.map((event) => event.event.type === 'tool.output' ? event.event.text : '')).toEqual(['first', 'second']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 });

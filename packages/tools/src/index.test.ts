@@ -35,6 +35,9 @@ describe('WorkspacePolicy', () => {
     expect(policy.canAutoApprove({ id: '2', name: 'run_command', args: { command: 'pnpm test', cwd: '.' } }, 'auto')).toBe(true);
     expect(policy.canAutoApprove({ id: '3', name: 'run_command', args: { command: 'Remove-Item -Recurse .git', cwd: '.' } }, 'auto')).toBe(false);
     expect(policy.canAutoApprove({ id: '4', name: 'write_file', args: { path: 'a.ts' } }, 'guided')).toBe(false);
+    expect(policy.canAutoApprove({ id: '5', name: 'apply_patch', args: { patch: '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch' } }, 'auto')).toBe(true);
+    expect(policy.canAutoApprove({ id: '6', name: 'apply_patch', args: { patch: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new' } }, 'auto')).toBe(true);
+    expect(policy.canAutoApprove({ id: '7', name: 'apply_patch', args: { patch: '*** Begin Patch\n*** Update File: ../outside.ts\n@@\n-old\n+new\n*** End Patch' } }, 'auto')).toBe(false);
   });
 });
 
@@ -137,6 +140,42 @@ describe('file tools', () => {
       const rejected = await tool!.execute({ patch: stale }, { workspace: root });
       expect(rejected.ok).toBe(false);
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('one\nchanged\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('applies the Codex patch format emitted by compatible coding models', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-codex-patch-'));
+    try {
+      await writeFile(join(root, 'a.txt'), 'header\none\ntwo\nfooter\n', 'utf8');
+      const tool = new ToolRegistry().get('apply_patch')!;
+      const patch = ['*** Begin Patch', '*** Update File: a.txt', '@@', ' one', '-two', '+changed', '*** End Patch'].join('\n');
+      const output = await tool.execute({ patch }, { workspace: root });
+      expect(output.ok).toBe(true);
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('header\none\nchanged\nfooter\n');
+
+      const stale = ['*** Begin Patch', '*** Update File: a.txt', '@@', ' missing', '-old', '+bad', '*** End Patch'].join('\n');
+      const rejected = await tool.execute({ patch: stale }, { workspace: root });
+      expect(rejected).toMatchObject({ ok: false, error: { code: 'patch_failed' } });
+      expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('header\none\nchanged\nfooter\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('preserves stdout, stderr and exit code when a command fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-command-failure-'));
+    try {
+      const output = await commandRunner(
+        `node -e "console.log('visible-output'); console.error('visible-diagnostic'); process.exit(3)"`,
+        root,
+        { workspace: root },
+      );
+      expect(output).toMatchObject({
+        ok: false,
+        error: { code: 'command_failed' },
+      });
+      const diagnostic = output.output as { exitCode: number; stdout: string; stderr: string };
+      expect(diagnostic.exitCode).not.toBe(0);
+      expect(diagnostic.stdout).toContain('visible-output');
+      expect(`${diagnostic.stdout}\n${diagnostic.stderr}`).toContain('visible-diagnostic');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

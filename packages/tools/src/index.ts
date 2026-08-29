@@ -71,7 +71,13 @@ export class WorkspacePolicy {
     if (mode === 'guided') return false;
     if (!['write_file', 'apply_patch', 'run_command', 'set_plan'].includes(call.name)) return true;
     if (call.name === 'set_plan') return true;
-    if (call.name === 'write_file' || call.name === 'apply_patch') {
+    if (call.name === 'apply_patch') {
+      const patch = (call.args as { patch?: unknown }).patch;
+      if (typeof patch !== 'string') return false;
+      const paths = extractPatchPaths(patch);
+      return paths.length > 0 && paths.every((path) => this.isInside(path));
+    }
+    if (call.name === 'write_file') {
       const args = call.args as { path?: unknown };
       return typeof args.path === 'string' && this.isInside(args.path);
     }
@@ -108,7 +114,7 @@ async function atomicWrite(path: string, content: string): Promise<void> {
 }
 
 function result(ok: boolean, output: unknown, durationMs: number, error?: ToolResult['error']): ToolResult {
-  return error ? { ok, error, durationMs } : { ok, output, durationMs };
+  return { ok, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}), durationMs };
 }
 
 async function readExisting(path: string): Promise<string | null> {
@@ -125,7 +131,38 @@ interface PatchFile {
   hunks: string[];
 }
 
+function extractPatchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const match of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/gm)) paths.add(match[1]!.trim());
+  for (const match of patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\t\r\n]+)$/gm)) {
+    if (match[1] !== '/dev/null') paths.add(match[1]!.trim());
+  }
+  return [...paths];
+}
+
+function parseCodexPatch(patch: string): PatchFile[] {
+  const lines = patch.replace(/\r\n/g, '\n').split('\n');
+  const files: PatchFile[] = [];
+  let current: PatchFile | undefined;
+  for (const line of lines) {
+    const file = line.match(/^\*\*\* Update File:\s*(.+)$/);
+    if (file) {
+      if (current) files.push(current);
+      current = { oldPath: file[1]!.trim(), newPath: file[1]!.trim(), hunks: [] };
+    } else if (line === '@@' && current) {
+      current.hunks.push('@@');
+    } else if (current && current.hunks.length > 0 && !line.startsWith('*** End Patch')) {
+      const last = current.hunks.length - 1;
+      current.hunks[last] = `${current.hunks[last]}\n${line}`;
+    }
+  }
+  if (current) files.push(current);
+  if (!files.length || files.some((file) => file.hunks.length === 0)) throw new Error('Codex 补丁格式无效');
+  return files;
+}
+
 function parseUnifiedPatch(patch: string): PatchFile[] {
+  if (patch.includes('*** Begin Patch')) return parseCodexPatch(patch);
   const lines = patch.replace(/\r\n/g, '\n').split('\n');
   const files: PatchFile[] = [];
   let current: PatchFile | undefined;
@@ -154,8 +191,9 @@ function applyFilePatch(before: string, file: PatchFile): string {
   for (const hunk of file.hunks) {
     const [header, ...body] = hunk.split('\n');
     const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-    if (!match) throw new Error(`补丁区块无效: ${header}`);
-    const expectedStart = Number(match[1]) - 1 + delta;
+    const contextOnly = header === '@@';
+    if (!match && !contextOnly) throw new Error(`补丁区块无效: ${header}`);
+    const expectedStart = match ? Number(match[1]) - 1 + delta : 0;
     const removed: string[] = [];
     const added: string[] = [];
     const patchBody = body.at(-1) === '' ? body.slice(0, -1) : body;
@@ -172,8 +210,8 @@ function applyFilePatch(before: string, file: PatchFile): string {
     const matchesAt = (index: number) => source.slice(index, index + removed.length).join('\n') === removed.join('\n');
     if (!matchesAt(start)) {
       const candidates: number[] = [];
-      const from = Math.max(0, expectedStart - 80);
-      const to = Math.min(source.length, expectedStart + 80);
+      const from = contextOnly ? 0 : Math.max(0, expectedStart - 80);
+      const to = contextOnly ? source.length : Math.min(source.length, expectedStart + 80);
       for (let index = from; index <= to; index += 1) if (matchesAt(index)) candidates.push(index);
       if (candidates.length !== 1) throw new Error(`补丁上下文不匹配: ${file.newPath}`);
       start = candidates[0]!;
@@ -380,7 +418,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'apply_patch', description: '应用 unified diff，所有区块校验通过后原子写入', sideEffect: true, risk: 'medium',
+      name: 'apply_patch', description: '应用标准 unified diff 或 *** Begin Patch / *** Update File 补丁；所有旧内容校验通过后原子写入', sideEffect: true, risk: 'medium',
       parameters: z.object({ patch: z.string().min(1) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { patch: string };
