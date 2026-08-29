@@ -7,6 +7,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {
   Activity,
+  AlertTriangle,
   Bell,
   Bot,
   Check,
@@ -34,6 +35,7 @@ import {
   Pin,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Send,
@@ -60,6 +62,7 @@ import type {
   ScheduleDefinition,
   SubagentState,
   Thread,
+  ToolResult,
 } from '@seecoder/protocol';
 import type { SeeCoderApi } from '../preload/preload';
 import './styles.css';
@@ -73,7 +76,12 @@ const previewThread: Thread = {
 };
 const previewResult = (output: unknown) => Promise.resolve({ ok: true, output, durationMs: 0 });
 const previewApi: SeeCoderApi = {
-  workspace: { select: async () => ({ cancelled: true }), open: async () => 'Preview' },
+  workspace: {
+    select: async () => ({ cancelled: true }),
+    list: async () => ({ current: 'Preview', recent: ['Preview'] }),
+    switch: async (workspace: string) => ({ workspace }),
+    open: async () => 'Preview',
+  },
   thread: {
     create: async (title?: string) => ({
       ...previewThread,
@@ -167,12 +175,17 @@ interface ActivityRecord {
   completed?: ToolCompletedEvent;
   auxiliary?: ActivityAuxiliaryEvent;
 }
+type ConversationRecord =
+  | { id: string; kind: 'message'; message: Extract<AgentEvent, { type: 'message.completed' | 'message.user' }> }
+  | { id: string; kind: 'activity'; activity: ActivityRecord }
+  | { id: string; kind: 'activity-group'; activities: ActivityRecord[] };
 interface InputRequest {
   requestId: string;
   question: string;
   choices?: string[];
   turnId: string;
 }
+type RunPhase = 'idle' | 'preparing' | 'model' | 'tool' | 'approval' | 'input' | 'review';
 interface UiState {
   threads: Thread[];
   selectedThread: Thread | undefined;
@@ -185,6 +198,7 @@ interface UiState {
   children: SubagentState[];
   terminal: string[];
   running: boolean;
+  phase: RunPhase;
   currentTurnId: string | undefined;
   mode: ExecutionMode;
   model: string;
@@ -212,6 +226,7 @@ const useStore = create<UiState>((set) => ({
   children: [],
   terminal: [],
   running: false,
+  phase: 'idle',
   currentTurnId: undefined,
   mode: 'guided',
   model: 'gpt-4o-mini',
@@ -224,27 +239,34 @@ const useStore = create<UiState>((set) => ({
       const next = [...state.events, { id: `${Date.now()}-${Math.random()}`, event }].slice(-800);
       if (event.type === 'message.delta')
         return {
-          events: next,
+          // Delta 只用于当前流式文本；持久保留会在长回复中挤掉工具、审批和终态事件。
+          events: state.events,
           streamingText: `${state.streamingText}${event.text}`,
           running: true,
+          phase: 'model',
           currentTurnId: event.turnId,
         };
       if (event.type === 'message.completed')
-        return { events: next, streamingText: '', running: true, currentTurnId: event.turnId };
+        return { events: next, streamingText: '', running: true, phase: 'preparing', currentTurnId: event.turnId };
       if (event.type === 'turn.started')
-        return { events: next, running: true, currentTurnId: event.turn.id };
+        return { events: next, running: true, phase: 'preparing', currentTurnId: event.turn.id };
+      if (event.type === 'model.requested')
+        return { events: next, running: true, phase: 'model', currentTurnId: event.turnId };
+      if (event.type === 'tool.requested')
+        return { events: next, running: true, phase: 'tool', currentTurnId: event.turnId };
       if (event.type === 'approval.requested')
         return {
           events: next,
           approvals: [...state.approvals, event.approval],
           running: true,
+          phase: 'approval',
           currentTurnId: event.approval.turnId,
         };
       if (event.type === 'approval.resolved')
-        return {
-          events: next,
-          approvals: state.approvals.filter((item) => item.id !== event.approvalId),
-        };
+        {
+          const approvals = state.approvals.filter((item) => item.id !== event.approvalId);
+          return { events: next, approvals, phase: approvals.length ? 'approval' : 'preparing' };
+        }
       if (event.type === 'user.input.requested')
         return {
           events: next,
@@ -258,13 +280,15 @@ const useStore = create<UiState>((set) => ({
             },
           ],
           running: true,
+          phase: 'input',
           currentTurnId: event.turnId,
         };
       if (event.type === 'user.input.resolved')
-        return {
-          events: next,
-          inputRequests: state.inputRequests.filter((item) => item.requestId !== event.requestId),
-        };
+        {
+          const inputRequests = state.inputRequests.filter((item) => item.requestId !== event.requestId);
+          return { events: next, inputRequests, phase: inputRequests.length ? 'input' : 'preparing' };
+        }
+      if (event.type === 'review.started') return { events: next, phase: 'review' };
       if (event.type === 'plan.updated') return { events: next, plans: event.steps };
       if (event.type === 'changes.created')
         return { events: next, changes: [...state.changes, event.changeSet] };
@@ -293,7 +317,15 @@ const useStore = create<UiState>((set) => ({
         event.type === 'turn.failed' ||
         event.type === 'turn.cancelled'
       )
-        return { events: next, running: false, streamingText: '', currentTurnId: undefined };
+        return {
+          events: next,
+          running: false,
+          phase: 'idle',
+          streamingText: '',
+          currentTurnId: undefined,
+          approvals: state.approvals.filter((item) => item.turnId !== event.turn.id),
+          inputRequests: state.inputRequests.filter((item) => item.turnId !== event.turn.id),
+        };
       return { events: next };
     }),
 }));
@@ -317,6 +349,89 @@ const formatCommandOutput = (value: unknown): string => {
   return JSON.stringify(output ?? '', null, 2);
 };
 
+const toolPresentation: Record<string, { label: string; description: string }> = {
+  list_files: { label: '浏览项目文件', description: '查看目录结构' },
+  read_file: { label: '读取文件', description: '读取项目上下文' },
+  read_files: { label: '批量读取文件', description: '收集相关代码上下文' },
+  search_text: { label: '搜索代码', description: '定位相关实现' },
+  write_file: { label: '写入文件', description: '更新工作区内容' },
+  apply_patch: { label: '应用代码修改', description: '更新工作区内容' },
+  run_command: { label: '运行命令', description: '执行验证或构建' },
+  git_diff: { label: '检查代码变更', description: '读取 Git Diff' },
+  set_plan: { label: '更新执行计划', description: '同步任务进度' },
+  delegate: { label: '委派子 Agent', description: '并行收集只读证据' },
+  review_changes: { label: '审查代码变更', description: '检查缺陷与测试缺口' },
+  checkpoint: { label: '创建恢复点', description: '保存当前修改快照' },
+  compact_context: { label: '整理上下文', description: '压缩较早的任务记录' },
+  ask_user: { label: '请求用户确认', description: '等待补充信息' },
+  finish: { label: '完成任务', description: '汇总变更与验证证据' },
+};
+
+const isToolControlSignal = (result: ToolResult | undefined): boolean =>
+  result?.error?.code === 'exploration_budget_exhausted';
+
+function friendlyAgentError(message: string): { title: string; summary: string } {
+  if (/tool_call_id|deserialize|invalid_request_error/i.test(message)) {
+    return {
+      title: '模型接口格式不兼容',
+      summary: '兼容接口拒绝了工具调用上下文。可重试任务；若仍失败，请检查模型与接口配置。',
+    };
+  }
+  if (/401|unauthorized|api.?key/i.test(message)) {
+    return { title: '模型鉴权失败', summary: '请在设置中检查 API Key，然后重新尝试。' };
+  }
+  if (/429|rate.?limit/i.test(message)) {
+    return { title: '请求过于频繁', summary: '模型服务暂时限流，请稍后重新尝试。' };
+  }
+  if (/timeout|timed out/i.test(message)) {
+    return { title: '执行超时', summary: '模型或工具未在限制时间内完成，可缩小任务范围后重试。' };
+  }
+  return {
+    title: '任务未完成',
+    summary: message.length > 180 ? `${message.slice(0, 177)}…` : message,
+  };
+}
+
+function InlineMarkdown({ text }: { text: string }): React.JSX.Element {
+  const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g);
+  return (
+    <>
+      {parts.map((part, index) => {
+        if (part.startsWith('`') && part.endsWith('`')) {
+          return <code key={`${index}-${part}`}>{part.slice(1, -1)}</code>;
+        }
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={`${index}-${part}`}>{part.slice(2, -2)}</strong>;
+        }
+        return <React.Fragment key={`${index}-${part}`}>{part}</React.Fragment>;
+      })}
+    </>
+  );
+}
+
+function MarkdownMessage({ text }: { text: string }): React.JSX.Element {
+  const blocks = text.split(/(```[\s\S]*?```)/g).filter(Boolean);
+  return (
+    <div className="markdown-message">
+      {blocks.map((block, blockIndex) => {
+        if (block.startsWith('```') && block.endsWith('```')) {
+          const body = block.slice(3, -3).replace(/^[^\n]*\n/, '');
+          return <pre key={`${blockIndex}-${block.slice(0, 12)}`}><code>{body}</code></pre>;
+        }
+        return block.split(/\r?\n/).map((line, lineIndex) => {
+          const trimmed = line.trim();
+          if (!trimmed) return <span className="markdown-gap" key={`${blockIndex}-${lineIndex}`} />;
+          const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+          if (bullet) {
+            return <div className="markdown-list-item" key={`${blockIndex}-${lineIndex}`}><span>•</span><div><InlineMarkdown text={bullet[1] ?? ''} /></div></div>;
+          }
+          return <div className="markdown-line" key={`${blockIndex}-${lineIndex}`}><InlineMarkdown text={line} /></div>;
+        });
+      })}
+    </div>
+  );
+}
+
 function App(): React.JSX.Element {
   const state = useStore();
   const {
@@ -331,6 +446,7 @@ function App(): React.JSX.Element {
     children,
     terminal,
     running,
+    phase,
     currentTurnId,
     mode,
     model,
@@ -340,6 +456,7 @@ function App(): React.JSX.Element {
   const set = state.set;
   const addEvent = state.addEvent;
   const [workspace, setWorkspace] = useState('未选择工作区');
+  const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
   const [page, setPage] = useState<
     'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about'
   >('task');
@@ -368,6 +485,8 @@ function App(): React.JSX.Element {
     void (async () => {
       const settings = await window.seecoder.settings.read();
       setWorkspace(settings.workspace);
+      const workspaceList = await window.seecoder.workspace.list();
+      setRecentWorkspaces(workspaceList.recent);
       set({ mode: settings.mode, model: settings.model });
       const list = (await window.seecoder.thread.list()) as Thread[];
       if (list.length) {
@@ -400,8 +519,8 @@ function App(): React.JSX.Element {
   }, [toast, set]);
   useEffect(() => {
     const describe = (value: unknown): string => {
-      if (value instanceof Error) return value.message;
-      if (typeof value === 'string') return value;
+      const message = value instanceof Error ? value.message : typeof value === 'string' ? value : '';
+      if (message) return message.split(/\r?\n/)[0]!.slice(0, 240);
       return '未知错误';
     };
     const onError = (event: ErrorEvent) => set({ toast: `操作失败：${describe(event.error ?? event.message)}` });
@@ -427,6 +546,9 @@ function App(): React.JSX.Element {
       plans: [],
       reviewFindings: [],
       streamingText: '',
+      running: false,
+      phase: 'idle',
+      currentTurnId: undefined,
     });
     history.forEach(addEvent);
   }
@@ -437,8 +559,9 @@ function App(): React.JSX.Element {
   }
   async function newThread(): Promise<void> {
     const created = (await window.seecoder.thread.create('新的 SeeCoder 任务')) as Thread;
+    const currentThreads = useStore.getState().threads;
     set({
-      threads: [created, ...threads],
+      threads: [created, ...currentThreads.filter((thread) => thread.id !== created.id)],
       selectedThread: created,
       events: [],
       approvals: [],
@@ -449,6 +572,9 @@ function App(): React.JSX.Element {
       terminal: [],
       reviewFindings: [],
       streamingText: '',
+      running: false,
+      phase: 'idle',
+      currentTurnId: undefined,
     });
     setPage('task');
   }
@@ -458,23 +584,27 @@ function App(): React.JSX.Element {
       workspace?: string;
     };
     if (!selected.cancelled && selected.workspace) {
-      setWorkspace(selected.workspace);
-      const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
-      const created = (await window.seecoder.thread.create('新工作区任务')) as Thread;
-      set({
-        threads: [created, ...workspaceThreads.filter((thread) => thread.id !== created.id)],
-        selectedThread: created,
-        events: [],
-        approvals: [],
-        inputRequests: [],
-        plans: [],
-        changes: [],
-        children: [],
-        terminal: [],
-        reviewFindings: [],
-      });
-      setPage('task');
+      await loadWorkspace(selected.workspace);
     }
+  }
+  async function switchRecentWorkspace(nextWorkspace: string): Promise<void> {
+    if (nextWorkspace === workspace) return;
+    const selected = await window.seecoder.workspace.switch(nextWorkspace);
+    await loadWorkspace(selected.workspace);
+  }
+  async function loadWorkspace(nextWorkspace: string): Promise<void> {
+    setWorkspace(nextWorkspace);
+    const workspaceList = await window.seecoder.workspace.list();
+    setRecentWorkspaces(workspaceList.recent);
+    const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
+    const selected = workspaceThreads[0] ?? (await window.seecoder.thread.create('新工作区任务')) as Thread;
+    set({
+      threads: workspaceThreads.length ? workspaceThreads : [selected],
+      selectedThread: selected,
+      events: [], approvals: [], inputRequests: [], plans: [], changes: [], children: [], terminal: [], reviewFindings: [], streamingText: '', running: false, phase: 'idle', currentTurnId: undefined,
+    });
+    await loadThread(selected);
+    setPage('task');
   }
   async function send(): Promise<void> {
     const text = composer.trim();
@@ -488,7 +618,7 @@ function App(): React.JSX.Element {
         set({ toast: '已加入当前任务的追加要求' });
         return;
       }
-      set({ running: true, streamingText: '' });
+      set({ running: true, phase: 'preparing', streamingText: '' });
       const turnId = (await window.seecoder.turn.start(
         selectedThread.id,
         text,
@@ -505,7 +635,7 @@ function App(): React.JSX.Element {
       }
       setAttachments([]);
     } catch (error) {
-      set({ running: false, currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
+      set({ running: false, phase: 'idle', currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
     }
   }
   async function setExecutionMode(next: ExecutionMode): Promise<void> {
@@ -525,7 +655,7 @@ function App(): React.JSX.Element {
       set({ mode: 'plan', toast: '下一轮将只读分析并生成计划' });
     }
   }
-  async function replan(): Promise<void> { if (!selectedThread) return; set({ running: true }); const turnId = (await window.seecoder.turn.start(selectedThread.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
+  async function replan(): Promise<void> { if (!selectedThread) return; set({ running: true, phase: 'preparing' }); const turnId = (await window.seecoder.turn.start(selectedThread.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
   function editPlanStep(id: string): void { const label = window.prompt('编辑计划步骤'); if (label?.trim()) set({ plans: plans.map((step) => step.id === id ? { ...step, label: label.trim() } : step), toast: '计划步骤已更新（将在下一轮同步给模型）' }); }
   async function resolveApproval(approval: Approval, decision: 'allow' | 'deny'): Promise<void> {
     await window.seecoder.approval.resolve(
@@ -561,8 +691,10 @@ function App(): React.JSX.Element {
       const value = (await window.seecoder.git.status()) as { output?: unknown };
       setGitText(formatCommandOutput(value));
     } catch (error) {
-      const message = error instanceof Error ? error.message : '无法读取 Git 状态';
-      setGitText(`Git 状态读取失败：${message}`);
+      const raw = error instanceof Error ? error.message : '无法读取 Git 状态';
+      const marker = 'Git 操作已禁用';
+      const message = raw.includes(marker) ? raw.slice(raw.indexOf(marker)) : `Git 状态读取失败：${raw}`;
+      setGitText(message);
       set({ toast: message });
     }
   }
@@ -625,6 +757,18 @@ function App(): React.JSX.Element {
     set({ toast: resultOutput(result) ? `已暂存 ${path}` : 'Stage 未完成，请检查 Git 状态' });
   }
   async function restoreCheckpoint(id: string): Promise<void> { const result = await window.seecoder.checkpoint.restore(id); set({ toast: resultOutput(result) ? 'Checkpoint 已恢复' : 'Checkpoint 恢复失败' }); await loadGit(); }
+  function retryLastTask(): void {
+    const lastUserMessage = [...events]
+      .reverse()
+      .map((item) => item.event)
+      .find((event): event is Extract<AgentEvent, { type: 'message.user' }> => event.type === 'message.user');
+    if (!lastUserMessage) {
+      set({ toast: '没有可重试的任务内容' });
+      return;
+    }
+    setComposer(lastUserMessage.text);
+    set({ toast: '上次任务已放回输入框，可修改后重新发送' });
+  }
   function feedback(kind: 'like' | 'dislike'): void {
     set({ toast: kind === 'like' ? '感谢反馈，已记录为有帮助' : '已记录改进反馈' });
   }
@@ -635,7 +779,7 @@ function App(): React.JSX.Element {
       setPage('task');
       setInspector('trace');
       if (selectedThread) {
-        set({ running: true });
+        set({ running: true, phase: 'preparing' });
         const turnId = (await window.seecoder.turn.start(selectedThread.id, '请调用 review_changes 审查当前工作区变更，并按严重度输出发现。')) as string;
         set({ currentTurnId: turnId });
       } else set({ toast: '请先选择任务' });
@@ -644,7 +788,19 @@ function App(): React.JSX.Element {
       await loadGit();
       setInspector('files');
     } else if (command === '/skills') setPage('plugins');
-    else if (command === '/compact') set({ toast: '下一轮将根据上下文预算自动压缩历史' });
+    else if (command === '/compact') {
+      setPage('task');
+      setInspector('trace');
+      if (selectedThread) {
+        set({ running: true, phase: 'preparing' });
+        try {
+          const turnId = (await window.seecoder.turn.start(selectedThread.id, '请立即调用 compact_context 整理当前对话上下文；完成后只简要报告压缩结果，不执行其他工具。')) as string;
+          set({ currentTurnId: turnId });
+        } catch (error) {
+          set({ running: false, phase: 'idle', toast: `压缩启动失败：${error instanceof Error ? error.message : '请稍后重试'}` });
+        }
+      } else set({ toast: '请先选择任务' });
+    }
   }
   useEffect(() => {
     const listener = () => void showCommandPalette();
@@ -652,16 +808,6 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('seecoder:command', listener);
   });
 
-  const currentMessages = useMemo(
-    () =>
-      events
-        .map((item) => item.event)
-        .filter(
-          (event): event is Extract<AgentEvent, { type: 'message.completed' | 'message.user' }> =>
-            event.type === 'message.completed' || event.type === 'message.user',
-        ),
-    [events],
-  );
   const visibleThreads = threads.filter(
     (thread) =>
       !thread.archived && (!search || thread.title.toLowerCase().includes(search.toLowerCase())),
@@ -671,12 +817,14 @@ function App(): React.JSX.Element {
     <div className={`app-shell ${theme}`}>
       <Sidebar
         workspace={workspace}
+        recentWorkspaces={recentWorkspaces}
         page={page}
         setPage={setPage}
         threads={visibleThreads}
         selectedThread={selectedThread}
         onThread={selectThread}
         onWorkspace={chooseWorkspace}
+        onWorkspaceSwitch={switchRecentWorkspace}
         onNew={newThread}
         search={search}
         setSearch={setSearch}
@@ -689,7 +837,7 @@ function App(): React.JSX.Element {
             selectedThread={selectedThread}
             mode={mode}
             running={running}
-            currentMessages={currentMessages}
+            phase={phase}
             streamingText={streamingText}
             events={events}
             plans={plans}
@@ -711,7 +859,8 @@ function App(): React.JSX.Element {
             onMenu={showThreadMenu}
             onBranch={showBranches}
             onRestoreCheckpoint={restoreCheckpoint}
-            onOpenInspector={() => { setCollapsed(false); setInspector('changes'); }}
+            onRetry={retryLastTask}
+            onOpenInspector={() => { setCollapsed(false); setInspector('trace'); }}
           />
         ) : (
           <WorkspacePage
@@ -749,17 +898,19 @@ function App(): React.JSX.Element {
             <div className="inspector-tabs">
               {(
                 [
-                  ['changes', 'Changes', GitBranch],
-                  ['files', 'Files', FolderOpen],
-                  ['terminal', 'Terminal', Terminal],
-                  ['preview', 'Preview', ExternalLink],
-                  ['trace', 'Trace', Activity],
+                  ['changes', '变更', GitBranch],
+                  ['files', '文件', FolderOpen],
+                  ['terminal', '终端', Terminal],
+                  ['preview', '预览', ExternalLink],
+                  ['trace', '轨迹', Activity],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
                   key={key}
                   data-action={`inspector-${key}`}
                   className={inspector === key ? 'active' : ''}
+                  title={label}
+                  aria-label={label}
                   onClick={() => {
                     setInspector(key);
                     if (key === 'files') void loadFiles();
@@ -811,12 +962,14 @@ function App(): React.JSX.Element {
 
 function Sidebar({
   workspace,
+  recentWorkspaces,
   page,
   setPage,
   threads,
   selectedThread,
   onThread,
   onWorkspace,
+  onWorkspaceSwitch,
   onNew,
   search,
   setSearch,
@@ -824,6 +977,7 @@ function Sidebar({
   onTheme,
 }: {
   workspace: string;
+  recentWorkspaces: string[];
   page: string;
   setPage: (
     page: 'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about',
@@ -832,12 +986,14 @@ function Sidebar({
   selectedThread: Thread | undefined;
   onThread: (thread: Thread) => void;
   onWorkspace: () => void;
+  onWorkspaceSwitch: (workspace: string) => void;
   onNew: () => void;
   search: string;
   setSearch: (value: string) => void;
   onNotify: () => void;
   onTheme: () => void;
 }): React.JSX.Element {
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const nav = [
     ['pulls', '拉取请求', GitBranch],
     ['sites', '站点 / 预览', ExternalLink],
@@ -879,11 +1035,26 @@ function Sidebar({
           <span className="notification-dot" />
         </button>
       </div>
-      <button className="workspace-button" data-action="choose-workspace" onClick={onWorkspace}>
+      <div className="workspace-switcher">
+      <button className="workspace-button" data-action="workspace-menu" aria-expanded={workspaceMenuOpen} title={workspace} onClick={() => setWorkspaceMenuOpen((value) => !value)}>
         <FolderOpen size={16} />
-        <span className="truncate">{workspace.split(/[\\/]/).pop()}</span>
+        <span className="workspace-button-label"><strong className="truncate">{workspace.split(/[\\/]/).pop()}</strong><small className="truncate">{workspace}</small></span>
         <ChevronDown size={14} />
       </button>
+      {workspaceMenuOpen && (
+        <div className="workspace-menu" role="menu">
+          <div className="workspace-menu-title">工作区</div>
+          {recentWorkspaces.map((item) => (
+            <button key={item} role="menuitem" data-action="switch-workspace" className={`workspace-option ${item === workspace ? 'active' : ''}`} title={item} onClick={() => { setWorkspaceMenuOpen(false); onWorkspaceSwitch(item); }}>
+              <FolderOpen size={14} /><span><strong className="truncate">{item.split(/[\\/]/).pop()}</strong><small className="truncate">{item}</small></span>{item === workspace && <Check size={13} />}
+            </button>
+          ))}
+          <button className="workspace-option browse" role="menuitem" data-action="choose-workspace" onClick={() => { setWorkspaceMenuOpen(false); onWorkspace(); }}>
+            <Plus size={14} /><span><strong>添加工作区…</strong><small>选择本地项目文件夹</small></span>
+          </button>
+        </div>
+      )}
+      </div>
       <button className="new-task" data-action="new-task" onClick={onNew}>
         <Plus size={16} />
         新建任务<span className="shortcut">Ctrl N</span>
@@ -949,7 +1120,7 @@ function TaskPage({
   selectedThread,
   mode,
   running,
-  currentMessages,
+  phase,
   streamingText,
   events,
   plans,
@@ -971,12 +1142,13 @@ function TaskPage({
   onMenu,
   onBranch,
   onRestoreCheckpoint,
+  onRetry,
   onOpenInspector,
 }: {
   selectedThread: Thread | undefined;
   mode: ExecutionMode;
   running: boolean;
-  currentMessages: Array<Extract<AgentEvent, { type: 'message.completed' | 'message.user' }>>;
+  phase: RunPhase;
   streamingText: string;
   events: TimelineItem[];
   plans: PlanStep[];
@@ -1004,32 +1176,73 @@ function TaskPage({
   onMenu: () => void;
   onBranch: () => void;
   onRestoreCheckpoint: (id: string) => void;
+  onRetry: () => void;
   onOpenInspector: () => void;
 }): React.JSX.Element {
-  const activityRecords = useMemo(() => {
-    const records: ActivityRecord[] = [];
-    const byCallId = new Map<string, ActivityRecord>();
-    events.forEach(({ event }) => {
-      if (event.type === 'tool.requested') {
-        const record = byCallId.get(event.call.id) ?? { id: `tool-${event.call.id}` };
-        record.requested = event;
-        byCallId.set(event.call.id, record);
-        if (!records.includes(record)) records.push(record);
+  const conversationRecords = useMemo(() => {
+    const records: ConversationRecord[] = [];
+    const activityByCallId = new Map<string, ActivityRecord>();
+    events.forEach(({ id, event }) => {
+      if (event.type === 'message.user' || event.type === 'message.completed') {
+        records.push({ id, kind: 'message', message: event });
+      } else if (event.type === 'tool.requested') {
+        const activity = activityByCallId.get(event.call.id) ?? { id: `tool-${event.call.id}` };
+        activity.requested = event;
+        activityByCallId.set(event.call.id, activity);
+        if (!records.some((record) => record.kind === 'activity' && record.activity === activity)) {
+          records.push({ id: activity.id, kind: 'activity', activity });
+        }
       } else if (event.type === 'tool.completed') {
-        const record = byCallId.get(event.callId) ?? { id: `tool-${event.callId}` };
-        record.completed = event;
-        byCallId.set(event.callId, record);
-        if (!records.includes(record)) records.push(record);
+        const activity = activityByCallId.get(event.callId) ?? { id: `tool-${event.callId}` };
+        activity.completed = event;
+        activityByCallId.set(event.callId, activity);
+        if (!records.some((record) => record.kind === 'activity' && record.activity === activity)) {
+          records.push({ id: activity.id, kind: 'activity', activity });
+        }
       } else if (event.type === 'context.compacted' || event.type === 'checkpoint.created') {
-        records.push({ id: `${event.type}-${event.type === 'checkpoint.created' ? event.checkpoint.id : event.timestamp}`, auxiliary: event });
+        const activity: ActivityRecord = { id, auxiliary: event };
+        records.push({ id, kind: 'activity', activity });
       }
     });
-    return records;
+    const grouped: ConversationRecord[] = [];
+    let exploration: ActivityRecord[] = [];
+    const flushExploration = () => {
+      if (exploration.length === 1) grouped.push({ id: exploration[0]!.id, kind: 'activity', activity: exploration[0]! });
+      else if (exploration.length > 1) grouped.push({ id: `group-${exploration[0]!.id}`, kind: 'activity-group', activities: exploration });
+      exploration = [];
+    };
+    for (const record of records) {
+      const name = record.kind === 'activity' ? record.activity.requested?.call.name : undefined;
+      const canGroup = record.kind === 'activity'
+        && Boolean(record.activity.completed)
+        && ['list_files', 'read_file', 'read_files', 'search_text', 'git_diff'].includes(name ?? '');
+      if (canGroup) exploration.push(record.activity);
+      else { flushExploration(); grouped.push(record); }
+    }
+    flushExploration();
+    return grouped;
   }, [events]);
   const latestTurnResult = useMemo(
     () => [...events].reverse().find(({ event }) => event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled'),
     [events],
   );
+  const hasConversation = conversationRecords.length > 0 || streamingText.length > 0 || plans.length > 0;
+  const failure = latestTurnResult?.event.type === 'turn.failed'
+    ? friendlyAgentError(latestTurnResult.event.error.message)
+    : undefined;
+  const planActionsEnabled = latestTurnResult?.event.type !== 'turn.cancelled'
+    && latestTurnResult?.event.type !== 'turn.failed';
+  const phaseText: Record<RunPhase, string> = {
+    idle: '就绪', preparing: '准备下一步', model: '调用模型', tool: '执行工具', approval: '等待确认', input: '等待输入', review: '审查变更',
+  };
+  const conversationRef = useRef<HTMLElement>(null);
+  const autoFollowRef = useRef(true);
+  useEffect(() => {
+    const container = conversationRef.current;
+    if (!container || !autoFollowRef.current) return;
+    const frame = window.requestAnimationFrame(() => container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversationRecords.length, streamingText, approvals.length, inputRequests.length, running]);
   return (
     <>
       <header className="topbar">
@@ -1053,7 +1266,7 @@ function TaskPage({
           </button>
         </div>
         <div className="top-actions">
-          <span className={`run-status ${running ? 'running' : ''}`}><span className="status-dot" />{running ? '运行中' : '就绪'}</span>
+          <span className={`run-status ${running ? 'running' : ''} phase-${phase}`}><span className="status-dot" />{phaseText[phase]}</span>
           <button data-action="branch" className="ghost-button" onClick={onBranch}>
             <GitBranch size={14} />
             {selectedThread?.branch ?? 'main'}
@@ -1081,8 +1294,15 @@ function TaskPage({
           </button>
         </div>
       </header>
-      <section className="conversation">
-        <div className="welcome">
+      <section
+        ref={conversationRef}
+        className="conversation"
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          autoFollowRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 140;
+        }}
+      >
+        {!hasConversation && <div className="welcome">
           <div className="welcome-orb">
             <Sparkles size={23} />
           </div>
@@ -1090,8 +1310,8 @@ function TaskPage({
             <h1>让代码，自己找到答案。</h1>
             <p>描述一个目标，SeeCoder 会探索、修改并验证你的工作区。</p>
           </div>
-        </div>
-        {plans.length > 0 && <PlanCard plans={plans} mode={mode} onApprove={onPlan} onReplan={onReplan} onEdit={onEditPlan} />}
+        </div>}
+        {plans.length > 0 && <PlanCard plans={plans} mode={mode} actionsEnabled={planActionsEnabled} onApprove={onPlan} onReplan={onReplan} onEdit={onEditPlan} />}
         {reviewFindings.length > 0 && (
           <div className="review-summary">
             <div className="card-heading">
@@ -1113,12 +1333,22 @@ function TaskPage({
           </div>
         )}
         <div className="message-stack">
-          {currentMessages.map((message) => (
-            <MessageCard
-              key={`${message.type}-${message.turnId}-${message.timestamp}`}
-              message={message}
-              onCopy={onCopy}
-              onFeedback={onFeedback}
+          {conversationRecords.map((record) => record.kind === 'message' ? (
+            <MessageCard key={record.id} message={record.message} onCopy={onCopy} onFeedback={onFeedback} />
+          ) : record.kind === 'activity-group' ? (
+            <ActivityGroupCard
+              key={record.id}
+              records={record.activities}
+              expanded={Boolean(expanded[record.id])}
+              onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
+            />
+          ) : (
+            <ActivityCard
+              key={record.id}
+              record={record.activity}
+              expanded={Boolean(expanded[record.id])}
+              onRestoreCheckpoint={onRestoreCheckpoint}
+              onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
             />
           ))}
           {streamingText && (
@@ -1138,15 +1368,6 @@ function TaskPage({
               </div>
             </div>
           )}
-          {activityRecords.map((record) => (
-              <ActivityCard
-                key={record.id}
-                record={record}
-                expanded={Boolean(expanded[record.id])}
-                onRestoreCheckpoint={onRestoreCheckpoint}
-                onToggle={() => setExpanded((value) => ({ ...value, [record.id]: !value[record.id] }))}
-              />
-            ))}
           {approvals.map((approval) => (
             <ApprovalCard
               key={approval.id}
@@ -1168,8 +1389,9 @@ function TaskPage({
               <Users size={15} />
               协作 Agent{' '}
               <span className="card-meta">
-                {children.filter((child) => child.status === 'completed').length}/{children.length}{' '}
-                已完成
+                {children.filter((child) => child.status === 'completed').length} 完成
+                {children.some((child) => child.status === 'failed') && ` · ${children.filter((child) => child.status === 'failed').length} 失败`}
+                {children.some((child) => child.status === 'running') && ` · ${children.filter((child) => child.status === 'running').length} 运行中`}
               </span>
             </div>
             {children.map((child) => (
@@ -1179,10 +1401,12 @@ function TaskPage({
                 <span className="truncate">{child.task}</span>
                 <span className="child-result">
                   {child.status === 'completed'
-                    ? '完成'
+                    ? `完成 · ${child.iteration ?? 0} 轮`
                     : child.status === 'running'
-                      ? '运行中'
-                      : child.status}
+                      ? `${child.currentAction ?? '运行中'} · 第 ${child.iteration ?? 1} 轮`
+                      : child.status === 'failed'
+                        ? `失败${child.errorCode ? ` · ${child.errorCode}` : ''}`
+                        : child.status === 'cancelled' ? '已取消' : '排队中'}
                 </span>
               </div>
             ))}
@@ -1195,22 +1419,41 @@ function TaskPage({
             </div>
             <div>
               <strong>任务完成</strong>
-              <span>变更、测试和轨迹证据已保存。</span>
+              <span>对话与执行轨迹已保存。</span>
             </div>
             <button data-action="view-result" onClick={onOpenInspector}>
               <PanelRight size={14} />
-              查看结果
+              查看轨迹
             </button>
           </div>
         )}
-        {latestTurnResult?.event.type === 'turn.failed' && (
-          <div className="complete-banner failure-banner">
-            <div className="complete-icon"><X size={15} /></div>
+        {latestTurnResult?.event.type === 'turn.failed' && failure && (
+          <div className="complete-banner failure-banner" role="alert">
+            <div className="complete-icon"><AlertTriangle size={15} /></div>
             <div>
-              <strong>任务失败</strong>
-              <span>{latestTurnResult.event.error.message}</span>
+              <strong>{failure.title}</strong>
+              <span>{failure.summary}</span>
             </div>
-            <button data-action="view-failure" onClick={onOpenInspector}>
+            <div className="failure-actions">
+              <button data-action="retry-turn" onClick={onRetry}>
+                <RefreshCw size={14} />
+                重新尝试
+              </button>
+              <button data-action="view-failure" onClick={onOpenInspector}>
+              <PanelRight size={14} />
+                查看详情
+              </button>
+            </div>
+          </div>
+        )}
+        {latestTurnResult?.event.type === 'turn.cancelled' && (
+          <div className="complete-banner cancelled-banner" role="status">
+            <div className="complete-icon"><Square size={13} /></div>
+            <div>
+              <strong>任务已取消</strong>
+              <span>模型请求、工具和子 Agent 已停止，不会在后台继续执行。</span>
+            </div>
+            <button data-action="view-cancelled" onClick={onOpenInspector}>
               <PanelRight size={14} />
               查看轨迹
             </button>
@@ -1224,12 +1467,14 @@ function TaskPage({
 function PlanCard({
   plans,
   mode,
+  actionsEnabled,
   onApprove,
   onReplan,
   onEdit,
 }: {
   plans: PlanStep[];
   mode: ExecutionMode;
+  actionsEnabled: boolean;
   onApprove: () => void;
   onReplan: () => void;
   onEdit: (id: string) => void;
@@ -1242,7 +1487,7 @@ function PlanCard({
         <span className="card-meta">
           {plans.filter((step) => step.status === 'completed').length}/{plans.length}
         </span>
-        {mode === 'plan' && (
+        {mode === 'plan' && actionsEnabled && (
           <><button className="small-button" data-action="replan" onClick={onReplan}>重新规划</button><button className="small-button primary" data-action="approve-plan" onClick={onApprove}><Play size={12} />批准实施</button></>
         )}
       </div>
@@ -1286,7 +1531,7 @@ function MessageCard({
           <span>{message.type === 'message.user' ? '你' : 'SeeCoder'}</span>
           <span>{timeLabel(message.timestamp)}</span>
         </div>
-        <div className="message-text">{message.text}</div>
+        <div className="message-text"><MarkdownMessage text={message.text} /></div>
         <div className="message-actions">
           <button data-action="copy-message" title="复制" onClick={() => onCopy(message.text)}>
             <Copy size={13} />
@@ -1327,22 +1572,47 @@ function ActivityCard({
     : detail;
   const isTool = Boolean(record.requested || record.completed);
   const isSuccess = record.completed?.result.ok ?? false;
-  const isError = Boolean(record.completed && !record.completed.result.ok);
-  const label = record.requested?.call.name
-    ?? (record.completed ? `工具 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? 'Checkpoint 已创建' : '上下文已压缩');
-  const status = record.completed
-    ? record.completed.result.ok ? '已完成' : (record.completed.result.error?.message ?? '执行失败')
-    : record.auxiliary?.type === 'checkpoint.created' ? '可恢复' : isTool ? '执行中' : '已记录';
+  const isControlled = isToolControlSignal(record.completed?.result);
+  const isError = Boolean(record.completed && !record.completed.result.ok && !isControlled);
+  const toolName = record.requested?.call.name;
+  const finishOutput = toolName === 'finish' && record.completed?.result.output && typeof record.completed.result.output === 'object'
+    ? record.completed.result.output as { verificationStatus?: string; warning?: string }
+    : undefined;
+  const verificationWarning = finishOutput?.verificationStatus === 'warning' ? finishOutput.warning : undefined;
+  if (toolName === 'finish' && !verificationWarning) return <></>;
+  const presentation = toolName ? toolPresentation[toolName] : undefined;
+  const label = verificationWarning ? '完成，但验证已过期'
+    : presentation?.label
+    ?? toolName
+    ?? (record.completed ? `工具调用 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? '已创建恢复点' : '已整理上下文');
+  const compactedMetrics = record.auxiliary?.type === 'context.compacted' ? record.auxiliary.metrics : undefined;
+  const status = verificationWarning
+    ? verificationWarning
+    : compactedMetrics
+      ? `约 ${compactedMetrics.beforeTokens} → ${compactedMetrics.afterTokens} tokens · ${compactedMetrics.summarySource === 'model' ? '模型摘要' : '确定性回退'}`
+      : record.completed
+    ? record.completed.result.ok
+      ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
+      : isControlled ? '探索已按预算停止，请使用现有证据继续' : '执行失败，展开查看详情'
+    : record.auxiliary?.type === 'checkpoint.created'
+      ? '可恢复'
+      : isTool
+        ? toolName === 'ask_user' ? '等待你的选择' : '执行中'
+        : '已记录';
   return (
     <div
-      className={`activity ${isError ? 'error' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
+      className={`activity ${isError ? 'error' : verificationWarning ? 'warning' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
     >
-      <button className="activity-head" data-action="toggle-activity" onClick={onToggle}>
+      <button className="activity-head" data-action="toggle-activity" aria-expanded={expanded} onClick={onToggle}>
         <div className="activity-icon">
-          {record.auxiliary?.type === 'checkpoint.created' ? (
+          {verificationWarning ? (
+            <AlertTriangle size={14} />
+          ) : record.auxiliary?.type === 'checkpoint.created' ? (
             <RotateCcw size={14} />
           ) : isSuccess ? (
             <Check size={14} />
+          ) : isControlled ? (
+            <Zap size={14} />
           ) : isError ? (
             <X size={14} />
           ) : (
@@ -1358,6 +1628,7 @@ function ActivityCard({
       </button>
       {expanded && (
         <div className="activity-detail">
+          {toolName && <div className="activity-technical">工具标识：<code>{toolName}</code></div>}
           <pre>{displayDetail}</pre>
           {checkpoint && (
             <button
@@ -1374,6 +1645,65 @@ function ActivityCard({
     </div>
   );
 }
+
+function ActivityGroupCard({ records, expanded, onToggle }: { records: ActivityRecord[]; expanded: boolean; onToggle: () => void }): React.JSX.Element {
+  const counts = records.reduce<Record<string, number>>((result, record) => {
+    const name = record.requested?.call.name ?? 'tool';
+    result[name] = (result[name] ?? 0) + 1;
+    return result;
+  }, {});
+  const summary = Object.entries(counts).map(([name, count]) => `${toolPresentation[name]?.label ?? name} ${count}`).join(' · ');
+  const limited = records.filter((record) => isToolControlSignal(record.completed?.result)).length;
+  const failed = records.filter((record) => record.completed && !record.completed.result.ok && !isToolControlSignal(record.completed.result)).length;
+  const latest = records[records.length - 1];
+  return (
+    <div className={`activity activity-group ${failed ? 'error' : 'success'}`}>
+      <button className="activity-head" data-action="toggle-activity-group" aria-expanded={expanded} onClick={onToggle}>
+        <div className="activity-icon">{failed ? <X size={14} /> : <Check size={14} />}</div>
+        <div className="activity-title">
+          <strong>探索项目 · {records.length} 次操作</strong>
+          <span>{failed ? `${failed} 项失败 · ${summary}` : limited ? `${limited} 次已按预算停止 · ${summary}` : summary}</span>
+        </div>
+        <span className="activity-time">{latest ? timeLabel(latest.completed?.timestamp ?? latest.requested?.timestamp ?? new Date().toISOString()) : ''}</span>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {expanded && (
+        <div className="activity-group-detail">
+          {records.map((record) => {
+            const name = record.requested?.call.name ?? 'tool';
+            const ok = record.completed?.result.ok ?? false;
+            const controlled = isToolControlSignal(record.completed?.result);
+            return (
+              <div className="activity-group-row" key={record.id}>
+                {ok ? <Check size={12} /> : controlled ? <Zap size={12} /> : <X size={12} />}
+                <span>{toolPresentation[name]?.label ?? name}</span>
+                <code>{name}</code>
+                <time>{timeLabel(record.completed?.timestamp ?? record.requested?.timestamp ?? new Date().toISOString())}</time>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function approvalPresentation(approval: Approval): { title: string; summary: string; preview?: string } {
+  const args = approval.call.args && typeof approval.call.args === 'object' ? approval.call.args as Record<string, unknown> : {};
+  if (approval.call.name === 'run_command') return { title: '运行命令', summary: String(args.cwd ?? '工作区根目录'), preview: String(args.command ?? '') };
+  if (approval.call.name === 'write_file') {
+    const content = String(args.content ?? '');
+    return { title: '写入文件', summary: `${String(args.path ?? '未知文件')} · ${content.length} 个字符` };
+  }
+  if (approval.call.name === 'apply_patch') {
+    const patch = String(args.patch ?? '');
+    const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]).filter(Boolean);
+    return { title: '应用代码修改', summary: files.length ? files.join('、') : '修改工作区文件', preview: patch.slice(0, 1200) };
+  }
+  const presentation = toolPresentation[approval.call.name];
+  return { title: presentation?.label ?? approval.call.name, summary: approval.reason };
+}
+
 function ApprovalCard({
   approval,
   onResolve,
@@ -1381,6 +1711,7 @@ function ApprovalCard({
   approval: Approval;
   onResolve: (decision: 'allow' | 'deny') => void;
 }): React.JSX.Element {
+  const presentation = approvalPresentation(approval);
   return (
     <div className="approval-card">
       <div className="approval-top">
@@ -1388,20 +1719,18 @@ function ApprovalCard({
           <ShieldCheck size={16} />
         </div>
         <div>
-          <strong>需要你的确认</strong>
-          <span>
-            {approval.call.name} · {approval.reason}
-          </span>
+          <strong>{presentation.title}</strong>
+          <span>{presentation.summary}</span>
         </div>
         <span className={`risk ${approval.risk}`}>
           {approval.risk === 'high' ? '高风险' : approval.risk === 'medium' ? '中风险' : '低风险'}
         </span>
       </div>
-      <div className="approval-code">
-        <code>
-          {approval.call.name}({JSON.stringify(approval.call.args)})
-        </code>
-      </div>
+      {presentation.preview && <pre className="approval-code">{presentation.preview}</pre>}
+      <details className="approval-details">
+        <summary>查看技术详情</summary>
+        <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
+      </details>
       <div className="approval-actions">
         <button className="deny" data-action="deny-approval" onClick={() => onResolve('deny')}>
           <X size={14} />
@@ -1653,11 +1982,17 @@ function InspectorContent({
   onGitRefresh: () => Promise<void>;
   onToast: (value: string) => void;
 }): React.JSX.Element {
+  const gitBlocked = gitText.startsWith('Git 操作已禁用') || gitText.startsWith('Git 状态读取失败');
+  const gitLines = gitText.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  const gitReady = !gitBlocked && gitLines[0]?.startsWith('##');
+  const gitBranch = gitReady ? gitLines[0]!.replace(/^##\s*/, '') : '';
+  const gitChanges = gitReady ? gitLines.slice(1) : [];
+  const hasStagedChanges = gitChanges.some((line) => line[0] !== ' ' && line[0] !== '?');
   if (type === 'files')
     return (
       <div className="inspector-body">
         <div className="panel-title">
-          工作区文件<span className="panel-sub">{files.length} 个条目</span>
+          工作区文件<span className="panel-sub">{files.length === 200 ? '200+ 个条目' : `${files.length} 个条目`}</span>
         </div>
         <div className="workspace-card">
           <FolderOpen size={18} />
@@ -1698,7 +2033,7 @@ function InspectorContent({
     return (
       <div className="inspector-body">
         <div className="panel-title">
-          变更预览<span className="panel-sub">{changes.length} 个 ChangeSet</span>
+          <span>变更</span>
           <button
             className="small-button"
             data-action="refresh-git"
@@ -1707,19 +2042,35 @@ function InspectorContent({
             刷新 Git
           </button>
         </div>
-        <div className="git-status">{gitText || '等待 git status…'}</div>
-        <div className="page-toolbar git-actions">
-          <button className="small-button" data-action="stage-all" onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>Stage All</button>
-          <button className="small-button" data-action="commit" onClick={async () => { const message = window.prompt('Commit message', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? 'Commit 已执行')); await onGitRefresh(); } }}>Commit</button>
-          <button className="small-button" data-action="push" onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? 'Push 已执行')); } }}>Push</button>
-        </div>
+        <section className="change-section" aria-label="工作区 Git 变更">
+          <div className="change-section-heading">
+            <span><GitBranch size={13} /><strong>工作区 Git</strong><b>{gitReady ? `${gitChanges.length} 项` : '未就绪'}</b></span>
+            {gitBranch && <code title={gitBranch}>{gitBranch}</code>}
+          </div>
+          <div className={`git-status ${gitReady && gitChanges.length === 0 ? 'clean' : ''}`}>
+            {gitBlocked || !gitReady
+              ? gitText || '正在读取 Git 状态…'
+              : gitChanges.length
+                ? gitChanges.join('\n')
+                : '工作区干净，没有未提交变更。'}
+          </div>
+          <div className="git-actions">
+            <button className="small-button" data-action="stage-all" disabled={gitBlocked || !gitReady || gitChanges.length === 0} title={gitBlocked ? '请先切换到 Git 仓库根目录' : gitChanges.length === 0 ? '没有可暂存的变更' : '暂存当前工作区的全部变更'} onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>全部暂存</button>
+            <button className="small-button" data-action="commit" disabled={gitBlocked || !gitReady || !hasStagedChanges} title={!hasStagedChanges ? '请先暂存要提交的文件' : '提交已暂存的变更'} onClick={async () => { const message = window.prompt('提交说明', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? '提交已执行')); await onGitRefresh(); } }}>提交</button>
+            <button className="small-button" data-action="push" disabled={gitBlocked || !gitReady} title={gitBlocked ? '请先切换到 Git 仓库根目录' : '推送当前分支'} onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? '推送已执行')); } }}>推送</button>
+          </div>
+        </section>
+        <section className="change-section task-changes" aria-label="当前任务改动">
+          <div className="change-section-heading">
+            <span><Code2 size={13} /><strong>当前任务</strong><b>{changes.length} 个 ChangeSet</b></span>
+          </div>
         {changes.length === 0 ? (
-          <div className="empty-panel">
+          <div className="empty-panel change-empty">
             <div className="empty-icon">
               <GitBranch size={18} />
             </div>
-            <strong>还没有 ChangeSet</strong>
-            <span>Agent 修改文件后，Diff 会出现在这里。</span>
+            <strong>本任务没有修改文件</strong>
+            <span>工作区现有 Git 变更仍显示在上方，两者互不混淆。</span>
           </div>
         ) : (
           changes.map((change) => (
@@ -1752,6 +2103,8 @@ function InspectorContent({
                     theme="vs-dark"
                     original={file.before ?? ''}
                     modified={file.after ?? ''}
+                    originalModelPath={`inmemory://seecoder/${change.id}/before/${encodeURIComponent(file.path)}`}
+                    modifiedModelPath={`inmemory://seecoder/${change.id}/after/${encodeURIComponent(file.path)}`}
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },
@@ -1766,6 +2119,7 @@ function InspectorContent({
             </div>
           ))
         )}
+        </section>
       </div>
     );
   return <div />;
@@ -1785,7 +2139,7 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
           : { id: item.id, event: item.event });
       }
     }
-    return result.slice(-80);
+    return result.slice(-160);
   }, [events]);
 
   function label(row: { event: AgentEvent; count?: number }): string {
@@ -1794,35 +2148,120 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
     if (event.type === 'model.completed') return `模型完成 · 第 ${event.iteration} 轮 · ${event.durationMs}ms · 重试 ${event.retries}`;
     if (event.type === 'model.requested') return `模型请求 · 第 ${event.iteration} 轮`;
     if (event.type === 'tool.requested') return `调用工具 · ${event.call.name}`;
-    if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : '失败'}`;
+    if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : isToolControlSignal(event.result) ? '已限制' : '失败'}`;
     if (event.type === 'usage.updated') return `Token · ${event.inputTokens} 输入 / ${event.outputTokens} 输出`;
+    if (event.type === 'context.summary.requested') return '上下文摘要 · 正在请求模型';
+    if (event.type === 'context.summary.completed') return `上下文摘要 · ${event.durationMs}ms · ${event.inputTokens ?? 0}/${event.outputTokens ?? 0} tokens`;
+    if (event.type === 'context.summary.failed') return `上下文摘要降级 · ${event.code}`;
+    if (event.type === 'context.retrieved') return `历史召回 · ${event.count} 条 · ${event.kinds.join('、')}`;
+    if (event.type === 'context.compacted') return event.metrics
+      ? `上下文压缩 · ${event.metrics.beforeTokens} → ${event.metrics.afterTokens} tokens`
+      : '上下文压缩完成';
     if (event.type === 'turn.completed') return '任务完成';
     if (event.type === 'turn.failed') return `任务失败 · ${event.error.code}`;
     if (event.type === 'subagent.updated') return `子 Agent · ${event.child.role} · ${event.child.status}`;
     return event.type;
   }
 
+  const groups = useMemo(() => {
+    type TraceRow = { id: string; event: AgentEvent; count?: number };
+    type TraceGroup = {
+      id: string;
+      iteration?: number;
+      rows: TraceRow[];
+      tools: Map<string, number>;
+      failures: number;
+      durationMs?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      terminal?: 'completed' | 'failed' | 'cancelled';
+    };
+    const result: TraceGroup[] = [];
+    let current: TraceGroup | undefined;
+    for (const row of rows) {
+      const event = row.event;
+      if (event.type === 'model.requested') {
+        current = { id: row.id, iteration: event.iteration, rows: [], tools: new Map(), failures: 0 };
+        result.push(current);
+      }
+      if (!current) {
+        current = { id: `setup-${row.id}`, rows: [], tools: new Map(), failures: 0 };
+        result.push(current);
+      }
+      current.rows.push(row);
+      if (event.type === 'tool.requested') {
+        current.tools.set(event.call.name, (current.tools.get(event.call.name) ?? 0) + 1);
+      } else if (event.type === 'tool.completed' && !event.result.ok && !isToolControlSignal(event.result)) {
+        current.failures += 1;
+      } else if (event.type === 'usage.updated') {
+        current.inputTokens = event.inputTokens;
+        current.outputTokens = event.outputTokens;
+      } else if (event.type === 'model.completed') {
+        current.durationMs = event.durationMs;
+        if (typeof event.inputTokens === 'number') current.inputTokens = event.inputTokens;
+        if (typeof event.outputTokens === 'number') current.outputTokens = event.outputTokens;
+      } else if (event.type === 'turn.completed') current.terminal = 'completed';
+      else if (event.type === 'turn.failed') current.terminal = 'failed';
+      else if (event.type === 'turn.cancelled') current.terminal = 'cancelled';
+    }
+    return result.slice(-16);
+  }, [rows]);
+
+  function groupSummary(group: (typeof groups)[number]): string {
+    const tools = [...group.tools.entries()]
+      .map(([name, count]) => `${toolPresentation[name]?.label ?? name}${count > 1 ? ` ×${count}` : ''}`)
+      .join(' · ');
+    if (tools) return tools;
+    if (group.terminal === 'completed') return '任务已完成并保存轨迹';
+    if (group.terminal === 'failed') return '任务以失败状态结束';
+    if (group.terminal === 'cancelled') return '任务已取消';
+    return group.iteration ? '模型分析与生成' : '准备任务与上下文';
+  }
+
   return (
     <div className="inspector-body">
       <div className="panel-title">
         执行轨迹
-        <span className="panel-sub">{events.length} 个原始事件 · {rows.length} 条记录</span>
+        <span className="panel-sub">{groups.length} 个阶段 · {events.length} 个原始事件</span>
       </div>
       <div className="trace-list">
-        {rows.map((row) => (
-          <div className="trace-row" key={row.id}>
-            <span className={`trace-dot ${row.event.type.includes('failed') ? 'danger' : row.event.type.includes('completed') ? 'success' : ''}`} />
-            <span className="truncate">{label(row)}</span>
-            <time>{timeLabel(row.event.timestamp)}</time>
-          </div>
-        ))}
+        {groups.map((group) => {
+          const details = group.rows.filter(({ event }) => event.type !== 'tool.output' && event.type !== 'message.delta');
+          const hidden = group.rows.length - details.length;
+          return (
+            <details className={`trace-group ${group.failures ? 'error' : ''}`} key={group.id}>
+              <summary>
+                <span className={`trace-dot ${group.terminal === 'completed' ? 'success' : group.terminal === 'failed' ? 'danger' : ''}`} />
+                <span className="trace-group-copy">
+                  <strong>{group.iteration ? `第 ${group.iteration} 轮` : '任务准备'}</strong>
+                  <small>{groupSummary(group)}</small>
+                </span>
+                <span className="trace-metrics">
+                  {group.failures > 0 && <b>{group.failures} 失败</b>}
+                  {typeof group.inputTokens === 'number' && <span>{Math.round(group.inputTokens / 100) / 10}k token</span>}
+                  {typeof group.durationMs === 'number' && <span>{Math.round(group.durationMs / 100) / 10}s</span>}
+                </span>
+              </summary>
+              <div className="trace-group-detail">
+                {details.map((row) => (
+                  <div className="trace-row" key={row.id}>
+                    <span className={`trace-dot ${row.event.type.includes('failed') ? 'danger' : row.event.type.includes('completed') ? 'success' : ''}`} />
+                    <span className="truncate">{label(row)}</span>
+                    <time>{timeLabel(row.event.timestamp)}</time>
+                  </div>
+                ))}
+                {hidden > 0 && <div className="trace-hidden">已收起 {hidden} 条流式输出；完整内容仍保留在会话记录中。</div>}
+              </div>
+            </details>
+          );
+        })}
         {children.map((child) => (
           <div className="trace-child" key={child.id}>
             <Users size={13} />
-            <span>{child.role} · {child.status}</span>
+            <span>{child.role} · {child.status} · {child.iteration ?? 0} 轮 · {Math.round((child.durationMs ?? 0) / 100) / 10}s</span>
           </div>
         ))}
-        {!rows.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}
+        {!groups.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}
       </div>
     </div>
   );

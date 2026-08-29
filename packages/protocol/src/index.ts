@@ -52,6 +52,26 @@ export interface ToolResult {
   durationMs: number;
 }
 
+export interface SemanticSummary {
+  userIntent: string;
+  requirements: string[];
+  activeDecisions: string[];
+  supersededDecisions: string[];
+  completedWork: string[];
+  unresolvedQuestions: string[];
+  narrative: string;
+}
+
+export interface ContextCompactionMetrics {
+  beforeTokens: number;
+  afterTokens: number;
+  availableInput: number;
+  compacted: boolean;
+  summarySource?: 'model' | 'deterministic-fallback';
+  retrievedEntries: number;
+  droppedEvidence: number;
+}
+
 export interface Approval {
   id: string;
   turnId: string;
@@ -128,6 +148,12 @@ export interface SubagentState {
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   summary?: string;
   evidence?: Array<{ path?: string; detail: string }>;
+  iteration?: number;
+  durationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  currentAction?: string;
+  errorCode?: string;
 }
 
 export interface AgentError {
@@ -145,7 +171,7 @@ export type Item =
   | { kind: 'approval'; id: string; approval: Approval; createdAt: string }
   | { kind: 'changes'; id: string; changeSet: ChangeSet; createdAt: string }
   | { kind: 'subagent'; id: string; state: SubagentState; createdAt: string }
-  | { kind: 'compaction'; id: string; summary: string; createdAt: string }
+  | { kind: 'compaction'; id: string; summary: string; messages?: ModelMessage[]; semanticSummary?: SemanticSummary; ledgerVersion?: 2; metrics?: ContextCompactionMetrics; createdAt: string }
   | { kind: 'error'; id: string; error: AgentError; createdAt: string };
 
 export type AgentEventPayload =
@@ -164,7 +190,11 @@ export type AgentEventPayload =
   | { type: 'changes.created'; timestamp: string; changeSet: ChangeSet }
   | { type: 'changes.reverted'; timestamp: string; changeSetId: string }
   | { type: 'subagent.updated'; timestamp: string; child: SubagentState }
-  | { type: 'context.compacted'; timestamp: string; turnId: string; summary: string }
+  | { type: 'context.summary.requested'; timestamp: string; turnId: string }
+  | { type: 'context.summary.completed'; timestamp: string; turnId: string; durationMs: number; inputTokens?: number; outputTokens?: number }
+  | { type: 'context.summary.failed'; timestamp: string; turnId: string; code: string; message: string }
+  | { type: 'context.retrieved'; timestamp: string; turnId: string; count: number; kinds: string[] }
+  | { type: 'context.compacted'; timestamp: string; turnId: string; summary: string; metrics?: ContextCompactionMetrics }
   | { type: 'usage.updated'; timestamp: string; turnId: string; inputTokens: number; outputTokens: number }
   | { type: 'model.requested'; timestamp: string; turnId: string; iteration: number }
   | { type: 'model.completed'; timestamp: string; turnId: string; iteration: number; durationMs: number; finishReason?: string; inputTokens?: number; outputTokens?: number; retries: number }
@@ -224,6 +254,7 @@ export interface ModelMessage {
 }
 
 export interface ModelRequest {
+  purpose?: 'agent' | 'context_summary';
   messages: ModelMessage[];
   tools: Array<{ type: 'function'; function: { name: string; description: string; parameters: unknown } }>;
   model: string;

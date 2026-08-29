@@ -9,7 +9,11 @@ export interface ModelConfig {
   maxOutputTokens: number;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+  const onAbort = () => { clearTimeout(timer); reject(new Error('模型重试已取消')); };
+  signal.addEventListener('abort', onAbort, { once: true });
+});
 
 function parseJsonLine(line: string): Record<string, unknown> | null {
   const value = line.trim();
@@ -89,7 +93,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           const retryable = [429, 502, 503, 504].includes(response.status);
           if (retryable && attempt < 2) {
             yield { type: 'retry', attempt: attempt + 1 };
-            await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
+            await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100), signal);
             continue;
           }
           yield { type: 'error', code: `http_${response.status}`, message, retryable };
@@ -167,7 +171,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         }
         if (attempt < 2) {
           yield { type: 'retry', attempt: attempt + 1 };
-          await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100));
+          await sleep(250 * 2 ** attempt + Math.round(Math.random() * 100), signal);
           continue;
         }
         yield {
@@ -185,11 +189,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
 export class FakeModelProvider implements ModelProvider {
   private cursor = 0;
 
-  constructor(private readonly turns: ModelEvent[][]) {}
+  constructor(private readonly turns: ModelEvent[][], private readonly summaryTurns: ModelEvent[][] = []) {}
 
   async *stream(_request: ModelRequest, _signal: AbortSignal): AsyncIterable<ModelEvent> {
-    void _request;
     void _signal;
+    if (_request.purpose === 'context_summary') {
+      const events = this.summaryTurns.shift() ?? [
+        { type: 'textDelta' as const, text: JSON.stringify({ userIntent: '', requirements: [], activeDecisions: [], supersededDecisions: [], completedWork: [], unresolvedQuestions: [], narrative: '模拟上下文摘要' }) },
+        { type: 'completed' as const, finishReason: 'stop' },
+      ];
+      for (const event of events) { await Promise.resolve(); yield event; }
+      return;
+    }
     const events = this.turns[Math.min(this.cursor++, this.turns.length - 1)] ?? [
       { type: 'textDelta', text: '模拟任务已完成。' },
       { type: 'completed', finishReason: 'stop' },

@@ -5,13 +5,18 @@ import { _electron as electron, expect, test } from '@playwright/test';
 
 test('Electron workbench renders navigable pages and stable actions', async () => {
   const userData = await mkdtemp(join(tmpdir(), 'seecoder-contract-'));
-  const app = await electron.launch({ args: [resolve('out/main/main.js'), `--user-data-dir=${userData}`], timeout: 30_000 });
+  const workspace = await mkdtemp(join(tmpdir(), 'seecoder-contract-workspace-'));
+  const app = await electron.launch({ args: [resolve('out/main/main.js'), `--user-data-dir=${userData}`], cwd: workspace, timeout: 30_000 });
   try {
     const page = await app.firstWindow();
     await expect(page).toHaveTitle('SeeCoder');
     for (const action of ['brand-menu', 'search', 'notifications', 'new-task', 'nav-pulls', 'nav-sites', 'nav-scheduled', 'nav-plugins', 'history', 'settings', 'theme']) {
       await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(1);
     }
+    await page.locator('[data-action="workspace-menu"]').click();
+    await expect(page.locator('[data-action="switch-workspace"]')).toHaveCount(1);
+    await expect(page.locator('[data-action="choose-workspace"]')).toBeVisible();
+    await page.locator('[data-action="workspace-menu"]').click();
     for (const [action, heading] of [['nav-pulls', '拉取请求'], ['nav-sites', '站点 / Preview'], ['nav-scheduled', '已安排'], ['nav-plugins', '插件与 Skills']] as const) {
       await page.locator(`[data-action="${action}"]`).click();
       await expect(page.locator('h1')).toContainText(heading);
@@ -24,5 +29,6 @@ test('Electron workbench renders navigable pages and stable actions', async () =
   } finally {
     await app.close();
     await rm(userData, { recursive: true, force: true });
+    await rm(workspace, { recursive: true, force: true });
   }
 });

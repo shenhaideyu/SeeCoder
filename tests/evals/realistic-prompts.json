@@ -1,0 +1,89 @@
+[
+  {
+    "id": "onboarding-call-chain",
+    "level": "simple",
+    "mode": "plan",
+    "prompt": "我刚接手这个项目。后端是从哪里启动的？一个用户请求从入口到核心 Agent 大致会经过哪些模块？请用几句话和文件路径帮我理清楚，不要改代码。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 8,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 0,
+      "maxInputTokensPerRequest": 20000,
+      "maxAnswerChars": 1800,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "offline-backend-experience",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "前端如果连不上后端，用户现在会看到什么？帮我沿着配置、请求和异常处理链路查清楚，指出最容易让用户困惑的地方和一个最小改进方案。先不要改代码。",
+    "limits": {
+      "maxIterations": 7,
+      "maxToolCalls": 15,
+      "maxFailedTools": 1,
+      "maxDuplicateCalls": 1,
+      "maxInputTokensPerRequest": 35000,
+      "maxAnswerChars": 4200,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "stale-progress-recovery",
+    "level": "complex",
+    "mode": "guided",
+    "prompt": "聊天页有用户反馈：任务结束后偶尔还显示“正在处理”，刷新才恢复。请根据代码和现有测试找根因，只做最小修复，补回归测试并运行相关测试。",
+    "requiredTools": ["apply_patch", "write_file", "run_command", "finish"],
+    "limits": {
+      "maxIterations": 14,
+      "maxToolCalls": 28,
+      "maxFailedTools": 3,
+      "maxDuplicateCalls": 2,
+      "maxInputTokensPerRequest": 70000,
+      "maxAnswerChars": 5000,
+      "maxSideEffects": 8
+    }
+  },
+  {
+    "id": "remember-earlier-decision",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "你还记得我们前几轮为什么决定不引入 Redis 吗？请结合当时涉及的文件和约束复述理由；如果历史里没有可靠证据就直说，不要猜。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 4,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 0,
+      "maxSideEffects": 0,
+      "maxSummaryFailures": 1
+    }
+  },
+  {
+    "id": "repeat-file-follow-up",
+    "level": "medium",
+    "mode": "plan",
+    "prompt": "再看一下刚才那个处理任务状态的文件。我主要想确认刷新后为什么不会丢状态，只解释关键逻辑，不要把整份文件重新贴出来。",
+    "limits": {
+      "maxIterations": 4,
+      "maxToolCalls": 5,
+      "maxFailedTools": 0,
+      "maxDuplicateCalls": 1,
+      "maxSideEffects": 0
+    }
+  },
+  {
+    "id": "validation-freshness",
+    "level": "complex",
+    "mode": "auto",
+    "prompt": "先修复筛选按钮在窄窗口下被挤出的问题并跑相关测试。测试通过后，再把按钮文案改得更清楚，但这一步先不要重跑测试；最后请准确告诉我当前结果是否仍然经过验证。",
+    "requiredTools": ["run_command", "finish"],
+    "limits": {
+      "maxIterations": 12,
+      "maxToolCalls": 22,
+      "maxFailedTools": 2,
+      "maxDuplicateCalls": 2,
+      "maxSideEffects": 7
+    }
+  }
+]

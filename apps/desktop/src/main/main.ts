@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
 import { existsSync } from 'node:fs';
-import { appendFile, readdir, readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { appendFile, readdir, readFile, writeFile, mkdir, realpath, rename } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentCore } from '@seecoder/agent-core';
@@ -20,6 +20,8 @@ let workspace = process.cwd();
 let mode: ExecutionMode = 'guided';
 let scheduleTimer: NodeJS.Timeout | undefined;
 const runningSchedules = new Set<string>();
+const scheduledTurns = new Map<string, string>();
+let recentWorkspaces: string[] = [];
 class MainLogger {
   private filePath: string | undefined;
   private queue = Promise.resolve();
@@ -37,12 +39,27 @@ class MainLogger {
   }
 
   event(event: AgentEvent): void {
-    const base = { type: event.type, threadId: event.threadId, turnId: 'turnId' in event ? event.turnId : undefined };
+    const turnId = 'turnId' in event ? event.turnId
+      : 'turn' in event ? event.turn.id
+        : 'approval' in event ? event.approval.turnId
+          : 'changeSet' in event ? event.changeSet.turnId
+            : 'child' in event ? event.child.parentTurnId
+              : undefined;
+    const base = { type: event.type, threadId: event.threadId, turnId };
     if (event.type === 'tool.requested') this.write('INFO', 'agent.tool.requested', { ...base, callId: event.call.id, tool: event.call.name });
-    else if (event.type === 'tool.completed') this.write(event.result.ok ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, durationMs: event.result.durationMs, error: event.result.error?.code });
+    else if (event.type === 'tool.completed') {
+      const controlled = event.result.error?.code === 'exploration_budget_exhausted';
+      this.write(event.result.ok || controlled ? 'INFO' : 'WARN', 'agent.tool.completed', { ...base, callId: event.callId, ok: event.result.ok, controlled, durationMs: event.result.durationMs, error: event.result.error?.code });
+    }
     else if (event.type === 'tool.output') this.write('INFO', 'agent.tool.output', { ...base, callId: event.callId, stream: event.stream, bytes: event.text.length });
     else if (event.type === 'model.completed') this.write('INFO', 'agent.model.completed', { ...base, iteration: event.iteration, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens, retries: event.retries, finishReason: event.finishReason });
-    else if (event.type === 'turn.started' || event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') this.write(event.type === 'turn.failed' ? 'ERROR' : 'INFO', `agent.${event.type}`, base);
+    else if (event.type === 'context.summary.requested') this.write('INFO', 'agent.context.summary.requested', base);
+    else if (event.type === 'context.summary.completed') this.write('INFO', 'agent.context.summary.completed', { ...base, durationMs: event.durationMs, inputTokens: event.inputTokens, outputTokens: event.outputTokens });
+    else if (event.type === 'context.summary.failed') this.write(event.code === 'cancelled' ? 'INFO' : 'WARN', 'agent.context.summary.failed', { ...base, code: event.code });
+    else if (event.type === 'context.retrieved') this.write('INFO', 'agent.context.retrieved', { ...base, count: event.count, kinds: event.kinds });
+    else if (event.type === 'context.compacted') this.write('INFO', 'agent.context.compacted', { ...base, ...event.metrics });
+    else if (event.type === 'subagent.updated') this.write(event.child.status === 'failed' ? 'WARN' : 'INFO', 'agent.subagent.updated', { ...base, childId: event.child.id, role: event.child.role, status: event.child.status, iteration: event.child.iteration, durationMs: event.child.durationMs, inputTokens: event.child.inputTokens, outputTokens: event.child.outputTokens, currentAction: event.child.currentAction, error: event.child.errorCode });
+    else if (event.type === 'turn.started' || event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') this.write(event.type === 'turn.failed' ? 'ERROR' : 'INFO', `agent.${event.type}`, { ...base, status: event.turn.status, iteration: event.turn.iteration, ...(event.type === 'turn.failed' ? { error: event.error.code } : {}) });
     else if (event.type === 'approval.requested' || event.type === 'approval.resolved' || event.type === 'checkpoint.created' || event.type === 'checkpoint.restored') this.write('INFO', `agent.${event.type}`, base);
   }
 }
@@ -69,6 +86,13 @@ function createCore(): void {
   coreUnsubscribe = core.onEvent((event) => {
     logger.event(event);
     send(event);
+    if (event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled') {
+      const scheduleId = scheduledTurns.get(event.turn.id);
+      if (scheduleId) {
+        scheduledTurns.delete(event.turn.id);
+        runningSchedules.delete(scheduleId);
+      }
+    }
     if (event.type === 'turn.completed' && mainWindow && !mainWindow.isFocused() && Notification.isSupported()) new Notification({ title: 'SeeCoder 任务完成', body: '任务已完成，请查看验证结果。' }).show();
   });
 }
@@ -76,6 +100,18 @@ function createCore(): void {
 async function selectWorkspace(): Promise<string | null> {
   const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'], title: '选择 SeeCoder 工作区' });
   return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
+}
+
+async function switchWorkspace(nextWorkspace: string): Promise<string> {
+  const next = resolve(textArg(nextWorkspace, 'workspace', 2000));
+  if (!existsSync(next)) throw new Error('工作区目录不存在');
+  core.cancelAll();
+  workspace = next;
+  recentWorkspaces = [next, ...recentWorkspaces.filter((item) => !sameWorkspace(item, next) && existsSync(item))].slice(0, 8);
+  await savePersistedSettings();
+  createCore();
+  logger.write('INFO', 'workspace.changed', { workspace });
+  return workspace;
 }
 
 const textArg = (value: unknown, name: string, max = 100_000): string => {
@@ -99,8 +135,29 @@ async function runWorkspaceCommand(command: string, cwd = workspace, timeoutMs =
   }
 }
 
+async function scopedGitRoot(): Promise<string> {
+  const probe = await runWorkspaceCommand('git rev-parse --show-toplevel');
+  const output = probe.output as { stdout?: unknown } | undefined;
+  const root = typeof output?.stdout === 'string' ? output.stdout.trim() : '';
+  if (!probe.ok || !root) throw new Error('当前工作区不是 Git 仓库');
+  const [canonicalWorkspace, canonicalRoot] = await Promise.all([
+    realpath(workspace).catch(() => resolve(workspace)),
+    realpath(root).catch(() => resolve(root)),
+  ]);
+  if (!sameWorkspace(canonicalWorkspace, canonicalRoot)) {
+    throw new Error('Git 操作已禁用：当前目录属于上级仓库。请切换到仓库根目录，避免操作工作区外文件。');
+  }
+  return canonicalRoot;
+}
+
+async function runScopedGitCommand(command: string, timeoutMs = 30_000) {
+  return runWorkspaceCommand(command, await scopedGitRoot(), timeoutMs);
+}
+
 interface PersistedSettings {
   workspace?: string;
+  recentWorkspaces?: string[];
+  mode?: ExecutionMode;
   model?: string;
   baseUrl?: string;
   contextWindow?: number;
@@ -126,6 +183,10 @@ async function loadPersistedSettings(): Promise<void> {
   try {
     const value = JSON.parse(await readFile(settingsPath(), 'utf8')) as PersistedSettings;
     if (typeof value.workspace === 'string' && existsSync(value.workspace)) workspace = value.workspace;
+    if (value.mode === 'plan' || value.mode === 'guided' || value.mode === 'auto') mode = value.mode;
+    recentWorkspaces = [workspace, ...(Array.isArray(value.recentWorkspaces) ? value.recentWorkspaces : [])]
+      .filter((item, index, list) => typeof item === 'string' && existsSync(item) && list.findIndex((value) => sameWorkspace(value, item)) === index)
+      .slice(0, 8);
     if (typeof value.model === 'string' && value.model.length <= 200) modelConfig.model = value.model;
     if (typeof value.baseUrl === 'string' && value.baseUrl.length <= 1000) modelConfig.baseUrl = value.baseUrl;
     if (typeof value.contextWindow === 'number') modelConfig.contextWindow = Math.max(8_000, Math.min(1_000_000, value.contextWindow));
@@ -165,7 +226,7 @@ async function savePersistedSettings(options: { apiKey?: string; clearApiKey?: b
     if (apiKeySource === 'os') delete process.env[modelConfig.apiKeyEnv];
     apiKeySource = process.env[modelConfig.apiKeyEnv] ? 'environment' : 'none';
   }
-  const payload: PersistedSettings = { workspace, model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, ...(persistedApiKeyEncrypted ? { apiKeyEncrypted: persistedApiKeyEncrypted } : {}) };
+  const payload: PersistedSettings = { workspace, recentWorkspaces, mode, model: modelConfig.model, baseUrl: modelConfig.baseUrl, contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens, ...(persistedApiKeyEncrypted ? { apiKeyEncrypted: persistedApiKeyEncrypted } : {}) };
   await writeFile(temporary, JSON.stringify(payload, null, 2), 'utf8');
   await rename(temporary, target);
 }
@@ -204,7 +265,12 @@ function startScheduleLoop(): void {
         else delete item.nextRunAt;
         changed = true;
         const thread = (await core.listThreads()).find((value) => value.workspacePath === item.projectPath) ?? await core.createThread(`计划：${item.prompt.slice(0, 40)}`);
-        void core.startTurn(thread.id, item.prompt, 'plan').finally(() => runningSchedules.delete(item.id));
+        void core.startTurn(thread.id, item.prompt, 'plan')
+          .then((turnId) => scheduledTurns.set(turnId, item.id))
+          .catch((error) => {
+            runningSchedules.delete(item.id);
+            logger.write('ERROR', 'schedule.start.failed', { scheduleId: item.id, message: error instanceof Error ? error.message : String(error) });
+          });
       }
       if (changed) await saveSchedules(list);
     })();
@@ -244,13 +310,13 @@ function registerIpc(): void {
   ipcMain.handle('workspace:select', async () => {
     const selected = await selectWorkspace();
     if (!selected) return { cancelled: true };
-    core.cancelAll();
-    workspace = selected;
-    await savePersistedSettings();
-    createCore();
-    logger.write('INFO', 'workspace.changed', { workspace });
-    return { cancelled: false, workspace };
+    return { cancelled: false, workspace: await switchWorkspace(selected) };
   });
+  ipcMain.handle('workspace:list', async () => ({
+    current: workspace,
+    recent: [workspace, ...recentWorkspaces].filter((item, index, list) => existsSync(item) && list.findIndex((value) => sameWorkspace(value, item)) === index),
+  }));
+  ipcMain.handle('workspace:switch', async (_event, nextWorkspace: string) => ({ workspace: await switchWorkspace(nextWorkspace) }));
   ipcMain.handle('workspace:open', async () => { await shell.openPath(workspace); return workspace; });
   ipcMain.handle('thread:create', async (_event, title?: string) => core.createThread(typeof title === 'string' && title.length <= 120 ? title : undefined));
   ipcMain.handle('thread:list', async () => (await core.listThreads()).map((thread) => ({ ...thread, pinned: thread.pinned ?? false, archived: thread.archived ?? false, unread: thread.unread ?? false })));
@@ -274,16 +340,16 @@ function registerIpc(): void {
   ipcMain.handle('files:read', async (_event, path: string, startLine?: number, endLine?: number) => toolRegistry.get('read_file')?.execute({ path: textArg(path, 'path', 1000), startLine, endLine }, { workspace }));
   ipcMain.handle('files:search', async (_event, query: string, path?: string) => toolRegistry.get('search_text')?.execute({ query: textArg(query, 'query', 500), path }, { workspace }));
   ipcMain.handle('attachment:select', async () => { const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile', 'multiSelections'], filters: [{ name: '文本与图片', extensions: ['txt', 'md', 'json', 'ts', 'tsx', 'js', 'jsx', 'css', 'html', 'png', 'jpg', 'jpeg'] }] }); if (result.canceled) return []; const policy = new WorkspacePolicy(workspace); const values: AttachmentRef[] = []; for (const path of result.filePaths.slice(0, 4)) { const stat = await (await import('node:fs/promises')).stat(path); if (stat.size > 5 * 1024 * 1024 || !policy.isInside(path)) continue; const mimeType = /\.(png|jpe?g)$/i.test(path) ? 'image/' + (path.toLowerCase().endsWith('.png') ? 'png' : 'jpeg') : 'text/plain'; values.push({ id: randomUUID(), kind: mimeType.startsWith('image/') ? 'image' : 'text', name: path.split(/[\\/]/).pop() ?? path, path, mimeType, size: stat.size }); } return values; });
-  ipcMain.handle('git:status', async () => runWorkspaceCommand('git status --short --branch'));
-  ipcMain.handle('git:diff', async (_event, scope: 'unstaged' | 'staged' | 'branch' | 'last-turn' = 'unstaged') => runWorkspaceCommand(scope === 'staged' ? 'git diff --cached' : 'git diff'));
-  ipcMain.handle('git:branches', async () => runWorkspaceCommand('git branch --format="%(refname:short)"'));
-  ipcMain.handle('git:checkout', async (_event, branch: string) => { const name = textArg(branch, 'branch', 200); if (!/^[\w./-]+$/.test(name)) throw new Error('分支名称包含不允许的字符'); return runWorkspaceCommand(`git switch ${psQuote(name)}`, workspace, 60_000); });
-  ipcMain.handle('git:stage', async (_event, path?: string) => runWorkspaceCommand(path ? `git add -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git add -A'));
-  ipcMain.handle('git:unstage', async (_event, path?: string) => runWorkspaceCommand(path ? `git restore --staged -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git restore --staged .'));
-  ipcMain.handle('git:revert', async (_event, path: string) => runWorkspaceCommand(`git restore -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(textArg(path, 'path', 1000))))}`));
-  ipcMain.handle('git:commit', async (_event, message: string) => runWorkspaceCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, workspace, 60_000));
-  ipcMain.handle('git:push', async () => runWorkspaceCommand('git push', workspace, 120_000));
-  ipcMain.handle('git:prStatus', async () => runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000));
+  ipcMain.handle('git:status', async () => runScopedGitCommand('git status --short --branch'));
+  ipcMain.handle('git:diff', async (_event, scope: 'unstaged' | 'staged' | 'branch' | 'last-turn' = 'unstaged') => runScopedGitCommand(scope === 'staged' ? 'git diff --cached' : 'git diff'));
+  ipcMain.handle('git:branches', async () => runScopedGitCommand('git branch --format="%(refname:short)"'));
+  ipcMain.handle('git:checkout', async (_event, branch: string) => { const name = textArg(branch, 'branch', 200); if (!/^[\w./-]+$/.test(name)) throw new Error('分支名称包含不允许的字符'); return runScopedGitCommand(`git switch ${psQuote(name)}`, 60_000); });
+  ipcMain.handle('git:stage', async (_event, path?: string) => runScopedGitCommand(path ? `git add -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git add -A'));
+  ipcMain.handle('git:unstage', async (_event, path?: string) => runScopedGitCommand(path ? `git restore --staged -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(path)))}` : 'git restore --staged .'));
+  ipcMain.handle('git:revert', async (_event, path: string) => runScopedGitCommand(`git restore -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(textArg(path, 'path', 1000))))}`));
+  ipcMain.handle('git:commit', async (_event, message: string) => runScopedGitCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, 60_000));
+  ipcMain.handle('git:push', async () => runScopedGitCommand('git push', 120_000));
+  ipcMain.handle('git:prStatus', async () => { await scopedGitRoot(); return runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000); });
   ipcMain.handle('terminal:run', async (_event, command: string, cwd?: string) => {
     const value = textArg(command, 'command', 20_000);
     if (isHighRiskCommand(value)) throw new Error('终端命令被 SeeCoder 安全策略拒绝：请使用受控 Git/依赖操作入口并确认风险。');
@@ -326,8 +392,9 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(async () => {
   logger.init(app.getPath('userData'));
-  logger.write('INFO', 'app.ready', { version: app.getVersion(), platform: process.platform, workspace });
   await loadPersistedSettings();
+  // 记录恢复后的真实工作区，避免启动日志误导排障或让人以为 Core 曾绑定源码目录。
+  logger.write('INFO', 'app.ready', { version: app.getVersion(), platform: process.platform, workspace });
   registerIpc();
   registerMenu();
   await createWindow();

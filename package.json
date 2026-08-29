@@ -15,6 +15,8 @@
     "test:unit": "vitest run packages",
     "test:integration": "vitest run tests packages --passWithNoTests",
     "test:e2e": "playwright test",
+    "test:eval:real": "node scripts/evaluate-real-sessions.mjs",
+    "test:eval:unit": "node --test tests/evals/*.node-test.mjs",
     "format": "prettier --write ."
   },
   "devDependencies": {

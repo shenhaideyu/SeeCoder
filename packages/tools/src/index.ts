@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
-import { readFile, readdir, realpath, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, readdir, realpath, writeFile, mkdir, stat, unlink } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z, type ZodTypeAny } from 'zod';
 import type { ChangeFile, PermissionMode, ToolCall, ToolResult } from '@seecoder/protocol';
 
@@ -41,9 +41,12 @@ export class WorkspacePolicy {
 
   async path(input = '.'): Promise<string> {
     const candidate = resolve(this.root, input);
-    const existing = await realpath(candidate).catch(() => candidate);
     const canonicalRoot = await realpath(this.root).catch(() => this.root);
-    const outside = relative(canonicalRoot, existing).startsWith('..') || isAbsolute(relative(canonicalRoot, existing));
+    const lexical = relative(this.root, candidate);
+    if (lexical.startsWith('..') || isAbsolute(lexical)) throw new Error(`路径越出工作区: ${input}`);
+    const existing = await canonicalizeFuturePath(candidate);
+    const canonicalRelative = relative(canonicalRoot, existing);
+    const outside = canonicalRelative.startsWith('..') || isAbsolute(canonicalRelative);
     if (outside) throw new Error(`路径越出工作区: ${input}`);
     if (isSensitivePath(input)) throw new Error(`出于安全原因，禁止访问凭据文件: ${input}`);
     return candidate;
@@ -68,7 +71,13 @@ export class WorkspacePolicy {
     if (mode === 'guided') return false;
     if (!['write_file', 'apply_patch', 'run_command', 'set_plan'].includes(call.name)) return true;
     if (call.name === 'set_plan') return true;
-    if (call.name === 'write_file' || call.name === 'apply_patch') {
+    if (call.name === 'apply_patch') {
+      const patch = (call.args as { patch?: unknown }).patch;
+      if (typeof patch !== 'string') return false;
+      const paths = extractPatchPaths(patch);
+      return paths.length > 0 && paths.every((path) => this.isInside(path));
+    }
+    if (call.name === 'write_file') {
       const args = call.args as { path?: unknown };
       return typeof args.path === 'string' && this.isInside(args.path);
     }
@@ -87,6 +96,15 @@ export function isHighRiskCommand(command: string): boolean {
   return /(remove-item|rm\s+-rf|rmdir|del\s+\/s|format(-volume)?|shutdown|reg\s+|git\s+(reset|clean|push)|curl\s+|wget\s+|npm\s+(install|i\b)|pnpm\s+(add|install)|yarn\s+(add|install)|invoke-webrequest)/i.test(command);
 }
 
+export function commandRisk(command: string): ToolDefinition['risk'] {
+  if (isHighRiskCommand(command)) return 'high';
+  const normalized = command.replace(/\s*2>&1\s*\|\s*Out-String\s*$/i, '');
+  const safe = /^\s*(git\s+(status|diff|log|show|branch)\b|(?:pnpm|npm|yarn)\s+(test|run\s+(test|lint|typecheck|build))\b|node\s+(--version\b|--test\b)|pytest\b|python\s+-m\s+pytest\b)/i;
+  const parts = normalized.split(';').map((part) => part.trim()).filter(Boolean);
+  if (parts.length && parts.every((part) => safe.test(part))) return 'low';
+  return 'medium';
+}
+
 async function atomicWrite(path: string, content: string): Promise<void> {
   const temporary = `${path}.seecoder-${Date.now()}.tmp`;
   await mkdir(dirname(path), { recursive: true });
@@ -96,7 +114,7 @@ async function atomicWrite(path: string, content: string): Promise<void> {
 }
 
 function result(ok: boolean, output: unknown, durationMs: number, error?: ToolResult['error']): ToolResult {
-  return error ? { ok, error, durationMs } : { ok, output, durationMs };
+  return { ok, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}), durationMs };
 }
 
 async function readExisting(path: string): Promise<string | null> {
@@ -113,7 +131,38 @@ interface PatchFile {
   hunks: string[];
 }
 
+function extractPatchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const match of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/gm)) paths.add(match[1]!.trim());
+  for (const match of patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\t\r\n]+)$/gm)) {
+    if (match[1] !== '/dev/null') paths.add(match[1]!.trim());
+  }
+  return [...paths];
+}
+
+function parseCodexPatch(patch: string): PatchFile[] {
+  const lines = patch.replace(/\r\n/g, '\n').split('\n');
+  const files: PatchFile[] = [];
+  let current: PatchFile | undefined;
+  for (const line of lines) {
+    const file = line.match(/^\*\*\* Update File:\s*(.+)$/);
+    if (file) {
+      if (current) files.push(current);
+      current = { oldPath: file[1]!.trim(), newPath: file[1]!.trim(), hunks: [] };
+    } else if (line === '@@' && current) {
+      current.hunks.push('@@');
+    } else if (current && current.hunks.length > 0 && !line.startsWith('*** End Patch')) {
+      const last = current.hunks.length - 1;
+      current.hunks[last] = `${current.hunks[last]}\n${line}`;
+    }
+  }
+  if (current) files.push(current);
+  if (!files.length || files.some((file) => file.hunks.length === 0)) throw new Error('Codex 补丁格式无效');
+  return files;
+}
+
 function parseUnifiedPatch(patch: string): PatchFile[] {
+  if (patch.includes('*** Begin Patch')) return parseCodexPatch(patch);
   const lines = patch.replace(/\r\n/g, '\n').split('\n');
   const files: PatchFile[] = [];
   let current: PatchFile | undefined;
@@ -136,13 +185,15 @@ function parseUnifiedPatch(patch: string): PatchFile[] {
 }
 
 function applyFilePatch(before: string, file: PatchFile): string {
+  const eol = before.includes('\r\n') ? '\r\n' : '\n';
   const source = before.replace(/\r\n/g, '\n').split('\n');
   let delta = 0;
   for (const hunk of file.hunks) {
     const [header, ...body] = hunk.split('\n');
     const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-    if (!match) throw new Error(`补丁区块无效: ${header}`);
-    const start = Number(match[1]) - 1 + delta;
+    const contextOnly = header === '@@';
+    if (!match && !contextOnly) throw new Error(`补丁区块无效: ${header}`);
+    const expectedStart = match ? Number(match[1]) - 1 + delta : 0;
     const removed: string[] = [];
     const added: string[] = [];
     const patchBody = body.at(-1) === '' ? body.slice(0, -1) : body;
@@ -155,23 +206,101 @@ function applyFilePatch(before: string, file: PatchFile): string {
         added.push(value);
       }
     }
-    const actual = source.slice(start, start + removed.length);
-    if (actual.join('\n') !== removed.join('\n')) throw new Error(`补丁上下文不匹配: ${file.newPath}`);
+    let start = expectedStart;
+    const matchesAt = (index: number) => source.slice(index, index + removed.length).join('\n') === removed.join('\n');
+    if (!matchesAt(start)) {
+      const candidates: number[] = [];
+      const from = contextOnly ? 0 : Math.max(0, expectedStart - 80);
+      const to = contextOnly ? source.length : Math.min(source.length, expectedStart + 80);
+      for (let index = from; index <= to; index += 1) if (matchesAt(index)) candidates.push(index);
+      if (candidates.length !== 1) throw new Error(`补丁上下文不匹配: ${file.newPath}`);
+      start = candidates[0]!;
+    }
     source.splice(start, removed.length, ...added);
-    delta += added.length - removed.length;
+    delta += start - expectedStart + added.length - removed.length;
   }
-  return source.join('\n');
+  return source.join(eol);
 }
 
-async function collectFiles(root: string, current: string, output: string[], depth: number, max: number): Promise<void> {
+const ignoredTraversalDirectories = new Set([
+  '.git', '.idea', '.venv', 'venv', 'node_modules', '__pycache__', '.pytest_cache',
+  '.mypy_cache', '.ruff_cache', '.cache', 'dist', 'out', 'build', 'builds', 'generated', 'coverage',
+  '.next', '.nuxt', 'target',
+]);
+
+async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error('操作已取消');
   if (output.length >= max || depth < 0) return;
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
-    if (output.length >= max || ['.git', 'node_modules', 'dist', 'out', 'coverage'].includes(entry.name) || isSensitivePath(entry.name)) continue;
+    if (signal?.aborted) throw new Error('操作已取消');
+    if (output.length >= max || entry.isSymbolicLink() || (entry.isDirectory() && ignoredTraversalDirectories.has(entry.name)) || isSensitivePath(entry.name)) continue;
     const full = join(current, entry.name);
-    if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max);
+    if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max, signal);
     else output.push(relative(root, full));
   }
+}
+
+async function canonicalizeFuturePath(candidate: string): Promise<string> {
+  let current = candidate;
+  const missing: string[] = [];
+  while (true) {
+    try {
+      const existing = await realpath(current);
+      return resolve(existing, ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return candidate;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function searchWithRg(
+  query: string,
+  base: string,
+  workspace: string,
+  glob: string | undefined,
+  max: number,
+  signal?: AbortSignal,
+): Promise<Array<{ path: string; line: number; text: string }> | null> {
+  if (signal?.aborted) throw new Error('操作已取消');
+  return new Promise((resolvePromise, reject) => {
+    const args = ['--line-number', '--no-heading', '--color', 'never', '--max-columns', '300'];
+    if (glob) args.push('--glob', glob);
+    for (const excluded of ['!.env', '!.env.*', '!*.pem', '!*.key', '!*.p12', '!*.pfx', '!*secret*', '!*credential*', '!*token*', '!*apikey*', '!*api_key*']) args.push('--glob', excluded);
+    args.push('--', query, '.');
+    const child = spawn('rg', args, { cwd: base, windowsHide: true });
+    const matches: Array<{ path: string; line: number; text: string }> = [];
+    let buffer = '';
+    let unavailable = false;
+    const onAbort = () => child.kill();
+    const consume = (chunk: string, flush = false) => {
+      buffer += chunk;
+      const lines = buffer.split(/\r?\n/);
+      if (!flush) buffer = lines.pop() ?? '';
+      else buffer = '';
+      for (const line of lines) {
+        const match = line.match(/^(.*?):(\d+):(.*)$/);
+        if (!match || matches.length >= max) continue;
+        matches.push({ path: relative(workspace, resolve(base, match[1]!)), line: Number(match[2]), text: match[3]!.slice(0, 300) });
+      }
+      if (matches.length >= max) child.kill();
+    };
+    child.stdout.on('data', (chunk: Buffer) => consume(chunk.toString('utf8')));
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      unavailable = error.code === 'ENOENT';
+      if (!unavailable) reject(error);
+    });
+    child.on('close', () => {
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted) reject(new Error('操作已取消'));
+      else if (unavailable) resolvePromise(null);
+      else { consume('', true); resolvePromise(matches); }
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export function commandRunner(command: string, cwd: string, context: ToolContext, timeoutMs = 60_000): Promise<ToolResult> {
@@ -224,7 +353,13 @@ export function createToolDefinitions(): ToolDefinition[] {
       parameters: z.object({ path: z.string().optional(), depth: z.number().int().min(0).max(5).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path?: string; depth?: number };
-        try { const path = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, path, files, args.depth ?? 2, 200); return result(true, files, Date.now() - started); }
+        try {
+          const path = await new WorkspacePolicy(context.workspace).path(args.path);
+          if ((await stat(path)).isFile()) return result(true, [relative(context.workspace, path)], Date.now() - started);
+          const files: string[] = [];
+          await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal);
+          return result(true, files, Date.now() - started);
+        }
         catch (error) { return result(false, undefined, Date.now() - started, { code: 'path_denied', message: error instanceof Error ? error.message : '路径无效' }); }
       },
     },
@@ -238,11 +373,12 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'read_files', description: '批量读取工作区内文本文件', sideEffect: false, risk: 'low',
+      name: 'read_files', description: '一次批量读取多个已知文本文件；已定位多个文件时优先于重复 read_file', sideEffect: false, risk: 'low',
       parameters: z.object({ paths: z.array(z.string().min(1)).min(1).max(30) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { paths: string[] }; const outputs: Array<{ path: string; text?: string; error?: string }> = [];
         for (const input of args.paths) {
+          if (context.signal?.aborted) return result(false, outputs, Date.now() - started, { code: 'cancelled', message: '批量读取已取消' });
           try { const path = await new WorkspacePolicy(context.workspace).path(input); const text = await readFile(path, 'utf8'); outputs.push({ path: relative(context.workspace, path), text: text.split(/\r?\n/).slice(0, 400).join('\n') }); }
           catch (error) { outputs.push({ path: input, error: error instanceof Error ? error.message : '读取失败' }); }
         }
@@ -250,10 +386,26 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'search_text', description: '在工作区文本文件中搜索字符串或正则', sideEffect: false, risk: 'low',
+      name: 'search_text', description: '先按字符串或正则定位相关文件和行，再按需读取命中片段', sideEffect: false, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
-        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50; const base = await new WorkspacePolicy(context.workspace).path(args.path); const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000); const matches: Array<{ path: string; line: number; text: string }> = []; let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); } for (const relPath of files) { if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50;
+        try {
+          const base = await new WorkspacePolicy(context.workspace).path(args.path);
+          const matches: Array<{ path: string; line: number; text: string }> = [];
+          let regex: RegExp; try { regex = new RegExp(args.query, 'i'); } catch { regex = new RegExp(args.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); }
+          if ((await stat(base)).isFile()) {
+            const text = await readExisting(base);
+            if (text && !text.includes('\u0000')) text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relative(context.workspace, base), line: index + 1, text: line.slice(0, 300) }); });
+            return result(true, matches, Date.now() - started);
+          }
+          const fastMatches = await searchWithRg(args.query, base, context.workspace, args.glob, max, context.signal);
+          if (fastMatches) return result(true, fastMatches, Date.now() - started);
+          const files: string[] = []; await collectFiles(context.workspace, base, files, 8, 1000, context.signal); for (const relPath of files) { if (context.signal?.aborted) return result(false, matches, Date.now() - started, { code: 'cancelled', message: '搜索已取消' }); if (args.glob && !relPath.toLowerCase().endsWith(args.glob.replace('*', '').toLowerCase())) continue; if (matches.length >= max) break; const text = await readExisting(join(context.workspace, relPath)); if (!text || text.includes('\u0000')) continue; text.split(/\r?\n/).forEach((line, index) => { if (matches.length < max && regex.test(line)) matches.push({ path: relPath, line: index + 1, text: line.slice(0, 300) }); }); } return result(true, matches, Date.now() - started);
+        } catch (error) {
+          if (context.signal?.aborted) throw error;
+          return result(false, undefined, Date.now() - started, { code: 'search_failed', message: error instanceof Error ? error.message : '搜索失败' });
+        }
       },
     },
     {
@@ -266,7 +418,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'apply_patch', description: '应用 unified diff，所有区块校验通过后原子写入', sideEffect: true, risk: 'medium',
+      name: 'apply_patch', description: '应用标准 unified diff 或 *** Begin Patch / *** Update File 补丁；所有旧内容校验通过后原子写入', sideEffect: true, risk: 'medium',
       parameters: z.object({ patch: z.string().min(1) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { patch: string };
@@ -275,14 +427,14 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'run_command', description: '在工作区内运行 PowerShell 命令并流式返回输出', sideEffect: true, risk: 'high',
+      name: 'run_command', description: '在工作区内运行构建、测试或版本控制命令并流式返回输出；文件定位请优先使用 list_files、search_text 和 read_files', sideEffect: true, risk: 'high',
       parameters: z.object({ command: z.string().min(1), cwd: z.string().optional(), timeoutMs: z.number().int().min(1000).max(120000).optional() }),
       async execute(raw, context) { const args = raw as { command: string; cwd?: string; timeoutMs?: number }; try { const cwd = await new WorkspacePolicy(context.workspace).path(args.cwd); return await commandRunner(args.command, cwd, context, args.timeoutMs); } catch (error) { return result(false, undefined, 0, { code: 'command_denied', message: error instanceof Error ? error.message : '命令目录无效' }); } },
     },
     {
       name: 'git_diff', description: '查看当前工作区 Git Diff', sideEffect: false, risk: 'low',
       parameters: z.object({ path: z.string().optional() }),
-      async execute(raw, context) { const args = raw as { path?: string }; const cwd = await new WorkspacePolicy(context.workspace).path('.'); const command = args.path ? `git diff -- ${JSON.stringify(args.path)}` : 'git diff'; return commandRunner(command, cwd, context, 30_000); },
+      async execute(raw, context) { const args = raw as { path?: string }; const cwd = await new WorkspacePolicy(context.workspace).path('.'); const command = args.path ? `git diff -- ${JSON.stringify(args.path)}` : 'git diff -- .'; return commandRunner(command, cwd, context, 30_000); },
     },
     {
       name: 'set_plan', description: '更新用户可见的执行计划', sideEffect: false, risk: 'low',
