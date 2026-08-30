@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { create } from 'zustand';
-import { DiffEditor, Editor } from '@monaco-editor/react';
+import { Editor } from '@monaco-editor/react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -23,6 +23,7 @@ import {
   FilePlus2,
   FolderOpen,
   GitBranch,
+  GitFork,
   History,
   ImagePlus,
   KeyRound,
@@ -58,17 +59,40 @@ import type {
   AttachmentRef,
   ChangeSet,
   ExecutionMode,
+  LocalSkill,
+  ModelProfile,
+  ModelProfileInput,
   PlanStep,
   ScheduleDefinition,
   SubagentState,
-  Thread,
+  Session,
   ToolResult,
 } from '@seecoder/protocol';
 import type { SeeCoderApi } from '../preload/preload';
+import { formatToolActivity } from './tool-activity';
+import { latestTurnTerminal } from './turn-view';
+import { ChangeDiffViewer, PatchDiffPreview } from './diff-viewer';
 import './styles.css';
 
-const previewThread: Thread = {
-  id: 'preview-thread',
+interface SettingsView {
+  workspace: string;
+  mode: ExecutionMode;
+  model: string;
+  recentModels: string[];
+  baseUrl: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  hasApiKey: boolean;
+  keyStorage: 'environment' | 'os' | 'none';
+  apiKeyHint?: string;
+  activeModelProfileId: string;
+  modelProfiles: ModelProfile[];
+  logPath?: string;
+}
+type SettingsUpdate = Parameters<SeeCoderApi['settings']['update']>[0];
+
+const previewSession: Session = {
+  id: 'preview-session',
   title: '界面预览任务',
   workspacePath: 'Preview',
   createdAt: new Date().toISOString(),
@@ -82,19 +106,20 @@ const previewApi: SeeCoderApi = {
     switch: async (workspace: string) => ({ workspace }),
     open: async () => 'Preview',
   },
-  thread: {
+  session: {
     create: async (title?: string) => ({
-      ...previewThread,
+      ...previewSession,
       id: `preview-${Date.now()}`,
-      title: title ?? previewThread.title,
+      title: title ?? previewSession.title,
     }),
-    list: async () => [previewThread],
-    hydrate: async () => previewThread,
+    list: async () => [previewSession],
+    hydrate: async () => previewSession,
     history: async () => [],
-    rename: async (_id, title) => ({ ...previewThread, title }),
-    flag: async () => previewThread,
-    fork: async () => previewThread,
-    search: async () => [previewThread],
+    rename: async (_id, title) => ({ ...previewSession, title }),
+    flag: async () => previewSession,
+    delete: async (sessionId) => ({ deleted: true, sessionId }),
+    fork: async () => previewSession,
+    search: async () => [previewSession],
     export: async () => ({ cancelled: true }),
   },
   turn: {
@@ -127,7 +152,7 @@ const previewApi: SeeCoderApi = {
   },
   terminal: { run: async () => previewResult({ stdout: '', stderr: '', exitCode: 0 }) },
   preview: { open: async (url) => url },
-  extension: { list: async () => [] },
+  extension: { list: async () => [], import: async () => ({ cancelled: true }), refresh: async () => [], rename: async () => [], delete: async () => [], openSource: async () => '', trustHooks: async () => [] },
   schedule: {
     list: async () => [],
     save: async (value) => [value],
@@ -139,6 +164,9 @@ const previewApi: SeeCoderApi = {
       workspace: 'Preview / Browser',
       mode: 'guided' as const,
       model: 'preview',
+      recentModels: ['preview'],
+      activeModelProfileId: 'preview',
+      modelProfiles: [{ id: 'preview', name: 'Preview', provider: 'OpenAI 兼容', model: 'preview', baseUrl: '', enabled: true, hasApiKey: false, keyStorage: 'none' as const }],
       baseUrl: '',
       contextWindow: 128000,
       maxOutputTokens: 8192,
@@ -149,6 +177,9 @@ const previewApi: SeeCoderApi = {
       workspace: 'Preview / Browser',
       mode: 'guided' as const,
       model: 'preview',
+      recentModels: ['preview'],
+      activeModelProfileId: 'preview',
+      modelProfiles: [{ id: 'preview', name: 'Preview', provider: 'OpenAI 兼容', model: 'preview', baseUrl: '', enabled: true, hasApiKey: false, keyStorage: 'none' as const }],
       baseUrl: '',
       contextWindow: 128000,
       maxOutputTokens: 8192,
@@ -187,8 +218,8 @@ interface InputRequest {
 }
 type RunPhase = 'idle' | 'preparing' | 'model' | 'tool' | 'approval' | 'input' | 'review';
 interface UiState {
-  threads: Thread[];
-  selectedThread: Thread | undefined;
+  sessions: Session[];
+  selectedSession: Session | undefined;
   events: TimelineItem[];
   streamingText: string;
   approvals: Approval[];
@@ -215,8 +246,8 @@ interface UiState {
 }
 
 const useStore = create<UiState>((set) => ({
-  threads: [],
-  selectedThread: undefined,
+  sessions: [],
+  selectedSession: undefined,
   events: [],
   streamingText: '',
   approvals: [],
@@ -235,7 +266,7 @@ const useStore = create<UiState>((set) => ({
   set: (patch) => set(patch),
   addEvent: (event) =>
     set((state) => {
-      if (state.selectedThread && event.threadId && event.threadId !== state.selectedThread.id) return state;
+      if (state.selectedSession && event.sessionId && event.sessionId !== state.selectedSession.id) return state;
       const next = [...state.events, { id: `${Date.now()}-${Math.random()}`, event }].slice(-800);
       if (event.type === 'message.delta')
         return {
@@ -432,11 +463,66 @@ function MarkdownMessage({ text }: { text: string }): React.JSX.Element {
   );
 }
 
+interface PromptRequest {
+  title: string;
+  value?: string;
+  description?: string;
+  placeholder?: string;
+  confirm?: boolean;
+  submitLabel?: string;
+}
+
+function PromptDialog({
+  request,
+  onResolve,
+}: {
+  request: PromptRequest | undefined;
+  onResolve: (value: string | null) => void;
+}): React.JSX.Element | null {
+  const [value, setValue] = useState(request?.value ?? '');
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    setValue(request?.value ?? '');
+    if (request) window.requestAnimationFrame(() => inputRef.current?.focus());
+  }, [request]);
+  if (!request) return null;
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onResolve(null); }}>
+      <div className="prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-dialog-title">
+        <div className="prompt-dialog-head">
+          <strong id="prompt-dialog-title">{request.title}</strong>
+          <button className="icon-button" data-action="dialog-close" title="关闭" aria-label="关闭" onClick={() => onResolve(null)}><X size={15} /></button>
+        </div>
+        {request.description && <p>{request.description}</p>}
+        {!request.confirm && (
+          <input
+            ref={inputRef}
+            autoFocus
+            value={value}
+            placeholder={request.placeholder}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') { event.preventDefault(); onResolve(value); }
+              if (event.key === 'Escape') { event.preventDefault(); onResolve(null); }
+            }}
+          />
+        )}
+        <div className="prompt-dialog-actions">
+          <button className="small-button" data-action="dialog-cancel" onClick={() => onResolve(null)}>取消</button>
+          <button className="small-button primary" data-action="dialog-submit" onClick={() => onResolve(request.confirm ? '__confirm__' : value)}>
+            {request.submitLabel ?? (request.confirm ? '确认' : '确定')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App(): React.JSX.Element {
   const state = useStore();
   const {
-    threads,
-    selectedThread,
+    sessions,
+    selectedSession,
     events,
     streamingText,
     approvals,
@@ -457,6 +543,7 @@ function App(): React.JSX.Element {
   const addEvent = state.addEvent;
   const [workspace, setWorkspace] = useState('未选择工作区');
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
+  const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [page, setPage] = useState<
     'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about'
   >('task');
@@ -465,6 +552,7 @@ function App(): React.JSX.Element {
   >('changes');
   const [composer, setComposer] = useState('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
+  const [activeSkill, setActiveSkill] = useState<LocalSkill>();
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -472,11 +560,27 @@ function App(): React.JSX.Element {
   const [files, setFiles] = useState<string[]>([]);
   const [gitText, setGitText] = useState('');
   const [filePreview, setFilePreview] = useState<{ path: string; text: string } | undefined>();
+  const [promptDialog, setPromptDialog] = useState<PromptRequest>();
+  const promptResolver = useRef<((value: string | null) => void) | null>(null);
+  const loadToken = useRef(0);
+
+  function requestPrompt(request: PromptRequest): Promise<string | null> {
+    return new Promise((resolve) => {
+      promptResolver.current = resolve;
+      setPromptDialog(request);
+    });
+  }
+  function resolvePrompt(value: string | null): void {
+    const resolver = promptResolver.current;
+    promptResolver.current = null;
+    setPromptDialog(undefined);
+    resolver?.(value);
+  }
 
   useEffect(() => {
     const unsubscribe = window.seecoder.events.subscribe(addEvent);
     const menuUnsubscribe = window.seecoder.menu.subscribe((action) => {
-      if (action === 'new-thread') void newThread();
+      if (action === 'new-session') void newSession();
       if (action === 'command-palette') window.dispatchEvent(new Event('seecoder:command'));
       if (action === 'toggle-inspector') setCollapsed((value) => !value);
       if (action === 'about') setPage('about');
@@ -488,13 +592,14 @@ function App(): React.JSX.Element {
       const workspaceList = await window.seecoder.workspace.list();
       setRecentWorkspaces(workspaceList.recent);
       set({ mode: settings.mode, model: settings.model });
-      const list = (await window.seecoder.thread.list()) as Thread[];
+      setModelProfiles(settings.modelProfiles ?? []);
+      const list = (await window.seecoder.session.list()) as Session[];
       if (list.length) {
-        set({ threads: list, selectedThread: list[0] });
-        await loadThread(list[0]!);
+        set({ sessions: list, selectedSession: list[0] });
+        await loadSession(list[0]!);
       } else {
-        const created = (await window.seecoder.thread.create('首个 SeeCoder 任务')) as Thread;
-        set({ threads: [created], selectedThread: created });
+        const created = (await window.seecoder.session.create('首个 SeeCoder 任务')) as Session;
+        set({ sessions: [created], selectedSession: created });
       }
     })();
     return () => {
@@ -533,9 +638,8 @@ function App(): React.JSX.Element {
     };
   }, [set]);
 
-  async function loadThread(thread: Thread): Promise<void> {
-    await window.seecoder.thread.hydrate(thread.id);
-    const history = (await window.seecoder.thread.history(thread.id)) as AgentEvent[];
+  async function loadSession(session: Session): Promise<void> {
+    const token = ++loadToken.current;
     set({
       events: [],
       changes: [],
@@ -550,19 +654,24 @@ function App(): React.JSX.Element {
       phase: 'idle',
       currentTurnId: undefined,
     });
+    await window.seecoder.session.hydrate(session.id);
+    const history = (await window.seecoder.session.history(session.id)) as AgentEvent[];
+    if (token !== loadToken.current || useStore.getState().selectedSession?.id !== session.id) return;
     history.forEach(addEvent);
   }
-  async function selectThread(thread: Thread): Promise<void> {
-    set({ selectedThread: thread });
-    await loadThread(thread);
+  async function selectSession(session: Session): Promise<void> {
+    set({ selectedSession: session });
     setPage('task');
+    await loadSession(session);
   }
-  async function newThread(): Promise<void> {
-    const created = (await window.seecoder.thread.create('新的 SeeCoder 任务')) as Thread;
-    const currentThreads = useStore.getState().threads;
+  async function newSession(): Promise<Session> {
+    loadToken.current += 1;
+    setActiveSkill(undefined);
+    const created = (await window.seecoder.session.create('新的 SeeCoder 任务')) as Session;
+    const currentSessions = useStore.getState().sessions;
     set({
-      threads: [created, ...currentThreads.filter((thread) => thread.id !== created.id)],
-      selectedThread: created,
+      sessions: [created, ...currentSessions.filter((session) => session.id !== created.id)],
+      selectedSession: created,
       events: [],
       approvals: [],
       inputRequests: [],
@@ -577,6 +686,8 @@ function App(): React.JSX.Element {
       currentTurnId: undefined,
     });
     setPage('task');
+    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-action="composer"]')?.focus());
+    return created;
   }
   async function chooseWorkspace(): Promise<void> {
     const selected = (await window.seecoder.workspace.select()) as {
@@ -596,20 +707,20 @@ function App(): React.JSX.Element {
     setWorkspace(nextWorkspace);
     const workspaceList = await window.seecoder.workspace.list();
     setRecentWorkspaces(workspaceList.recent);
-    const workspaceThreads = (await window.seecoder.thread.list()) as Thread[];
-    const selected = workspaceThreads[0] ?? (await window.seecoder.thread.create('新工作区任务')) as Thread;
+    const workspaceSessions = (await window.seecoder.session.list()) as Session[];
+    const selected = workspaceSessions[0] ?? (await window.seecoder.session.create('新工作区任务')) as Session;
     set({
-      threads: workspaceThreads.length ? workspaceThreads : [selected],
-      selectedThread: selected,
+      sessions: workspaceSessions.length ? workspaceSessions : [selected],
+      selectedSession: selected,
       events: [], approvals: [], inputRequests: [], plans: [], changes: [], children: [], terminal: [], reviewFindings: [], streamingText: '', running: false, phase: 'idle', currentTurnId: undefined,
     });
-    await loadThread(selected);
+    await loadSession(selected);
     setPage('task');
   }
   async function send(): Promise<void> {
     const text = composer.trim();
-    if (!text || !selectedThread) return;
-    const shouldSuggestTitle = /^新的 SeeCoder 任务$|^新工作区任务$/.test(selectedThread.title);
+    if (!text || !selectedSession) return;
+    const shouldSuggestTitle = /^新的 SeeCoder 任务$|^新工作区任务$/.test(selectedSession.title);
     const suggestedTitle = (text.split(/\r?\n/)[0] ?? '').replace(/\s+/g, ' ').trim().slice(0, 42);
     setComposer('');
     try {
@@ -620,20 +731,22 @@ function App(): React.JSX.Element {
       }
       set({ running: true, phase: 'preparing', streamingText: '' });
       const turnId = (await window.seecoder.turn.start(
-        selectedThread.id,
+        selectedSession.id,
         text,
         attachments,
+        activeSkill?.id,
       )) as string;
       set({ currentTurnId: turnId });
       if (shouldSuggestTitle && suggestedTitle) {
-        void window.seecoder.thread.rename(selectedThread.id, suggestedTitle).then((renamed) => {
+        void window.seecoder.session.rename(selectedSession.id, suggestedTitle).then((renamed) => {
           set({
-            threads: threads.map((thread) => thread.id === renamed.id ? renamed : thread),
-            selectedThread: renamed,
+            sessions: sessions.map((session) => session.id === renamed.id ? renamed : session),
+            selectedSession: renamed,
           });
         }).catch(() => undefined);
       }
       setAttachments([]);
+      setActiveSkill(undefined);
     } catch (error) {
       set({ running: false, phase: 'idle', currentTurnId: undefined, toast: `任务启动失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
     }
@@ -655,8 +768,21 @@ function App(): React.JSX.Element {
       set({ mode: 'plan', toast: '下一轮将只读分析并生成计划' });
     }
   }
-  async function replan(): Promise<void> { if (!selectedThread) return; set({ running: true, phase: 'preparing' }); const turnId = (await window.seecoder.turn.start(selectedThread.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
-  function editPlanStep(id: string): void { const label = window.prompt('编辑计划步骤'); if (label?.trim()) set({ plans: plans.map((step) => step.id === id ? { ...step, label: label.trim() } : step), toast: '计划步骤已更新（将在下一轮同步给模型）' }); }
+  async function replan(): Promise<void> { if (!selectedSession) return; set({ running: true, phase: 'preparing' }); const turnId = (await window.seecoder.turn.start(selectedSession.id, '请根据当前目标和已有证据重新规划执行步骤。')) as string; set({ currentTurnId: turnId, toast: '已请求重新规划' }); }
+  async function editPlanStep(id: string): Promise<void> {
+    const label = await requestPrompt({ title: '编辑计划步骤', placeholder: '输入新的步骤描述…' });
+    if (label?.trim()) set({ plans: plans.map((step) => step.id === id ? { ...step, label: label.trim() } : step), toast: '计划步骤已更新（将在下一轮同步给模型）' });
+  }
+  async function selectModel(profileId: string): Promise<void> {
+    if (running) return;
+    try {
+      const settings = await window.seecoder.settings.update({ activeModelProfileId: profileId });
+      set({ model: settings.model, toast: `已切换到 ${settings.model}` });
+      setModelProfiles(settings.modelProfiles ?? []);
+    } catch (error) {
+      set({ toast: `模型切换失败：${error instanceof Error ? error.message : '请检查模型配置'}` });
+    }
+  }
   async function resolveApproval(approval: Approval, decision: 'allow' | 'deny'): Promise<void> {
     await window.seecoder.approval.resolve(
       approval.id,
@@ -699,58 +825,116 @@ function App(): React.JSX.Element {
     }
   }
   useEffect(() => {
-    if (page === 'task' && selectedThread) void loadGit();
-  }, [page, selectedThread?.id]);
+    if (page === 'task' && selectedSession) void loadGit();
+  }, [page, selectedSession?.id]);
   async function copyText(text: string): Promise<void> {
     await navigator.clipboard?.writeText(text);
     set({ toast: '已复制到剪贴板' });
   }
-  async function renameThread(): Promise<void> {
-    if (!selectedThread) return;
-    const title = window.prompt('任务名称', selectedThread.title);
+  async function renameSession(): Promise<void> {
+    if (!selectedSession) return;
+    const title = await requestPrompt({ title: '重命名任务', value: selectedSession.title, placeholder: '输入任务名称…' });
     if (!title?.trim()) return;
-    const renamed = (await window.seecoder.thread.rename(
-      selectedThread.id,
+    const renamed = (await window.seecoder.session.rename(
+      selectedSession.id,
       title.trim(),
-    )) as Thread;
+    )) as Session;
     set({
-      selectedThread: renamed,
-      threads: threads.map((item) => (item.id === renamed.id ? renamed : item)),
+      selectedSession: renamed,
+      sessions: sessions.map((item) => (item.id === renamed.id ? renamed : item)),
     });
   }
-  async function exportThread(format: 'markdown' | 'json'): Promise<void> {
-    if (selectedThread) {
-      await window.seecoder.thread.export(selectedThread.id, format);
+  async function exportSession(format: 'markdown' | 'json'): Promise<void> {
+    if (selectedSession) {
+      await window.seecoder.session.export(selectedSession.id, format);
       set({ toast: '已打开导出对话框' });
     }
   }
-  async function showThreadMenu(): Promise<void> {
-    if (!selectedThread) return;
-    const action = window.prompt('输入操作：pin / archive / fork / export');
+  async function forkSession(): Promise<void> {
+    const source = useStore.getState().selectedSession;
+    if (!source) return;
+    if (useStore.getState().running) {
+      set({ toast: '任务运行中不能 Fork，请等待完成或先停止任务' });
+      return;
+    }
+    const forked = (await window.seecoder.session.fork(source.id)) as Session | null;
+    if (!forked) {
+      set({ toast: 'Fork 失败：原任务不存在或不属于当前工作区' });
+      return;
+    }
+    const currentSessions = useStore.getState().sessions;
+    set({ sessions: [forked, ...currentSessions.filter((item) => item.id !== forked.id)] });
+    await selectSession(forked);
+    set({ toast: '已创建 Session Fork' });
+  }
+  async function showSessionMenu(): Promise<void> {
+    if (!selectedSession) return;
+    const action = await requestPrompt({
+      title: '任务操作',
+      description: '输入 pin 置顶、archive 归档、fork 创建副本或 export 导出对话。',
+      placeholder: 'pin / archive / fork / export',
+    });
     if (action === 'pin' || action === 'archive') {
-      const updated = (await window.seecoder.thread.flag(
-        selectedThread.id,
+      const updated = (await window.seecoder.session.flag(
+        selectedSession.id,
         action === 'pin' ? 'pinned' : 'archived',
-      )) as Thread;
+      )) as Session;
       set({
-        selectedThread: updated,
-        threads: threads.map((item) => (item.id === updated.id ? updated : item)),
+        selectedSession: updated,
+        sessions: sessions.map((item) => (item.id === updated.id ? updated : item)),
         toast: action === 'pin' ? '任务已置顶' : '任务已归档',
       });
     } else if (action === 'fork') {
-      const forked = (await window.seecoder.thread.fork(selectedThread.id)) as Thread;
-      set({ threads: [forked, ...threads], selectedThread: forked, toast: '已创建任务 Fork' });
-    } else if (action === 'export') await exportThread('markdown');
+      await forkSession();
+    } else if (action === 'export') await exportSession('markdown');
+  }
+  async function manageSession(session: Session, action: 'rename' | 'pin' | 'archive' | 'delete'): Promise<void> {
+    if (action === 'rename') {
+      const title = await requestPrompt({ title: '重命名任务', value: session.title, placeholder: '输入任务名称…' });
+      if (!title?.trim()) return;
+      const updated = (await window.seecoder.session.rename(session.id, title.trim())) as Session;
+      set({ sessions: useStore.getState().sessions.map((item) => item.id === updated.id ? updated : item), ...(selectedSession?.id === updated.id ? { selectedSession: updated } : {}), toast: '任务已重命名' });
+      return;
+    }
+    if (action === 'pin' || action === 'archive') {
+      const flag = action === 'pin' ? 'pinned' : 'archived';
+      const updated = (await window.seecoder.session.flag(session.id, flag)) as Session;
+      const nextSessions = useStore.getState().sessions.map((item) => item.id === updated.id ? updated : item);
+      set({ sessions: nextSessions, ...(selectedSession?.id === updated.id ? { selectedSession: updated } : {}), toast: flag === 'pinned' ? (updated.pinned ? '任务已置顶' : '已取消置顶') : '任务已归档，可在执行历史中查看' });
+      if (flag === 'archived' && selectedSession?.id === updated.id) {
+        const next = nextSessions.find((item) => !item.archived && item.id !== updated.id);
+        if (next) await selectSession(next); else await newSession();
+      }
+      return;
+    }
+    const confirmed = await requestPrompt({ title: '删除任务', description: `将删除“${session.title}”的 SeeCoder 对话、轨迹和快照。项目文件不会被删除。此操作无法撤销。`, confirm: true, submitLabel: '删除' });
+    if (confirmed !== '__confirm__') return;
+    await window.seecoder.session.delete(session.id);
+    const nextSessions = (await window.seecoder.session.list()) as Session[];
+    set({ sessions: nextSessions, toast: '任务已删除' });
+    if (useStore.getState().selectedSession?.id === session.id) {
+      const next = nextSessions.find((item) => !item.archived);
+      if (next) await selectSession(next); else await newSession();
+    }
   }
   async function showBranches(): Promise<void> {
-    const result = await window.seecoder.git.branches();
-    const listing = String(resultOutput(result) ?? '未找到 Git 仓库');
-    const selected = window.prompt(`本地分支：\n${listing}\n\n输入要切换的分支（取消仅查看）`);
-    if (selected?.trim()) {
-      const switched = await window.seecoder.git.checkout(selected.trim());
-      set({ toast: String(resultOutput(switched) ?? `已切换到 ${selected.trim()}`) });
-      await loadGit();
-    } else set({ toast: listing });
+    try {
+      const result = await window.seecoder.git.branches();
+      const listing = formatCommandOutput(result) || '未找到 Git 仓库';
+      const selected = await requestPrompt({
+        title: '切换本地分支',
+        description: `当前分支列表：\n${listing}`,
+        placeholder: '输入分支名称；留空仅查看列表',
+      });
+      if (selected?.trim()) {
+        const switched = await window.seecoder.git.checkout(selected.trim());
+        set({ toast: String(resultOutput(switched) ?? `已切换到 ${selected.trim()}`) });
+        await loadGit();
+      } else set({ toast: listing });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '无法读取本地分支';
+      set({ toast: `分支操作失败：${message}` });
+    }
   }
   async function stageFile(path: string): Promise<void> {
     const result = await window.seecoder.git.stage(path);
@@ -773,14 +957,18 @@ function App(): React.JSX.Element {
     set({ toast: kind === 'like' ? '感谢反馈，已记录为有帮助' : '已记录改进反馈' });
   }
   async function showCommandPalette(): Promise<void> {
-    const command = window.prompt('命令：/plan /review /diff /compact /status /skills');
+    const command = await requestPrompt({
+      title: '命令面板',
+      description: '选择快捷命令：/plan、/review、/diff、/compact、/status、/skills。',
+      placeholder: '/plan',
+    });
     if (command === '/plan') await togglePlan();
     else if (command === '/review') {
       setPage('task');
       setInspector('trace');
-      if (selectedThread) {
+      if (selectedSession) {
         set({ running: true, phase: 'preparing' });
-        const turnId = (await window.seecoder.turn.start(selectedThread.id, '请调用 review_changes 审查当前工作区变更，并按严重度输出发现。')) as string;
+        const turnId = (await window.seecoder.turn.start(selectedSession.id, '请调用 review_changes 审查当前工作区变更，并按严重度输出发现。')) as string;
         set({ currentTurnId: turnId });
       } else set({ toast: '请先选择任务' });
     } else if (command === '/diff') setInspector('changes');
@@ -791,10 +979,10 @@ function App(): React.JSX.Element {
     else if (command === '/compact') {
       setPage('task');
       setInspector('trace');
-      if (selectedThread) {
+      if (selectedSession) {
         set({ running: true, phase: 'preparing' });
         try {
-          const turnId = (await window.seecoder.turn.start(selectedThread.id, '请立即调用 compact_context 整理当前对话上下文；完成后只简要报告压缩结果，不执行其他工具。')) as string;
+          const turnId = (await window.seecoder.turn.start(selectedSession.id, '请立即调用 compact_context 整理当前对话上下文；完成后只简要报告压缩结果，不执行其他工具。')) as string;
           set({ currentTurnId: turnId });
         } catch (error) {
           set({ running: false, phase: 'idle', toast: `压缩启动失败：${error instanceof Error ? error.message : '请稍后重试'}` });
@@ -808,9 +996,9 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('seecoder:command', listener);
   });
 
-  const visibleThreads = threads.filter(
-    (thread) =>
-      !thread.archived && (!search || thread.title.toLowerCase().includes(search.toLowerCase())),
+  const visibleSessions = sessions.filter(
+    (session) =>
+      !session.archived && (!search || session.title.toLowerCase().includes(search.toLowerCase())),
   );
 
   return (
@@ -820,21 +1008,28 @@ function App(): React.JSX.Element {
         recentWorkspaces={recentWorkspaces}
         page={page}
         setPage={setPage}
-        threads={visibleThreads}
-        selectedThread={selectedThread}
-        onThread={selectThread}
+        sessions={visibleSessions}
+        selectedSession={selectedSession}
+        onSession={selectSession}
         onWorkspace={chooseWorkspace}
         onWorkspaceSwitch={switchRecentWorkspace}
-        onNew={newThread}
-        search={search}
-        setSearch={setSearch}
-        onNotify={() => setPage('history')}
+        onNew={newSession}
+        onSearch={() => {
+          void requestPrompt({ title: '搜索任务', value: search, placeholder: '输入任务标题、消息或分支…' }).then((value) => {
+            if (value !== null) {
+              setSearch(value);
+              setPage('history');
+            }
+          });
+        }}
+        onNotify={() => set({ toast: '通知中心：当前没有新的未读活动' })}
         onTheme={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+        onManageSession={manageSession}
       />
-      <main className={`main-column ${collapsed ? 'wide' : ''}`}>
+      <main className={`main-column ${collapsed ? 'wide' : ''} ${page !== 'task' ? 'workspace-view' : ''}`}>
         {page === 'task' ? (
           <TaskPage
-            selectedThread={selectedThread}
+            selectedSession={selectedSession}
             mode={mode}
             running={running}
             phase={phase}
@@ -852,11 +1047,12 @@ function App(): React.JSX.Element {
             onPlan={togglePlan}
             onReplan={replan}
             onEditPlan={editPlanStep}
-            onRename={renameThread}
-            onExport={exportThread}
+            onRename={renameSession}
+            onExport={exportSession}
             onCopy={copyText}
             onFeedback={feedback}
-            onMenu={showThreadMenu}
+            onFork={forkSession}
+            onMenu={showSessionMenu}
             onBranch={showBranches}
             onRestoreCheckpoint={restoreCheckpoint}
             onRetry={retryLastTask}
@@ -866,13 +1062,15 @@ function App(): React.JSX.Element {
           <WorkspacePage
             page={page}
             workspace={workspace}
-            threads={threads}
+            sessions={sessions}
             gitText={gitText}
             onRefreshGit={loadGit}
-            onNew={newThread}
-            onOpenThread={selectThread}
+            onNew={newSession}
+            onOpenSession={selectSession}
             onToast={(value) => set({ toast: value })}
-            onModelChange={(value) => set({ model: value })}
+            onModelChange={(value, profiles) => { set({ model: value }); setModelProfiles(profiles); }}
+            onUseSkill={async (skill) => { await newSession(); setActiveSkill(skill); setComposer(''); setPage('task'); set({ toast: `已启用 ${skill.name}，请输入本次任务目标` }); }}
+            onRequestPrompt={requestPrompt}
           />
         )}
         {page === 'task' && (
@@ -882,13 +1080,17 @@ function App(): React.JSX.Element {
             running={running}
             mode={mode}
             model={model}
+            modelProfiles={modelProfiles}
             attachments={attachments}
+            activeSkill={activeSkill}
             onAttach={attach}
             onModeSelect={setExecutionMode}
-            onPlan={togglePlan}
+            onModelSelect={selectModel}
             onSend={send}
-            onCancel={() => currentTurnId && void window.seecoder.turn.cancel(currentTurnId)}
-            onSettings={() => setPage('settings')}
+  onCancel={() => currentTurnId && void window.seecoder.turn.cancel(currentTurnId)}
+  onSettings={() => setPage('settings')}
+            onToast={(value) => set({ toast: value })}
+            onClearSkill={() => setActiveSkill(undefined)}
           />
         )}
       </main>
@@ -947,6 +1149,8 @@ function App(): React.JSX.Element {
             onOpenFile={openFile}
             onGitRefresh={loadGit}
             onToast={(value) => set({ toast: value })}
+            onPrompt={(request) => requestPrompt(request)}
+            onConfirm={(message) => requestPrompt({ title: '请确认操作', description: message, confirm: true }).then((value) => value === '__confirm__')}
           />
         </aside>
       )}
@@ -956,6 +1160,7 @@ function App(): React.JSX.Element {
           {toast}
         </div>
       )}
+      <PromptDialog request={promptDialog} onResolve={resolvePrompt} />
     </div>
   );
 }
@@ -965,16 +1170,16 @@ function Sidebar({
   recentWorkspaces,
   page,
   setPage,
-  threads,
-  selectedThread,
-  onThread,
+  sessions,
+  selectedSession,
+  onSession,
   onWorkspace,
   onWorkspaceSwitch,
   onNew,
-  search,
-  setSearch,
+  onSearch,
   onNotify,
   onTheme,
+  onManageSession,
 }: {
   workspace: string;
   recentWorkspaces: string[];
@@ -982,18 +1187,19 @@ function Sidebar({
   setPage: (
     page: 'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about',
   ) => void;
-  threads: Thread[];
-  selectedThread: Thread | undefined;
-  onThread: (thread: Thread) => void;
+  sessions: Session[];
+  selectedSession: Session | undefined;
+  onSession: (session: Session) => void;
   onWorkspace: () => void;
   onWorkspaceSwitch: (workspace: string) => void;
   onNew: () => void;
-  search: string;
-  setSearch: (value: string) => void;
+  onSearch: () => void;
   onNotify: () => void;
   onTheme: () => void;
+  onManageSession: (session: Session, action: 'rename' | 'pin' | 'archive' | 'delete') => void;
 }): React.JSX.Element {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [sessionMenuId, setSessionMenuId] = useState<string>();
   const nav = [
     ['pulls', '拉取请求', GitBranch],
     ['sites', '站点 / 预览', ExternalLink],
@@ -1017,11 +1223,7 @@ function Sidebar({
           className="icon-button"
           data-action="search"
           title="搜索任务"
-          onClick={() => {
-            const value = window.prompt('搜索任务、消息或分支', search);
-            if (value !== null) setSearch(value);
-            setPage('history');
-          }}
+          onClick={onSearch}
         >
           <Search size={16} />
         </button>
@@ -1074,20 +1276,30 @@ function Sidebar({
       </div>
       <div className="section-label">
         <span>最近任务</span>
-        <span className="count">{threads.length}</span>
+        <span className="count">{sessions.length}</span>
       </div>
-      <div className="thread-list">
-        {threads.slice(0, 18).map((thread) => (
-          <button
-            key={thread.id}
-            data-action="open-thread"
-            className={`thread ${selectedThread?.id === thread.id && page === 'task' ? 'selected' : ''}`}
-            onClick={() => onThread(thread)}
-          >
-            <MessageSquare size={15} />
-            <span className="truncate">{thread.title}</span>
-            {thread.pinned && <Pin size={12} />}
-          </button>
+      <div className="session-list">
+        {sessions.slice(0, 18).map((session) => (
+          <div className="session-row" key={session.id}>
+            <button
+              data-action="open-session"
+              className={`session ${selectedSession?.id === session.id && page === 'task' ? 'selected' : ''}`}
+              onClick={() => onSession(session)}
+            >
+              <MessageSquare size={15} />
+              <span className="truncate">{session.title}</span>
+              {session.pinned && <Pin size={12} />}
+            </button>
+            <button className="session-more icon-button" data-action="session-row-menu" aria-label={`管理任务：${session.title}`} aria-expanded={sessionMenuId === session.id} onClick={() => setSessionMenuId((current) => current === session.id ? undefined : session.id)}><MoreHorizontal size={14} /></button>
+            {sessionMenuId === session.id && (
+              <div className="session-menu" role="menu">
+                <button role="menuitem" data-action="session-rename" onClick={() => { setSessionMenuId(undefined); onManageSession(session, 'rename'); }}>重命名</button>
+                <button role="menuitem" data-action="session-pin" onClick={() => { setSessionMenuId(undefined); onManageSession(session, 'pin'); }}>{session.pinned ? '取消置顶' : '置顶'}</button>
+                <button role="menuitem" data-action="session-archive" onClick={() => { setSessionMenuId(undefined); onManageSession(session, 'archive'); }}>归档</button>
+                <button role="menuitem" data-action="session-delete" className="danger" onClick={() => { setSessionMenuId(undefined); onManageSession(session, 'delete'); }}>删除</button>
+              </div>
+            )}
+          </div>
         ))}
       </div>
       <div className="sidebar-bottom">
@@ -1117,7 +1329,7 @@ function Sidebar({
 }
 
 function TaskPage({
-  selectedThread,
+  selectedSession,
   mode,
   running,
   phase,
@@ -1139,13 +1351,14 @@ function TaskPage({
   onExport,
   onCopy,
   onFeedback,
+  onFork,
   onMenu,
   onBranch,
   onRestoreCheckpoint,
   onRetry,
   onOpenInspector,
 }: {
-  selectedThread: Thread | undefined;
+  selectedSession: Session | undefined;
   mode: ExecutionMode;
   running: boolean;
   phase: RunPhase;
@@ -1173,6 +1386,7 @@ function TaskPage({
   onExport: (format: 'markdown' | 'json') => void;
   onCopy: (text: string) => void;
   onFeedback: (kind: 'like' | 'dislike') => void;
+  onFork: () => void;
   onMenu: () => void;
   onBranch: () => void;
   onRestoreCheckpoint: (id: string) => void;
@@ -1222,10 +1436,10 @@ function TaskPage({
     flushExploration();
     return grouped;
   }, [events]);
-  const latestTurnResult = useMemo(
-    () => [...events].reverse().find(({ event }) => event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.cancelled'),
-    [events],
-  );
+  const latestTurnResult = useMemo(() => {
+    const terminal = latestTurnTerminal(events.map(({ event }) => event));
+    return terminal ? { id: `terminal-${terminal.turn.id}`, event: terminal } : undefined;
+  }, [events]);
   const hasConversation = conversationRecords.length > 0 || streamingText.length > 0 || plans.length > 0;
   const failure = latestTurnResult?.event.type === 'turn.failed'
     ? friendlyAgentError(latestTurnResult.event.error.message)
@@ -1248,20 +1462,20 @@ function TaskPage({
       <header className="topbar">
         <div className="crumb">
           <FolderOpen size={15} />
-          <button data-action="rename-thread" className="crumb-title" onClick={onRename}>
-            {selectedThread?.title ?? 'SeeCoder'}
+          <button data-action="rename-session" className="crumb-title" onClick={onRename}>
+            {selectedSession?.title ?? 'SeeCoder'}
           </button>
-          {selectedThread?.workspacePath && (
+          {selectedSession?.workspacePath && (
             <span
               className="workspace-context"
-              title={selectedThread.workspacePath}
-              aria-label={`当前工作区：${selectedThread.workspacePath}`}
+              title={selectedSession.workspacePath}
+              aria-label={`当前工作区：${selectedSession.workspacePath}`}
             >
               <FolderOpen size={12} />
-              {selectedThread.workspacePath.split(/[\\/]/).pop()}
+              {selectedSession.workspacePath.split(/[\\/]/).pop()}
             </span>
           )}
-          <button data-action="thread-menu" className="icon-button" onClick={onMenu}>
+          <button data-action="session-menu" className="icon-button" onClick={onMenu}>
             <MoreHorizontal size={16} />
           </button>
         </div>
@@ -1269,7 +1483,7 @@ function TaskPage({
           <span className={`run-status ${running ? 'running' : ''} phase-${phase}`}><span className="status-dot" />{phaseText[phase]}</span>
           <button data-action="branch" className="ghost-button" onClick={onBranch}>
             <GitBranch size={14} />
-            {selectedThread?.branch ?? 'main'}
+            {selectedSession?.branch ?? 'main'}
             <ChevronDown size={13} />
           </button>
           <button data-action="share" className="ghost-button" onClick={() => onExport('markdown')}>
@@ -1334,7 +1548,7 @@ function TaskPage({
         )}
         <div className="message-stack">
           {conversationRecords.map((record) => record.kind === 'message' ? (
-            <MessageCard key={record.id} message={record.message} onCopy={onCopy} onFeedback={onFeedback} />
+            <MessageCard key={record.id} message={record.message} onCopy={onCopy} onFeedback={onFeedback} onFork={onFork} forkDisabled={running} />
           ) : record.kind === 'activity-group' ? (
             <ActivityGroupCard
               key={record.id}
@@ -1516,10 +1730,14 @@ function MessageCard({
   message,
   onCopy,
   onFeedback,
+  onFork,
+  forkDisabled,
 }: {
   message: Extract<AgentEvent, { type: 'message.completed' | 'message.user' }>;
   onCopy: (text: string) => void;
   onFeedback: (kind: 'like' | 'dislike') => void;
+  onFork: () => void;
+  forkDisabled: boolean;
 }): React.JSX.Element {
   return (
     <div className={`message ${message.type === 'message.user' ? 'user' : 'assistant'}`}>
@@ -1544,6 +1762,9 @@ function MessageCard({
               <button data-action="dislike" title="需要改进" onClick={() => onFeedback('dislike')}>
                 <ThumbsDown size={13} />
               </button>
+              <button data-action="fork-message" title={forkDisabled ? '任务运行中不能 Fork' : 'Fork 当前 Session'} disabled={forkDisabled} onClick={onFork}>
+                <GitFork size={13} />
+              </button>
             </>
           )}
         </div>
@@ -1566,11 +1787,6 @@ function ActivityCard({
   const event = record.completed ?? record.requested ?? record.auxiliary;
   if (!event) return <></>;
   const checkpoint = record.auxiliary?.type === 'checkpoint.created' ? record.auxiliary : undefined;
-  const detail = JSON.stringify({ requested: record.requested, completed: record.completed, auxiliary: record.auxiliary }, null, 2);
-  const displayDetail = detail.length > 12000
-    ? `${detail.slice(0, 8000)}\n…详情已截断，完整内容仍保存在事件轨迹中…\n${detail.slice(-2000)}`
-    : detail;
-  const isTool = Boolean(record.requested || record.completed);
   const isSuccess = record.completed?.result.ok ?? false;
   const isControlled = isToolControlSignal(record.completed?.result);
   const isError = Boolean(record.completed && !record.completed.result.ok && !isControlled);
@@ -1580,25 +1796,16 @@ function ActivityCard({
     : undefined;
   const verificationWarning = finishOutput?.verificationStatus === 'warning' ? finishOutput.warning : undefined;
   if (toolName === 'finish' && !verificationWarning) return <></>;
-  const presentation = toolName ? toolPresentation[toolName] : undefined;
-  const label = verificationWarning ? '完成，但验证已过期'
-    : presentation?.label
-    ?? toolName
-    ?? (record.completed ? `工具调用 ${record.completed.callId.slice(0, 8)}` : record.auxiliary?.type === 'checkpoint.created' ? '已创建恢复点' : '已整理上下文');
   const compactedMetrics = record.auxiliary?.type === 'context.compacted' ? record.auxiliary.metrics : undefined;
-  const status = verificationWarning
-    ? verificationWarning
-    : compactedMetrics
-      ? `约 ${compactedMetrics.beforeTokens} → ${compactedMetrics.afterTokens} tokens · ${compactedMetrics.summarySource === 'model' ? '模型摘要' : '确定性回退'}`
-      : record.completed
-    ? record.completed.result.ok
-      ? toolName === 'ask_user' ? '已收到回复' : presentation ? `已完成 · ${presentation.description}` : '已完成'
-      : isControlled ? '探索已按预算停止，请使用现有证据继续' : '执行失败，展开查看详情'
-    : record.auxiliary?.type === 'checkpoint.created'
-      ? '可恢复'
-      : isTool
-        ? toolName === 'ask_user' ? '等待你的选择' : '执行中'
-        : '已记录';
+  const view = formatToolActivity({
+    name: toolName ?? (record.auxiliary?.type === 'context.compacted' && !compactedMetrics ? 'compact_context' : undefined),
+    args: record.requested?.call.args,
+    result: record.completed?.result,
+    contextMetrics: compactedMetrics,
+    checkpointFiles: checkpoint?.checkpoint.files.map((file) => file.path),
+  });
+  const status = isControlled ? '探索已按预算停止，将使用现有证据继续' : view.summary;
+  const canExpand = view.details.length > 0 || Boolean(checkpoint);
   return (
     <div
       className={`activity ${isError ? 'error' : verificationWarning ? 'warning' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
@@ -1620,16 +1827,24 @@ function ActivityCard({
           )}
         </div>
         <div className="activity-title">
-          <strong>{label}</strong>
+          <strong>{view.title}</strong>
           <span>{status}</span>
         </div>
         <span className="activity-time">{timeLabel(record.completed?.timestamp ?? record.requested?.timestamp ?? event.timestamp)}</span>
-        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        {canExpand && (expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
       </button>
-      {expanded && (
+      {expanded && canExpand && (
         <div className="activity-detail">
-          {toolName && <div className="activity-technical">工具标识：<code>{toolName}</code></div>}
-          <pre>{displayDetail}</pre>
+          {view.details.length > 0 && (
+            <div className="activity-detail-list">
+              {view.details.map((detail, index) => (
+                <div className={`activity-detail-row ${detail.kind ?? 'text'}`} key={`${detail.label ?? 'detail'}-${index}`}>
+                  {detail.label && <span>{detail.label}</span>}
+                  {detail.kind === 'code' ? <code>{detail.value}</code> : <strong title={detail.value}>{detail.value}</strong>}
+                </div>
+              ))}
+            </div>
+          )}
           {checkpoint && (
             <button
               className="small-button"
@@ -1637,7 +1852,7 @@ function ActivityCard({
               onClick={() => onRestoreCheckpoint(checkpoint.checkpoint.id)}
               disabled={!checkpoint.checkpoint.id}
             >
-              恢复到此 Checkpoint
+              恢复到此恢复点
             </button>
           )}
         </div>
@@ -1673,11 +1888,12 @@ function ActivityGroupCard({ records, expanded, onToggle }: { records: ActivityR
             const name = record.requested?.call.name ?? 'tool';
             const ok = record.completed?.result.ok ?? false;
             const controlled = isToolControlSignal(record.completed?.result);
+            const view = formatToolActivity({ name, args: record.requested?.call.args, result: record.completed?.result });
             return (
               <div className="activity-group-row" key={record.id}>
                 {ok ? <Check size={12} /> : controlled ? <Zap size={12} /> : <X size={12} />}
-                <span>{toolPresentation[name]?.label ?? name}</span>
-                <code>{name}</code>
+                <span>{view.title}</span>
+                <strong title={view.summary}>{view.summary}</strong>
                 <time>{timeLabel(record.completed?.timestamp ?? record.requested?.timestamp ?? new Date().toISOString())}</time>
               </div>
             );
@@ -1688,20 +1904,23 @@ function ActivityGroupCard({ records, expanded, onToggle }: { records: ActivityR
   );
 }
 
-function approvalPresentation(approval: Approval): { title: string; summary: string; preview?: string } {
+function approvalPresentation(approval: Approval): { title: string; summary: string; preview?: string; previewLabel?: string } {
   const args = approval.call.args && typeof approval.call.args === 'object' ? approval.call.args as Record<string, unknown> : {};
-  if (approval.call.name === 'run_command') return { title: '运行命令', summary: String(args.cwd ?? '工作区根目录'), preview: String(args.command ?? '') };
+  if (approval.call.name === 'run_command') return { title: '批准运行命令', summary: String(args.cwd ?? '工作区根目录'), preview: String(args.command ?? '') };
   if (approval.call.name === 'write_file') {
     const content = String(args.content ?? '');
-    return { title: '写入文件', summary: `${String(args.path ?? '未知文件')} · ${content.length} 个字符` };
+    return { title: '批准写入文件', summary: `${String(args.path ?? '未知文件')} · ${content.length} 个字符` };
   }
   if (approval.call.name === 'apply_patch') {
     const patch = String(args.patch ?? '');
-    const files = [...patch.matchAll(/^\+\+\+ b\/(.+)$/gm)].map((match) => match[1]).filter(Boolean);
-    return { title: '应用代码修改', summary: files.length ? files.join('、') : '修改工作区文件', preview: patch.slice(0, 1200) };
+    const files = [...new Set([
+      ...[...patch.matchAll(/^\+\+\+ (?:b\/)?(.+)$/gm)].map((match) => match[1]),
+      ...[...patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/gm)].map((match) => match[1]),
+    ].filter((value): value is string => Boolean(value) && value !== '/dev/null'))];
+    return { title: '批准修改文件', summary: files.length ? files.join('、') : '修改工作区文件', preview: patch, previewLabel: '查看代码差异' };
   }
   const presentation = toolPresentation[approval.call.name];
-  return { title: presentation?.label ?? approval.call.name, summary: approval.reason };
+  return { title: `批准${presentation?.label ?? '操作'}`, summary: approval.reason };
 }
 
 function ApprovalCard({
@@ -1726,11 +1945,9 @@ function ApprovalCard({
           {approval.risk === 'high' ? '高风险' : approval.risk === 'medium' ? '中风险' : '低风险'}
         </span>
       </div>
-      {presentation.preview && <pre className="approval-code">{presentation.preview}</pre>}
-      <details className="approval-details">
-        <summary>查看技术详情</summary>
-        <pre>{JSON.stringify(approval.call.args, null, 2)}</pre>
-      </details>
+      {approval.call.name === 'apply_patch' && presentation.preview ? (
+        <PatchDiffPreview patch={presentation.preview} />
+      ) : presentation.preview ? <pre className="approval-code command-preview">{presentation.preview}</pre> : null}
       <div className="approval-actions">
         <button className="deny" data-action="deny-approval" onClick={() => onResolve('deny')}>
           <X size={14} />
@@ -1794,28 +2011,39 @@ function Composer({
   running,
   mode,
   model,
+  modelProfiles,
   attachments,
+  activeSkill,
   onAttach,
   onModeSelect,
-  onPlan,
+  onModelSelect,
   onSend,
   onCancel,
   onSettings,
+  onToast,
+  onClearSkill,
 }: {
   value: string;
   setValue: (value: string) => void;
   running: boolean;
   mode: ExecutionMode;
   model: string;
+  modelProfiles: ModelProfile[];
   attachments: AttachmentRef[];
+  activeSkill: LocalSkill | undefined;
   onAttach: () => void;
   onModeSelect: (mode: ExecutionMode) => void;
-  onPlan: () => void;
+  onModelSelect: (profileId: string) => Promise<void>;
   onSend: () => void;
   onCancel: () => void;
   onSettings: () => void;
+  onToast: (value: string) => void;
+  onClearSkill: () => void;
 }): React.JSX.Element {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const modelOptions = modelProfiles.filter((profile) => profile.enabled);
+  const selectedProfile = modelOptions.find((profile) => profile.model === model) ?? modelOptions[0];
   const modeLabel = mode === 'plan' ? 'Plan' : mode === 'guided' ? 'Guided' : 'Auto';
   const modeDescription = mode === 'plan' ? '只读分析与计划' : mode === 'guided' ? '写入和命令逐次确认' : '低风险动作自动执行';
   return (
@@ -1834,8 +2062,9 @@ function Composer({
           placeholder="描述你想完成的编程任务…"
           rows={2}
         />
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || activeSkill) && (
           <div className="attachment-row">
+            {activeSkill && <span className="attachment-chip skill-chip"><Sparkles size={12} />Skill：{activeSkill.name}<button data-action="clear-skill" aria-label="取消使用 Skill" onClick={onClearSkill}><X size={11} /></button></span>}
             {attachments.map((item) => (
               <span className="attachment-chip" key={item.id}>
                 {item.kind === 'image' ? <ImagePlus size={12} /> : <FilePlus2 size={12} />}
@@ -1860,7 +2089,7 @@ function Composer({
               title={`当前 ${modeLabel}：${modeDescription}。点击选择执行模式`}
               aria-haspopup="menu"
               aria-expanded={modeMenuOpen}
-              onClick={() => setModeMenuOpen((value) => !value)}
+              onClick={() => { setModelMenuOpen(false); setModeMenuOpen((value) => !value); }}
             >
               <ShieldCheck size={13} />
               <span>{modeLabel}</span>
@@ -1887,17 +2116,38 @@ function Composer({
               </div>
             )}
             <button
-              data-action="plan-toggle"
-              className={`composer-tool ${mode === 'plan' ? 'selected' : ''}`}
-              onClick={onPlan}
+              data-action="model-settings"
+              className="composer-tool model-tool"
+              title={running ? '任务运行中不能切换模型' : `当前模型：${model}`}
+              aria-haspopup="menu"
+              aria-expanded={modelMenuOpen}
+              disabled={running}
+              onClick={() => { setModeMenuOpen(false); setModelMenuOpen((value) => !value); }}
             >
-              <ListChecks size={14} />
-              计划
-            </button>
-            <button data-action="model-settings" className="composer-tool" onClick={onSettings}>
-              {model}
+              <span>{selectedProfile?.name ?? model}</span>
               <ChevronDown size={12} />
             </button>
+            {modelMenuOpen && (
+              <div className="model-menu" role="menu">
+                <div className="model-menu-title">选择模型</div>
+                {modelOptions.map((profile) => (
+                  <button
+                    key={profile.id}
+                    data-action="model-option"
+                    className={model === profile.model ? 'selected' : ''}
+                    role="menuitemradio"
+                    aria-checked={model === profile.model}
+                    onClick={() => { setModelMenuOpen(false); void onModelSelect(profile.id); }}
+                  >
+                    <span><strong>{profile.name}</strong><small>{profile.model}</small></span>
+                    {model === profile.model && <Check size={13} />}
+                  </button>
+                ))}
+                <button data-action="manage-models" className="model-manage" onClick={() => { setModelMenuOpen(false); onSettings(); }}>
+                  <Settings2 size={13} />管理模型
+                </button>
+              </div>
+            )}
           </div>
           <div className="composer-hints">
             <span>
@@ -1916,12 +2166,16 @@ function Composer({
                       onresult?: (event: {
                         results: ArrayLike<ArrayLike<{ transcript: string }>>;
                       }) => void;
+                      onstart?: () => void;
+                      onerror?: () => void;
                     };
                   }
                 ).SpeechRecognition;
-                if (!Speech) window.alert('当前 Electron 环境未提供语音识别，请直接输入文字。');
+                if (!Speech) onToast('当前 Electron 环境未提供语音识别，请直接输入文字。');
                 else {
                   const recognition = new Speech();
+                  recognition.onstart = () => onToast('正在监听，请开始说话。');
+                  recognition.onerror = () => onToast('语音输入失败，请检查麦克风权限后重试。');
                   recognition.onresult = (event) =>
                     setValue(`${value} ${event.results[0]?.[0]?.transcript ?? ''}`.trim());
                   recognition.start();
@@ -1966,6 +2220,8 @@ function InspectorContent({
   onOpenFile,
   onGitRefresh,
   onToast,
+  onPrompt,
+  onConfirm,
 }: {
   type: 'changes' | 'files' | 'terminal' | 'preview' | 'trace';
   changes: ChangeSet[];
@@ -1981,6 +2237,8 @@ function InspectorContent({
   onOpenFile: (path: string) => Promise<void>;
   onGitRefresh: () => Promise<void>;
   onToast: (value: string) => void;
+  onPrompt: (request: PromptRequest) => Promise<string | null>;
+  onConfirm: (message: string) => Promise<boolean>;
 }): React.JSX.Element {
   const gitBlocked = gitText.startsWith('Git 操作已禁用') || gitText.startsWith('Git 状态读取失败');
   const gitLines = gitText.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
@@ -2056,8 +2314,8 @@ function InspectorContent({
           </div>
           <div className="git-actions">
             <button className="small-button" data-action="stage-all" disabled={gitBlocked || !gitReady || gitChanges.length === 0} title={gitBlocked ? '请先切换到 Git 仓库根目录' : gitChanges.length === 0 ? '没有可暂存的变更' : '暂存当前工作区的全部变更'} onClick={async () => { await window.seecoder.git.stage(); onToast('已暂存全部工作区改动'); await onGitRefresh(); }}>全部暂存</button>
-            <button className="small-button" data-action="commit" disabled={gitBlocked || !gitReady || !hasStagedChanges} title={!hasStagedChanges ? '请先暂存要提交的文件' : '提交已暂存的变更'} onClick={async () => { const message = window.prompt('提交说明', 'chore: update from SeeCoder'); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? '提交已执行')); await onGitRefresh(); } }}>提交</button>
-            <button className="small-button" data-action="push" disabled={gitBlocked || !gitReady} title={gitBlocked ? '请先切换到 Git 仓库根目录' : '推送当前分支'} onClick={async () => { if (window.confirm('确认推送当前分支？')) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? '推送已执行')); } }}>推送</button>
+            <button className="small-button" data-action="commit" disabled={gitBlocked || !gitReady || !hasStagedChanges} title={!hasStagedChanges ? '请先暂存要提交的文件' : '提交已暂存的变更'} onClick={async () => { const message = await onPrompt({ title: '提交说明', value: 'chore: update from SeeCoder', placeholder: '输入 Git commit message…' }); if (message) { const result = await window.seecoder.git.commit(message); onToast(String(resultOutput(result) ?? '提交已执行')); await onGitRefresh(); } }}>提交</button>
+            <button className="small-button" data-action="push" disabled={gitBlocked || !gitReady} title={gitBlocked ? '请先切换到 Git 仓库根目录' : '推送当前分支'} onClick={async () => { const confirmed = await onConfirm('确认推送当前分支？'); if (confirmed) { const result = await window.seecoder.git.push(); onToast(String(resultOutput(result) ?? '推送已执行')); } }}>推送</button>
           </div>
         </section>
         <section className="change-section task-changes" aria-label="当前任务改动">
@@ -2097,22 +2355,12 @@ function InspectorContent({
                       Stage
                     </button>
                   </div>
-                  <DiffEditor
-                    height="180px"
+                  <ChangeDiffViewer
+                    id={change.id}
+                    path={file.path}
                     language={languageFor(file.path)}
-                    theme="vs-dark"
-                    original={file.before ?? ''}
-                    modified={file.after ?? ''}
-                    originalModelPath={`inmemory://seecoder/${change.id}/before/${encodeURIComponent(file.path)}`}
-                    modifiedModelPath={`inmemory://seecoder/${change.id}/after/${encodeURIComponent(file.path)}`}
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      renderSideBySide: false,
-                      lineNumbers: 'on',
-                      padding: { top: 8, bottom: 8 },
-                      scrollbar: { vertical: 'auto' },
-                    }}
+                    before={file.before ?? ''}
+                    after={file.after ?? ''}
                   />
                 </div>
               ))}
@@ -2154,6 +2402,7 @@ function TracePanel({ events, children }: { events: TimelineItem[]; children: Su
     if (event.type === 'context.summary.completed') return `上下文摘要 · ${event.durationMs}ms · ${event.inputTokens ?? 0}/${event.outputTokens ?? 0} tokens`;
     if (event.type === 'context.summary.failed') return `上下文摘要降级 · ${event.code}`;
     if (event.type === 'context.retrieved') return `历史召回 · ${event.count} 条 · ${event.kinds.join('、')}`;
+    if (event.type === 'skill.activated') return `已激活 Skill · ${event.skill.name}`;
     if (event.type === 'context.compacted') return event.metrics
       ? `上下文压缩 · ${event.metrics.beforeTokens} → ${event.metrics.afterTokens} tokens`
       : '上下文压缩完成';
@@ -2290,9 +2539,20 @@ function TerminalPanel({
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container.current);
-    fit.fit();
+    const fitTerminal = () => {
+      const element = container.current;
+      if (!element || element.clientWidth === 0 || element.clientHeight === 0) return;
+      try { fit.fit(); } catch { /* Electron 首次布局时尺寸可能尚未稳定，下一次 resize 会重试。 */ }
+    };
+    const frame = window.requestAnimationFrame(fitTerminal);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(fitTerminal);
+    if (observer && container.current) observer.observe(container.current);
     terminal.write([...lines, ...localLines].join(''));
-    return () => terminal.dispose();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      terminal.dispose();
+    };
   }, [lines, localLines]);
   return (
     <div className="inspector-body terminal-body">
@@ -2363,38 +2623,36 @@ function PreviewPanel({ onToast }: { onToast: (value: string) => void }): React.
 function WorkspacePage({
   page,
   workspace,
-  threads,
+  sessions,
   gitText,
   onRefreshGit,
   onNew,
-  onOpenThread,
+  onOpenSession,
   onToast,
   onModelChange,
+  onUseSkill,
+  onRequestPrompt,
 }: {
   page: string;
   workspace: string;
-  threads: Thread[];
+  sessions: Session[];
   gitText: string;
   onRefreshGit: () => Promise<void>;
   onNew: () => void;
-  onOpenThread: (thread: Thread) => Promise<void>;
+  onOpenSession: (session: Session) => Promise<void>;
   onToast: (value: string) => void;
-  onModelChange: (value: string) => void;
+  onModelChange: (value: string, profiles: ModelProfile[]) => void;
+  onUseSkill: (skill: LocalSkill) => void;
+  onRequestPrompt: (request: PromptRequest) => Promise<string | null>;
 }): React.JSX.Element {
   void onRefreshGit;
   const [schedules, setSchedules] = useState<ScheduleDefinition[]>([]);
   const [extensions, setExtensions] = useState<
-    Array<{ name: string; description: string; path: string; kind: string }>
+    Array<LocalSkill & { path: string; kind: string; hookStatus?: 'trusted' | 'untrusted' | 'invalid'; hookError?: string }>
   >([]);
   const [url, setUrl] = useState('http://localhost:3000');
-  const [settings, setSettings] = useState<{
-    model: string;
-    baseUrl: string;
-    contextWindow: number;
-    maxOutputTokens: number;
-    hasApiKey: boolean;
-    logPath?: string;
-  }>();
+  const [settings, setSettings] = useState<SettingsView>();
+  const reloadExtensions = async (): Promise<void> => setExtensions(await window.seecoder.extension.list());
   useEffect(() => {
     if (page === 'scheduled') void window.seecoder.schedule.list().then(setSchedules);
     if (page === 'plugins') void window.seecoder.extension.list().then(setExtensions);
@@ -2409,12 +2667,12 @@ function WorkspacePage({
           subtitle="搜索、恢复和继续过去的 SeeCoder 任务"
         />
         <div className="history-grid">
-          {threads.map((thread) => (
-            <button className="history-card" data-action="open-history-thread" key={thread.id} onClick={() => void onOpenThread(thread)}>
+          {sessions.map((session) => (
+            <button className="history-card" data-action="open-history-session" key={session.id} onClick={() => void onOpenSession(session)}>
               <MessageSquare size={16} />
               <div>
-                <strong>{thread.title}</strong>
-                <span>{thread.workspacePath}</span>
+                <strong>{session.title}</strong>
+                <span>{session.workspacePath}</span>
               </div>
               <ChevronRight size={15} />
             </button>
@@ -2581,13 +2839,17 @@ function WorkspacePage({
         <div className="feature-card">
           <div className="page-toolbar">
             <strong>已发现扩展</strong>
-            <button
-              className="small-button"
-              data-action="rescan-extensions"
-              onClick={() => void window.seecoder.extension.list().then(setExtensions)}
-            >
-              重新扫描
-            </button>
+            <div className="extension-toolbar-actions">
+              <button className="small-button primary" data-action="import-skill" onClick={async () => {
+                try {
+                  const result = await window.seecoder.extension.import();
+                  if (result.cancelled) return;
+                  await reloadExtensions();
+                  onToast(`已导入 ${result.skill?.name ?? 'Skill'}`);
+                } catch (error) { onToast(error instanceof Error ? error.message : 'Skill 导入失败'); }
+              }}><Upload size={12} />导入本地 Skill</button>
+              <button className="small-button" data-action="rescan-extensions" onClick={() => void reloadExtensions()}><RefreshCw size={12} />重新扫描</button>
+            </div>
           </div>
           {extensions.map((item) => (
             <div className="extension-row" key={`${item.kind}-${item.path}`}>
@@ -2595,14 +2857,32 @@ function WorkspacePage({
               <div>
                 <strong>{item.name}</strong>
                 <span>{item.description}</span>
+                <small>{item.scope === 'managed' ? `本机导入 · ${item.sourcePath ?? item.relativePath}` : `项目 · ${item.relativePath}`}</small>
               </div>
-              <code>{item.kind}</code>
+              <code>{item.scope === 'managed' ? '本机' : item.kind}</code>
+              {item.kind === 'skill' && <button className="small-button" data-action="use-skill" onClick={() => onUseSkill(item)}>用于新任务</button>}
+              {item.kind === 'hook' && item.hookStatus !== 'invalid' && <button className={`small-button ${item.hookStatus === 'trusted' ? '' : 'primary'}`} data-action="toggle-hooks" onClick={async () => {
+                const enable = item.hookStatus !== 'trusted';
+                if (enable) {
+                  const confirmed = await onRequestPrompt({ title: '信任项目 Hooks', description: 'Hooks 会在工具、文件修改和任务结束时运行本地命令。请先审查 .seecoder/hooks.json；配置变化后信任会自动失效。', confirm: true, submitLabel: '信任并启用' });
+                  if (confirmed !== '__confirm__') return;
+                }
+                try { setExtensions(await window.seecoder.extension.trustHooks(enable)); onToast(enable ? 'Hooks 已信任并启用' : 'Hooks 已停用'); }
+                catch (error) { onToast(error instanceof Error ? error.message : 'Hooks 状态更新失败'); }
+              }}>{item.hookStatus === 'trusted' ? '停用' : '信任并启用'}</button>}
+              {item.kind === 'hook' && item.hookStatus === 'invalid' && <span className="extension-error" title={item.hookError}>配置无效</span>}
+              {item.kind === 'skill' && item.scope === 'managed' && <div className="extension-actions">
+                <button className="icon-button" title="从原始目录更新" aria-label={`更新 ${item.name}`} data-action="refresh-skill" onClick={async () => { try { setExtensions(await window.seecoder.extension.refresh(item.id)); onToast(`${item.name} 已更新`); } catch (error) { onToast(error instanceof Error ? error.message : 'Skill 更新失败'); } }}><RefreshCw size={13} /></button>
+                <button className="icon-button" title="重命名" aria-label={`重命名 ${item.name}`} data-action="rename-skill" onClick={async () => { const name = await onRequestPrompt({ title: '重命名 Skill', value: item.name, placeholder: '输入 Skill 名称…' }); if (!name?.trim()) return; setExtensions(await window.seecoder.extension.rename(item.id, name.trim())); onToast('Skill 已重命名'); }}><MoreHorizontal size={13} /></button>
+                <button className="icon-button" title="打开来源" aria-label={`打开 ${item.name} 来源`} data-action="open-skill-source" onClick={() => void window.seecoder.extension.openSource(item.id)}><FolderOpen size={13} /></button>
+                <button className="icon-button danger" title="删除" aria-label={`删除 ${item.name}`} data-action="delete-skill" onClick={async () => { const confirmed = await onRequestPrompt({ title: '删除 Skill', description: `将从 SeeCoder 本机库删除“${item.name}”，不会删除原始来源目录。`, confirm: true, submitLabel: '删除' }); if (confirmed !== '__confirm__') return; setExtensions(await window.seecoder.extension.delete(item.id)); onToast('Skill 已删除'); }}><X size={13} /></button>
+              </div>}
             </div>
           ))}
           {!extensions.length && (
             <div className="empty-panel">
               <strong>未发现本地扩展</strong>
-              <span>在 .seecoder/skills 或 .agents/skills 放置 SKILL.md 即可加载。</span>
+              <span>点击“导入本地 Skill”并选择 SKILL.md，SeeCoder 会安全复制并管理它。</span>
             </div>
           )}
           <div className="notice-box">
@@ -2616,12 +2896,14 @@ function WorkspacePage({
     return (
       <SettingsPage
         settings={settings}
-        onSave={async (next) => {
+        onUpdate={async (next) => {
           const value = await window.seecoder.settings.update(next);
           setSettings(value);
-          onModelChange(value.model);
-          onToast(value.hasApiKey ? '设置已保存，API Key 已加密持久化' : '设置已保存');
+          onModelChange(value.model, value.modelProfiles ?? []);
+          return value;
         }}
+        onToast={onToast}
+        onConfirm={onRequestPrompt}
       />
     );
   return (
@@ -2637,7 +2919,7 @@ function WorkspacePage({
           <span>工作区</span>
           <strong>{workspace}</strong>
           <span>任务数</span>
-          <strong>{threads.length}</strong>
+          <strong>{sessions.length}</strong>
           <span>Git 状态</span>
           <strong>{gitText || '点击 Changes 刷新'}</strong>
         </div>
@@ -2650,111 +2932,94 @@ function WorkspacePage({
 }
 function SettingsPage({
   settings,
-  onSave,
+  onUpdate,
+  onToast,
+  onConfirm,
 }: {
-  settings:
-    | {
-        model: string;
-        baseUrl: string;
-        contextWindow: number;
-        maxOutputTokens: number;
-        hasApiKey: boolean;
-        keyStorage?: 'environment' | 'os' | 'none';
-        logPath?: string;
-      }
-    | undefined;
-  onSave: (next: {
-    model?: string;
-    baseUrl?: string;
-    contextWindow?: number;
-    maxOutputTokens?: number;
-    apiKey?: string;
-    clearApiKey?: boolean;
-  }) => Promise<void>;
+  settings: SettingsView | undefined;
+  onUpdate: (next: SettingsUpdate) => Promise<SettingsView>;
+  onToast: (value: string) => void;
+  onConfirm: (request: PromptRequest) => Promise<string | null>;
 }): React.JSX.Element {
-  const [model, setModel] = useState(settings?.model ?? 'gpt-4o-mini');
-  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? '');
-  const [key, setKey] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string>();
-  useEffect(() => {
-    if (settings) {
-      setModel(settings.model);
-      setBaseUrl(settings.baseUrl);
-    }
-  }, [settings]);
-  async function save(): Promise<void> {
-    setSaving(true);
-    setSaveError(undefined);
+  const [editing, setEditing] = useState<ModelProfile | 'new'>();
+  const [busy, setBusy] = useState<string>();
+  async function update(next: SettingsUpdate, success: string): Promise<void> {
+    setBusy(success);
     try {
-      await onSave({ model, baseUrl, ...(key ? { apiKey: key } : {}) });
-      setKey('');
+      await onUpdate(next);
+      onToast(success);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : '保存失败，请检查配置');
+      onToast(error instanceof Error ? error.message : '模型配置更新失败');
     } finally {
-      setSaving(false);
+      setBusy(undefined);
     }
   }
+  const profiles = settings?.modelProfiles ?? [];
   return (
     <div className="workspace-page">
-      <PageHeader icon={Settings2} title="设置" subtitle="模型、权限和本地数据" />
-      <div className="settings-card">
-        <label>
-          模型
-          <input value={model} onChange={(event) => setModel(event.target.value)} />
-        </label>
-        <label>
-          OpenAI 兼容 Base URL
-          <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} />
-        </label>
-        <label>
-          API Key（加密持久保存）
-          <div className="input-with-icon">
-            <KeyRound size={15} />
-            <input
-              type="password"
-              value={key}
-              onChange={(event) => setKey(event.target.value)}
-              placeholder={settings?.hasApiKey ? '已保存，留空保持不变' : '输入 API Key'}
-            />
-          </div>
-        </label>
-        <button
-          data-action="save-settings"
-          className="primary-button"
-          disabled={saving}
-          onClick={() => void save()}
-        >
-          {saving ? '保存中…' : '保存设置'}
-        </button>
-        {settings?.hasApiKey && (
-          <button
-            data-action="clear-api-key"
-            className="small-button"
-            disabled={saving}
-            onClick={() => {
-              setSaving(true);
-              setSaveError(undefined);
-              void onSave({ clearApiKey: true })
-                .then(() => setKey(''))
-                .catch((error) => setSaveError(error instanceof Error ? error.message : '清除失败，请重试'))
-                .finally(() => setSaving(false));
-            }}
-          >
-            清除已保存 API Key
-          </button>
-        )}
-        {saveError && <div className="settings-error">{saveError}</div>}
-        {settings?.logPath && (
-          <div className="settings-note">
-            <strong>后台日志</strong>
-            <code title={settings.logPath}>{settings.logPath}</code>
-            <span>API Key 使用操作系统安全存储加密，日志仅记录事件类型、耗时和错误码，不记录 Key 或完整文件内容。</span>
-          </div>
-        )}
-      </div>
+      <PageHeader icon={Settings2} title="模型" subtitle="管理 SeeCoder 可使用的模型与凭据" />
+      <section className="model-management">
+        <div className="model-management-head">
+          <div><h2>模型管理</h2><p>添加 OpenAI 兼容模型，并选择任务默认使用的配置。</p></div>
+          <button className="primary-button compact" data-action="add-model" onClick={() => setEditing('new')}><Plus size={14} />添加模型</button>
+        </div>
+        <div className="model-table" role="table" aria-label="模型配置">
+          <div className="model-table-head" role="row"><span>模型</span><span>服务商</span><span>凭据</span><span>操作</span></div>
+          {profiles.map((profile) => {
+            const active = profile.id === settings?.activeModelProfileId;
+            return <div className={`model-row ${active ? 'active' : ''}`} role="row" key={profile.id} data-action="model-row">
+              <div className="model-identity"><span className="model-logo"><Code2 size={15} /></span><span><strong>{profile.name}</strong><code>{profile.model}</code></span>{active && <b>当前</b>}</div>
+              <div className="model-provider"><strong>{profile.provider}</strong><span title={profile.baseUrl}>{profile.baseUrl}</span></div>
+              <div className="model-credential" data-action="api-key-status"><ShieldCheck size={14} /><span>{profile.hasApiKey ? (profile.keyStorage === 'environment' ? '环境变量' : profile.apiKeyHint) : '未配置'}</span></div>
+              <div className="model-actions">
+                {!active && profile.enabled && <button className="small-button" data-action="set-active-model" disabled={Boolean(busy)} onClick={() => void update({ activeModelProfileId: profile.id }, `已切换到 ${profile.name}`)}>使用</button>}
+                <button className="icon-button" data-action="edit-model" title="编辑模型" aria-label={`编辑 ${profile.name}`} onClick={() => setEditing(profile)}><Settings2 size={14} /></button>
+                <button className="icon-button danger" data-action="delete-model" title="删除模型" aria-label={`删除 ${profile.name}`} disabled={profiles.length <= 1 || Boolean(busy)} onClick={async () => {
+                  const confirmed = await onConfirm({ title: '删除模型', description: `删除“${profile.name}”及其加密凭据。此操作不会影响已有会话记录。`, confirm: true, submitLabel: '删除' });
+                  if (confirmed === '__confirm__') void update({ deleteModelId: profile.id }, '模型已删除');
+                }}><X size={14} /></button>
+                <button className={`toggle-switch ${profile.enabled ? 'on' : ''}`} data-action="toggle-model" role="switch" aria-checked={profile.enabled} aria-label={`${profile.enabled ? '停用' : '启用'} ${profile.name}`} disabled={Boolean(busy)} onClick={() => void update({ toggleModel: { id: profile.id, enabled: !profile.enabled } }, profile.enabled ? '模型已停用' : '模型已启用')}><span /></button>
+              </div>
+            </div>;
+          })}
+        </div>
+        {settings?.logPath && <details className="diagnostics"><summary>本地数据与诊断</summary><div><strong>后台日志</strong><code title={settings.logPath}>{settings.logPath}</code><span>日志不记录 API Key 或完整文件内容。</span></div></details>}
+      </section>
+      {editing && <ModelEditorDialog profile={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} onSave={async (value) => { await onUpdate({ upsertModel: value }); setEditing(undefined); onToast(editing === 'new' ? '模型已添加' : '模型已更新'); }} />}
     </div>
   );
+}
+
+function ModelEditorDialog({ profile, onClose, onSave }: { profile?: ModelProfile | undefined; onClose: () => void; onSave: (value: ModelProfileInput) => Promise<void> }): React.JSX.Element {
+  const [name, setName] = useState(profile?.name ?? '');
+  const [provider, setProvider] = useState(profile?.provider ?? 'DeepSeek');
+  const [model, setModel] = useState(profile?.model ?? '');
+  const [baseUrl, setBaseUrl] = useState(profile?.baseUrl ?? 'https://api.deepseek.com');
+  const [apiKey, setApiKey] = useState('');
+  const [clearApiKey, setClearApiKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  async function submit(): Promise<void> {
+    setSaving(true); setError(undefined);
+    try { await onSave({ ...(profile ? { id: profile.id } : {}), name, provider, model, baseUrl, enabled: profile?.enabled ?? true, ...(apiKey ? { apiKey } : {}), ...(clearApiKey ? { clearApiKey: true } : {}) }); }
+    catch (value) { setError(value instanceof Error ? value.message : '模型保存失败'); setSaving(false); }
+  }
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="prompt-dialog model-editor" role="dialog" aria-modal="true" aria-labelledby="model-editor-title">
+      <div className="prompt-dialog-head"><strong id="model-editor-title">{profile ? '编辑模型' : '添加模型'}</strong><button className="icon-button" data-action="model-dialog-close" aria-label="关闭" onClick={onClose}><X size={15} /></button></div>
+      <p>模型配置只保存在本机。API Key 使用操作系统安全存储加密。</p>
+      <div className="model-form">
+        <label>显示名称<input data-action="model-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 DeepSeek Chat" /></label>
+        <label>服务商<select data-action="model-provider" value={provider} onChange={(event) => { const next = event.target.value; setProvider(next); if (!profile) setBaseUrl(next === 'DeepSeek' ? 'https://api.deepseek.com' : next === 'OpenAI' ? 'https://api.openai.com/v1' : ''); }}><option>DeepSeek</option><option>OpenAI</option><option>OpenAI 兼容</option><option>自定义</option></select></label>
+        <label>模型标识<input data-action="settings-model" value={model} onChange={(event) => setModel(event.target.value)} placeholder="例如 deepseek-chat" /></label>
+        <label>Base URL<input data-action="model-base-url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /></label>
+        <label>API Key{profile?.hasApiKey && <span className="saved-key"><ShieldCheck size={13} />{profile.keyStorage === 'environment' ? '来自环境变量' : `已保存 ${profile.apiKeyHint ?? ''}`}</span>}<div className="input-with-icon"><KeyRound size={15} /><input data-action="api-key-input" type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setClearApiKey(false); }} placeholder={profile?.hasApiKey ? '留空保持不变' : '输入 API Key'} /></div></label>
+        {profile?.hasApiKey && profile.keyStorage === 'os' && <label className="clear-key-option"><input type="checkbox" checked={clearApiKey} onChange={(event) => { setClearApiKey(event.target.checked); if (event.target.checked) setApiKey(''); }} />清除当前配置已保存的 API Key</label>}
+      </div>
+      {error && <div className="settings-error">{error}</div>}
+      <div className="prompt-dialog-actions"><button className="small-button" onClick={onClose}>取消</button><button className="small-button primary" data-action="save-model" disabled={saving || !name.trim() || !model.trim() || !baseUrl.trim()} onClick={() => void submit()}>{saving ? '保存中…' : '保存模型'}</button></div>
+    </div>
+  </div>;
 }
 function PageHeader({
   icon: Icon,
