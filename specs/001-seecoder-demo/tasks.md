@@ -1,7 +1,7 @@
 # Tasks
 
 - [ ] T001 初始化 workspace、tsconfig、lint、CI 和文档门禁。
-- [ ] T002 定义 protocol 的 Thread/Turn/Item/AgentEvent/IPC 类型。
+- [ ] T002 定义 protocol 的 Session/Turn/Item/AgentEvent/IPC 类型。
 - [ ] T003 实现 JSONL SessionStore、快照和恢复。
 - [ ] T004 实现 OpenAI SSE/tool-call parser 与重试。
 - [ ] T005 实现 Agent Core 状态机、循环、取消、上限和无进展判断。

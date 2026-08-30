@@ -4,7 +4,7 @@
 
 | 模块 | 对应需求 | 输出 |
 |---|---|---|
-| protocol/storage | FR-201/205/213 | V2 Envelope、迁移读取、索引、Checkpoint |
+| protocol/storage | FR-201/205/213 | V3 Session Envelope、会话索引、Checkpoint |
 | model/agent-core | FR-202/203/204/209/213 | 三档模式、工具循环、提问、Follow-up、子 Agent |
 | tools/runtime | FR-206/207/208/214 | Git、终端、文件树、附件、权限、回滚 |
 | desktop IPC | FR-211/212/214 | 类型化 IPC、通知、设置、任务管理 |

@@ -4,8 +4,8 @@
 
 | ID | 任务 | 依赖 | 验证 |
 |---|---|---|---|
-| T201 | 冻结 V2 Protocol 与 IPC 类型 | 无 | `pnpm typecheck` |
-| T202 | 实现 V1 JSONL 迁移、线程索引和 Checkpoint 恢复 | T201 | `pnpm test:unit -- storage` |
+| T201 | 冻结 V3 Session Protocol 与 IPC 类型 | 无 | `pnpm typecheck` |
+| T202 | 实现 Session JSONL 回放、会话索引和 Checkpoint 恢复 | T201 | `pnpm test:unit -- storage` |
 | T203 | 修复 SSE tool-call 与 assistant/tool 消息链 | T201 | `pnpm test:unit -- model` |
 | T204 | 实现 Plan、ask_user、Follow-up、ContextLedger | T201/T203 | `pnpm test:unit -- agent-core` |
 | T205 | 实现 Git 状态、Diff、Review、Stage、Commit、Push | T201 | `pnpm test:integration -- git` |
