@@ -8,7 +8,7 @@
 
 | 编号 | 需求 | 可测试验收条件 |
 |---|---|---|
-| FR-201 | V2 事件路由 | 每条持久化事件包含 version/id/seq/threadId/type/timestamp；V1 可读取 |
+| FR-201 | V3 Session 事件路由 | 每条持久化事件包含 version/id/seq/sessionId/type/timestamp/payload |
 | FR-202 | 正确工具上下文 | assistant tool calls 与 tool results 按 API 要求成对进入下一轮请求 |
 | FR-203 | 三档权限 | Plan 不得写入；Guided 写入/命令需审批；Auto 只自动放行工作区低风险动作 |
 | FR-204 | 计划与提问 | Agent 可更新计划、提问并暂停，用户回答后可继续 |
@@ -28,6 +28,15 @@
 | FR-218 | Evidence 与 Observation | 同版本重复读取引用 Evidence；工具输出按类型压缩，完整结果仍可审计 |
 | FR-219 | 轻量历史检索 | 按关键词、中文二元组、路径、错误码、状态和 revision 自动检索，不使用向量数据库 |
 | FR-220 | 验证新鲜度 | 修改后没有当前 revision 的成功验证时允许完成，但必须产生明确警告 |
+| FR-221 | 用户语言一致性 | 最新用户输入以中文为主时，Agent 的用户可见说明、计划、错误解释和总结使用中文；代码、命令和专有名词可保留原文 |
+| FR-222 | 任务生命周期管理 | 左侧任务可重命名、置顶、归档和删除；删除必须确认、拒绝删除运行中任务并清理该任务会话与快照 |
+| FR-223 | Skill 激活闭环 | Main 仅从当前工作区受信目录读取 Skill；用户可将 Skill 用于新任务，系统记录激活事件并把受控指令注入该 Turn，Renderer 不直接读取文件 |
+| FR-224 | 本地 Skill 导入 | 用户可通过系统文件选择器导入任意本地 `SKILL.md`；SeeCoder 校验后复制 Skill 目录到应用数据目录，支持更新、重命名和删除，且不要求用户手工维护项目隐藏目录 |
+| FR-225 | 多文件事务写入 | `apply_patch` 或 ChangeSet 恢复涉及多个文件时，任一提交失败必须恢复已提交文件，不得留下部分修改 |
+| FR-226 | 确定性事件回放 | V3 Session JSONL 通过无副作用 Reducer 重建消息、Turn、ChangeSet 和 Checkpoint；协议异常产生结构化诊断且不重新执行工具 |
+| FR-227 | 受信任 Hooks | 支持 `preToolUse`、`postFileEdit`、`turnEnd`；首次启用和配置变更后必须重新信任，Hook 具备超时、取消与结构化轨迹 |
+| FR-228 | 模型与凭据可见性 | 设置页显示 Key 的安全存储来源与末四位掩码；设置页和 Composer 可切换最近模型，完整 Key 永不进入 Renderer |
+| FR-229 | 多模型配置管理 | 设置页以列表管理模型配置，支持添加、编辑、启停、删除和选择当前模型；每个配置独立保存服务商、模型标识、Base URL 与加密 Key，Composer 只展示已启用配置，旧单模型配置自动迁移 |
 
 ## 非目标
 

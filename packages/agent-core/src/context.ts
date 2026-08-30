@@ -173,7 +173,7 @@ export interface MemoryEntry {
   text: string;
   paths: string[];
   keywords: string[];
-  threadId: string;
+  sessionId: string;
   turnId?: string;
   revision?: number;
   timestamp: string;
@@ -198,32 +198,32 @@ export class MemoryIndex {
     this.entries = this.entries.slice(-500);
   }
 
-  ingest(threadId: string, event: AgentEvent, item: Item | undefined, revision: number): void {
-    if (item?.kind === 'user_message') this.add({ kind: 'user', text: item.text.slice(0, 4000), threadId, ...('turnId' in event && event.turnId ? { turnId: event.turnId } : {}), revision, timestamp: item.createdAt, status: 'active' });
-    else if (item?.kind === 'assistant_message' && item.text) this.add({ kind: 'assistant', text: item.text.slice(0, 4000), threadId, ...('turnId' in event && event.turnId ? { turnId: event.turnId } : {}), revision, timestamp: item.createdAt, status: 'active' });
-    else if (item?.kind === 'changes') this.add({ kind: 'change', text: `修改文件：${item.changeSet.files.map((file) => file.path).join('、')}`, paths: item.changeSet.files.map((file) => file.path), threadId, turnId: item.changeSet.turnId, revision, timestamp: item.createdAt, status: 'active' });
-    else if (item?.kind === 'error') this.add({ kind: 'error', text: `${item.error.code}: ${item.error.message}`, threadId, revision, timestamp: item.createdAt, status: 'active' });
-    if (event.type === 'tool.completed' && event.result.error) this.add({ kind: 'error', text: `${event.result.error.code}: ${event.result.error.message}`, threadId, turnId: event.turnId, revision, timestamp: event.timestamp, status: 'active' });
+  ingest(sessionId: string, event: AgentEvent, item: Item | undefined, revision: number): void {
+    if (item?.kind === 'user_message') this.add({ kind: 'user', text: item.text.slice(0, 4000), sessionId, ...('turnId' in event && event.turnId ? { turnId: event.turnId } : {}), revision, timestamp: item.createdAt, status: 'active' });
+    else if (item?.kind === 'assistant_message' && item.text) this.add({ kind: 'assistant', text: item.text.slice(0, 4000), sessionId, ...('turnId' in event && event.turnId ? { turnId: event.turnId } : {}), revision, timestamp: item.createdAt, status: 'active' });
+    else if (item?.kind === 'changes') this.add({ kind: 'change', text: `修改文件：${item.changeSet.files.map((file) => file.path).join('、')}`, paths: item.changeSet.files.map((file) => file.path), sessionId, turnId: item.changeSet.turnId, revision, timestamp: item.createdAt, status: 'active' });
+    else if (item?.kind === 'error') this.add({ kind: 'error', text: `${item.error.code}: ${item.error.message}`, sessionId, revision, timestamp: item.createdAt, status: 'active' });
+    if (event.type === 'tool.completed' && event.result.error) this.add({ kind: 'error', text: `${event.result.error.code}: ${event.result.error.message}`, sessionId, turnId: event.turnId, revision, timestamp: event.timestamp, status: 'active' });
   }
 
-  rebuild(threadId: string, records: SessionEvent[], revision: number): void {
-    this.entries = this.entries.filter((entry) => entry.threadId !== threadId);
-    for (const record of records) this.ingest(threadId, record.event, record.item, revision);
+  rebuild(sessionId: string, records: SessionEvent[], revision: number): void {
+    this.entries = this.entries.filter((entry) => entry.sessionId !== sessionId);
+    for (const record of records) this.ingest(sessionId, record.event, record.item, revision);
   }
 
-  syncLedger(threadId: string, state: ContextLedgerStateV2): void {
-    this.entries = this.entries.filter((entry) => entry.threadId !== threadId || !['decision', 'validation', 'error'].includes(entry.kind));
+  syncLedger(sessionId: string, state: ContextLedgerStateV2): void {
+    this.entries = this.entries.filter((entry) => entry.sessionId !== sessionId || !['decision', 'validation', 'error'].includes(entry.kind));
     for (const decision of state.decisions) this.add({
       kind: 'decision', text: `${decision.decision}${decision.reason ? `：${decision.reason}` : ''}`,
-      threadId, revision: state.changeRevision, timestamp: timestamp(), status: decision.status,
+      sessionId, revision: state.changeRevision, timestamp: timestamp(), status: decision.status,
     });
     for (const validation of state.validations) this.add({
       kind: 'validation', text: `${validation.command}: ${validation.summary}`,
-      threadId, revision: validation.revision, timestamp: validation.timestamp, status: 'active',
+      sessionId, revision: validation.revision, timestamp: validation.timestamp, status: 'active',
     });
     for (const error of state.errors) this.add({
       kind: 'error', text: `${error.code}: ${error.message}`,
-      threadId, revision: error.revision, timestamp: error.timestamp, status: error.status === 'open' ? 'active' : 'resolved',
+      sessionId, revision: error.revision, timestamp: error.timestamp, status: error.status === 'open' ? 'active' : 'resolved',
     });
   }
 
@@ -355,7 +355,7 @@ export interface ContextBuildResult {
 }
 
 export async function buildHybridContext(options: {
-  threadId: string;
+  sessionId: string;
   currentTurnId?: string;
   messages: ModelMessage[];
   ledger: ContextLedger;
@@ -371,7 +371,7 @@ export async function buildHybridContext(options: {
   const safe = collapseReferencedEvidence(sanitizeModelMessages(options.messages), referenced); const availableInput = Math.max(1000, options.model.contextWindow - options.model.maxOutputTokens - Math.max(2048, Math.floor(options.model.contextWindow * 0.05)));
   const ledgerState = options.ledger.snapshot();
   const ledgerMessage: ModelMessage = { role: 'user', content: `[权威任务状态，不得被历史摘要覆盖]\n${JSON.stringify(ledgerState, null, 2)}` };
-  options.memory.syncLedger(options.threadId, ledgerState);
+  options.memory.syncLedger(options.sessionId, ledgerState);
   const recentNaturalText = messageGroups(safe).slice(-6).flat()
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .flatMap((message) => typeof message.content === 'string' ? [message.content.trim()] : []);

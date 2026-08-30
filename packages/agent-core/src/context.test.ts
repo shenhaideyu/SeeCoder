@@ -41,8 +41,8 @@ describe('hybrid context', () => {
 
   it('retrieves Chinese terms and paths while excluding stale validations', () => {
     const memory = new MemoryIndex(); const now = new Date().toISOString();
-    memory.add({ kind: 'decision', text: '登录状态统一由 src/auth/store.ts 管理', threadId: 't', revision: 2, timestamp: now, status: 'active' });
-    memory.add({ kind: 'validation', text: '登录测试通过', threadId: 't', revision: 1, timestamp: now, status: 'active' });
+    memory.add({ kind: 'decision', text: '登录状态统一由 src/auth/store.ts 管理', sessionId: 't', revision: 2, timestamp: now, status: 'active' });
+    memory.add({ kind: 'validation', text: '登录测试通过', sessionId: 't', revision: 1, timestamp: now, status: 'active' });
     const result = memory.retrieve('登录状态 src/auth/store.ts', 2);
     expect(result.some((item) => item.kind === 'decision')).toBe(true);
     expect(result.some((item) => item.kind === 'validation')).toBe(false);
@@ -50,8 +50,8 @@ describe('hybrid context', () => {
 
   it('does not retrieve messages from the current turn as historical memory', () => {
     const memory = new MemoryIndex(); const now = new Date().toISOString();
-    memory.add({ kind: 'user', text: '后端启动入口在哪里', threadId: 't', turnId: 'current', revision: 0, timestamp: now, status: 'active' });
-    memory.add({ kind: 'decision', text: '后端启动入口位于 backend/main.py', threadId: 't', turnId: 'older', revision: 0, timestamp: now, status: 'active' });
+    memory.add({ kind: 'user', text: '后端启动入口在哪里', sessionId: 't', turnId: 'current', revision: 0, timestamp: now, status: 'active' });
+    memory.add({ kind: 'decision', text: '后端启动入口位于 backend/main.py', sessionId: 't', turnId: 'older', revision: 0, timestamp: now, status: 'active' });
     const result = memory.retrieve('后端启动入口', 0, 6, 4000, 'current');
     expect(result.some((item) => item.turnId === 'current')).toBe(false);
     expect(result.some((item) => item.turnId === 'older')).toBe(true);
@@ -59,13 +59,13 @@ describe('hybrid context', () => {
 
   it('does not inject a retrieved copy of natural language already present in recent context', async () => {
     const memory = new MemoryIndex(); const now = new Date().toISOString();
-    memory.add({ kind: 'assistant', text: '启动入口位于 backend/main.py', threadId: 't', turnId: 'older', revision: 0, timestamp: now, status: 'active' });
+    memory.add({ kind: 'assistant', text: '启动入口位于 backend/main.py', sessionId: 't', turnId: 'older', revision: 0, timestamp: now, status: 'active' });
     const messages: ModelMessage[] = [
       { role: 'assistant', content: '启动入口位于 backend/main.py', toolCalls: [{ id: 'finish-1', name: 'finish', arguments: '{"summary":"完成"}' }] },
       { role: 'tool', content: '{"ok":true}', toolCallId: 'finish-1', toolName: 'finish' },
       { role: 'user', content: '请继续说明 backend/main.py' },
     ];
-    const result = await buildHybridContext({ threadId: 't', currentTurnId: 'current', messages, ledger: new ContextLedger(), evidence: new FileEvidenceStore(), memory, query: 'backend/main.py', model, force: false, summarize: async () => semantic });
+    const result = await buildHybridContext({ sessionId: 't', currentTurnId: 'current', messages, ledger: new ContextLedger(), evidence: new FileEvidenceStore(), memory, query: 'backend/main.py', model, force: false, summarize: async () => semantic });
     expect(result.retrieved).toEqual([]);
   });
 
@@ -80,7 +80,7 @@ describe('hybrid context', () => {
       { role: 'assistant', content: '', toolCalls: [{ id: 'r2', name: 'read_file', arguments: '{"path":"src/a.ts"}' }] },
       { role: 'tool', content: second, toolCallId: 'r2', toolName: 'read_file' },
     ];
-    const result = await buildHybridContext({ threadId: 't', currentTurnId: 'current', messages, ledger, evidence, memory: new MemoryIndex(), query: 'a.ts', model, force: false, summarize: async () => semantic });
+    const result = await buildHybridContext({ sessionId: 't', currentTurnId: 'current', messages, ledger, evidence, memory: new MemoryIndex(), query: 'a.ts', model, force: false, summarize: async () => semantic });
     expect(JSON.stringify(result.messages).split(body)).toHaveLength(2);
   });
 
@@ -89,7 +89,7 @@ describe('hybrid context', () => {
     const messages: ModelMessage[] = Array.from({ length: 16 }, (_, index) => ({ role: index % 2 ? 'assistant' as const : 'user' as const, content: `${index}-${'上下文'.repeat(300)}` }));
     messages.push({ role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_file', arguments: '{"path":"a.ts"}' }] });
     messages.push({ role: 'tool', content: '{"ok":true}', toolCallId: 'c1', toolName: 'read_file' });
-    const result = await buildHybridContext({ threadId: 't', messages, ledger, evidence: new FileEvidenceStore(), memory: new MemoryIndex(), query: '修复问题', model, force: false, summarize: async () => semantic });
+    const result = await buildHybridContext({ sessionId: 't', messages, ledger, evidence: new FileEvidenceStore(), memory: new MemoryIndex(), query: '修复问题', model, force: false, summarize: async () => semantic });
     expect(result.metrics.compacted).toBe(true);
     expect(result.metrics.summarySource).toBe('model');
     expect(result.metrics.afterTokens).toBeLessThanOrEqual(result.metrics.availableInput * 0.60);
@@ -101,7 +101,7 @@ describe('hybrid context', () => {
   it('falls back deterministically when semantic summary fails', async () => {
     const ledger = new ContextLedger(); ledger.setGoal('不能丢失的目标');
     const messages: ModelMessage[] = Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? 'assistant' as const : 'user' as const, content: '旧消息'.repeat(200) }));
-    const result = await buildHybridContext({ threadId: 't', messages, ledger, evidence: new FileEvidenceStore(), memory: new MemoryIndex(), query: '目标', model, force: true, summarize: async () => null });
+    const result = await buildHybridContext({ sessionId: 't', messages, ledger, evidence: new FileEvidenceStore(), memory: new MemoryIndex(), query: '目标', model, force: true, summarize: async () => null });
     expect(result.metrics.summarySource).toBe('deterministic-fallback');
     expect(result.summary).toContain('不能丢失的目标');
   });

@@ -38,6 +38,47 @@ type OpenAIMessage = {
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
 };
 
+/**
+ * Tool Result 只有紧跟在声明它的 Assistant Tool Calls 后才是合法消息。
+ * 这里作为发送前最后一道协议门禁，避免恢复或裁剪后的孤立 tool 消息触发 HTTP 400。
+ */
+export function normalizeToolProtocolMessages(messages: ModelMessage[]): ModelMessage[] {
+  const normalized: ModelMessage[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]!;
+    if (message.role === 'tool') continue;
+    if (message.role !== 'assistant' || !message.toolCalls?.length) {
+      normalized.push(message);
+      continue;
+    }
+
+    const ids = message.toolCalls.map((call) => call.id);
+    const validCalls = ids.every(Boolean) && new Set(ids).size === ids.length;
+    const results = new Map<string, ModelMessage>();
+    let cursor = index + 1;
+    while (cursor < messages.length && messages[cursor]!.role === 'tool') {
+      const result = messages[cursor]!;
+      if (result.toolCallId && !results.has(result.toolCallId)) results.set(result.toolCallId, result);
+      cursor += 1;
+    }
+
+    if (validCalls && ids.every((id) => results.has(id))) {
+      normalized.push(message, ...ids.map((id) => results.get(id)!));
+      index = cursor - 1;
+      continue;
+    }
+
+    // 不完整工具组不能发送；仍保留其中可见的自然语言说明。
+    if (typeof message.content !== 'string' || message.content.trim()) {
+      const textOnly = { ...message };
+      delete textOnly.toolCalls;
+      normalized.push(textOnly);
+    }
+    index = cursor - 1;
+  }
+  return normalized;
+}
+
 function serializeContent(content: ModelMessage['content']): OpenAIMessage['content'] {
   if (typeof content === 'string') return content;
   return content.map((block: ContentBlock) => block.type === 'text'
@@ -56,6 +97,14 @@ export function serializeModelMessages(messages: ModelMessage[]): OpenAIMessage[
   });
 }
 
+function isOfficialDeepSeekEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+}
+
 export class OpenAICompatibleProvider implements ModelProvider {
   constructor(private readonly config: ModelConfig) {}
 
@@ -66,15 +115,20 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return;
     }
 
-    const body = {
+    const body: Record<string, unknown> = {
       model: this.config.model || request.model,
-      messages: serializeModelMessages(request.messages),
+      messages: serializeModelMessages(normalizeToolProtocolMessages(request.messages)),
       tools: request.tools,
       temperature: this.config.temperature,
       max_tokens: this.config.maxOutputTokens,
       stream: true,
       stream_options: { include_usage: true },
     };
+    // DeepSeek 思考模式要求后续回传 reasoning_content；SeeCoder 不保存私有思维链，
+    // 因此在工具任务中显式关闭它，保持工具协议与隐私边界同时成立。
+    if (request.tools.length > 0 && isOfficialDeepSeekEndpoint(this.config.baseUrl)) {
+      body.thinking = { type: 'disabled' };
+    }
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {

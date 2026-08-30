@@ -30,7 +30,7 @@ Renderer MUST 无 Node 集成并通过类型化 IPC 工作。所有路径 MUST �
 
 ## VII. 事件协议稳定性
 
-所有跨进程事件 MUST 携带版本、唯一 ID、单线程序号和明确的 `threadId`。V1 轨迹 MUST 可读取迁移为 V2；新增事件不得依赖从嵌套 payload 推导路由。
+所有跨进程事件 MUST 使用 V3 Session Envelope，携带版本、唯一 ID、单会话序号和明确的 `sessionId`；不得依赖从嵌套 payload 推导路由。
 
 ## 治理
 
