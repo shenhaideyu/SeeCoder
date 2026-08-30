@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder Session 与对话历史</title>
+  <desc id="desc">展示 Workspace、Session、Turn、事件之间的关系，Turn 状态机，以及 JSONL 持久化和重启恢复过程。</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
+    <linearGradient id="soft" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fbf8ff"/><stop offset="1" stop-color="#f0e7fa"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3c2850" flood-opacity=".10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#746d79"/></marker>
+    <style>
+      .h1{font:700 38px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.sub{font:400 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.section{font:700 21px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.label{font:700 19px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.body{font:400 16px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4e4753}.meta{font:400 14px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.mono{font:500 15px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}.white{fill:#fff}.line{stroke:#746d79;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#a99db5;stroke-width:2;fill:none;stroke-dasharray:7 7;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="1080" fill="#f6f6f7"/>
+  <rect x="48" y="44" width="1504" height="950" rx="28" fill="#fff" stroke="#e5e1e8" filter="url(#shadow)"/>
+  <rect x="48" y="44" width="12" height="950" rx="6" fill="url(#brand)"/>
+  <text x="92" y="104" class="h1">04 · Session 与对话历史</text>
+  <text x="92" y="139" class="sub">Session 是一段可持续追问的任务空间；Turn 是一次用户输入触发的执行；Event 是可审计的事实记录。</text>
+
+  <text x="92" y="196" class="section">领域关系</text>
+  <g filter="url(#shadow)">
+    <rect x="92" y="220" width="280" height="124" rx="18" fill="url(#soft)" stroke="#b99aef"/>
+    <rect x="456" y="220" width="280" height="124" rx="18" fill="#fff" stroke="#8247d6" stroke-width="2"/>
+    <rect x="820" y="220" width="280" height="124" rx="18" fill="#fff" stroke="#65a9ff" stroke-width="2"/>
+    <rect x="1184" y="220" width="280" height="124" rx="18" fill="#fff" stroke="#36c98f" stroke-width="2"/>
+  </g>
+  <circle cx="130" cy="259" r="19" fill="#4d0099"/><text x="130" y="265" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI'">W</text>
+  <text x="162" y="264" class="label">Workspace</text><text x="118" y="306" class="body">本地项目目录 · 1 对多</text><text x="118" y="329" class="meta">切换时取消旧工作区活动任务</text>
+  <circle cx="494" cy="259" r="19" fill="#6418b8"/><text x="494" y="265" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI'">S</text>
+  <text x="526" y="264" class="label">Session</text><text x="482" y="306" class="body">连续对话与共享任务历史</text><text x="482" y="329" class="meta">同一时刻最多一个活动 Turn</text>
+  <circle cx="858" cy="259" r="19" fill="#3976c5"/><text x="858" y="265" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI'">T</text>
+  <text x="890" y="264" class="label">Turn</text><text x="846" y="306" class="body">一次输入触发的 Agent 执行</text><text x="846" y="329" class="meta">拥有明确开始、暂停与终态</text>
+  <circle cx="1222" cy="259" r="19" fill="#15966f"/><text x="1222" y="265" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI'">E</text>
+  <text x="1254" y="264" class="label">Event</text><text x="1210" y="306" class="body">带 seq 的追加式事实</text><text x="1210" y="329" class="meta">消息、工具、审批、变更、终态</text>
+  <path d="M372 282H446" class="line"/><text x="409" y="269" text-anchor="middle" class="meta">1:N</text>
+  <path d="M736 282H810" class="line"/><text x="773" y="269" text-anchor="middle" class="meta">1:N</text>
+  <path d="M1100 282H1174" class="line"/><text x="1137" y="269" text-anchor="middle" class="meta">1:N</text>
+
+  <text x="92" y="402" class="section">Turn 状态机：前端只投影后台事实</text>
+  <g>
+    <rect x="92" y="432" width="156" height="58" rx="29" fill="#f0e7fa" stroke="#b99aef"/><text x="170" y="468" text-anchor="middle" class="label">queued</text>
+    <rect x="292" y="432" width="156" height="58" rx="29" fill="#4d0099"/><text x="370" y="468" text-anchor="middle" class="white" style="font:700 18px 'Segoe UI','Microsoft YaHei'">running</text>
+    <rect x="500" y="392" width="200" height="58" rx="29" fill="#fff7e8" stroke="#f2b84b"/><text x="600" y="428" text-anchor="middle" class="label">waitingApproval</text>
+    <rect x="500" y="484" width="200" height="58" rx="29" fill="#eef5ff" stroke="#65a9ff"/><text x="600" y="520" text-anchor="middle" class="label">waitingInput</text>
+    <polygon points="790,407 865,461 790,515 715,461" fill="#fbf8ff" stroke="#8247d6" stroke-width="2"/>
+    <text x="790" y="455" text-anchor="middle" class="label">结束</text><text x="790" y="479" text-anchor="middle" class="body">原因？</text>
+    <rect x="900" y="397" width="190" height="58" rx="29" fill="#eaf8f3" stroke="#36c98f"/><text x="995" y="433" text-anchor="middle" class="label">completed</text>
+    <rect x="1160" y="397" width="160" height="58" rx="29" fill="#fff0f2" stroke="#ff667d"/><text x="1240" y="433" text-anchor="middle" class="label">failed</text>
+    <rect x="900" y="477" width="190" height="58" rx="29" fill="#f2f0f3" stroke="#a99db5"/><text x="995" y="513" text-anchor="middle" class="label">cancelled</text>
+    <rect x="1160" y="477" width="190" height="58" rx="29" fill="#fff7e8" stroke="#f2b84b"/><text x="1255" y="513" text-anchor="middle" class="label">limitReached</text>
+  </g>
+  <path d="M248 461H282" class="line"/><path d="M448 451C470 451 470 421 490 421" class="line"/><path d="M448 471C470 471 470 513 490 513" class="line"/>
+  <path d="M600 392V374H370V422" class="dash"/><path d="M600 542V560H370V500" class="dash"/>
+  <path d="M448 461H705" class="line"/>
+  <path d="M865 461C882 461 882 426 890 426" class="line"/><path d="M865 461H1120C1140 461 1140 426 1150 426" class="line"/>
+  <path d="M865 461C882 461 882 506 890 506" class="line"/><path d="M865 461H1120C1140 461 1140 506 1150 506" class="line"/>
+  <text x="92" y="571" class="meta">审批与结构化提问会暂停当前 Turn；用户处理后恢复同一执行。所有终态只由 Agent Core 发布并持久化。</text>
+
+  <text x="92" y="630" class="section">持久化与重启恢复</text>
+  <rect x="92" y="654" width="460" height="238" rx="20" fill="#fbf8ff" stroke="#d8cae5"/>
+  <text x="122" y="694" class="label">%APPDATA%/SeeCoder/sessions-data</text>
+  <text x="122" y="733" class="mono">sessions/&lt;session-id&gt;/meta.json</text><text x="122" y="758" class="meta">标题、工作区、创建与更新时间</text>
+  <text x="122" y="798" class="mono">state.json</text><text x="122" y="823" class="meta">当前消息、计划、ChangeSet、Checkpoint 快照</text>
+  <text x="122" y="863" class="mono">events.jsonl</text><text x="122" y="888" class="meta">按 seq 追加，原始轨迹不因上下文压缩而删除</text>
+
+  <path d="M552 773H633" class="line"/>
+  <rect x="644" y="654" width="360" height="238" rx="20" fill="#fff" stroke="#65a9ff"/>
+  <text x="674" y="694" class="label">启动时 hydrate</text>
+  <text x="674" y="733" class="body">① 读取元数据与状态快照</text>
+  <text x="674" y="768" class="body">② 容忍损坏的 JSONL 尾行</text>
+  <text x="674" y="803" class="body">③ 按 seq 回放并检查协议配对</text>
+  <text x="674" y="838" class="body">④ 重建消息、变更与 Checkpoint</text>
+  <text x="674" y="873" class="body">⑤ 未结束 Turn 标记为 interrupted</text>
+
+  <path d="M1004 773H1085" class="line"/>
+  <rect x="1096" y="654" width="368" height="238" rx="20" fill="#eef8f4" stroke="#72b99f"/>
+  <text x="1126" y="694" class="label">恢复后的 Session</text>
+  <text x="1126" y="733" class="body">可继续追问并查看已有事实</text>
+  <text x="1126" y="768" class="body">计划、Diff、审批与终态重新投影</text>
+  <text x="1126" y="803" class="body">历史工具结果不会再次执行</text>
+  <text x="1126" y="838" class="body">中断任务不会自动续跑</text>
+  <rect x="1126" y="858" width="306" height="1" fill="#b9d8cc"/>
+  <text x="1126" y="883" class="meta">恢复事实，不重放副作用</text>
+
+  <rect x="92" y="927" width="1372" height="44" rx="12" fill="#4d0099"/>
+  <text x="778" y="955" text-anchor="middle" class="white" style="font:600 16px 'Segoe UI','Microsoft YaHei'">关键不变量 · Session 隔离 · 事件序号单调 · 同一 Session 单活动 Turn · Tool Call 与 Tool Result 成组 · 终态不可重复</text>
+</svg>

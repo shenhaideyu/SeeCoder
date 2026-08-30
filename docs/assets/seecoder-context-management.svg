@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1180" viewBox="0 0 1600 1180" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 混合上下文管理与压缩</title>
+  <desc id="desc">展示原始历史、结构化任务状态、文件证据、工具观察、历史召回、语义摘要如何经过预算分配构成每轮模型视图。</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3c2850" flood-opacity=".10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#746d79"/></marker>
+    <style>
+      .h1{font:700 38px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.sub{font:400 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.section{font:700 21px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.label{font:700 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.body{font:400 15px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4e4753}.meta{font:400 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.mono{font:500 14px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}.white{fill:#fff}.line{stroke:#746d79;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#8247d6;stroke-width:2;fill:none;stroke-dasharray:7 7;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="1180" fill="#f6f6f7"/>
+  <rect x="48" y="44" width="1504" height="1050" rx="28" fill="#fff" stroke="#e5e1e8" filter="url(#shadow)"/>
+  <rect x="48" y="44" width="12" height="1050" rx="6" fill="url(#brand)"/>
+  <text x="92" y="104" class="h1">05 · 上下文管理与压缩</text>
+  <text x="92" y="139" class="sub">完整历史负责审计与恢复；ContextBuilder 为每一轮模型请求生成有限、相关、协议完整的工作视图。</text>
+
+  <text x="92" y="194" class="section">六类输入：不同信息采用不同保留方式</text>
+  <g filter="url(#shadow)">
+    <rect x="92" y="220" width="220" height="126" rx="18" fill="#fbf8ff" stroke="#b99aef"/>
+    <rect x="328" y="220" width="220" height="126" rx="18" fill="#eef5ff" stroke="#65a9ff"/>
+    <rect x="564" y="220" width="220" height="126" rx="18" fill="#eef8f4" stroke="#72b99f"/>
+    <rect x="800" y="220" width="220" height="126" rx="18" fill="#fff7e8" stroke="#e2bb67"/>
+    <rect x="1036" y="220" width="220" height="126" rx="18" fill="#fff" stroke="#a99db5"/>
+    <rect x="1272" y="220" width="220" height="126" rx="18" fill="#fff0f2" stroke="#ff9aac"/>
+  </g>
+  <text x="112" y="254" class="label">固定规则</text><text x="112" y="281" class="body">安全规则 · 工具 Schema</text><text x="112" y="307" class="body">当前目标 · 未解决审批</text><text x="112" y="330" class="meta">最高优先级，永不删除</text>
+  <text x="348" y="254" class="label">ContextLedger V2</text><text x="348" y="281" class="body">目标、计划、约束、决策</text><text x="348" y="307" class="body">revision、验证与错误</text><text x="348" y="330" class="meta">权威任务状态</text>
+  <text x="584" y="254" class="label">FileEvidence</text><text x="584" y="281" class="body">路径 · hash · 行范围</text><text x="584" y="307" class="body">重复读取可引用 evidenceRef</text><text x="584" y="330" class="meta">文件修改后失效</text>
+  <text x="820" y="254" class="label">Tool Observation</text><text x="820" y="281" class="body">按 read/search/command/diff</text><text x="820" y="307" class="body">保留退出码与关键诊断</text><text x="820" y="330" class="meta">完整结果仍留在事件轨迹</text>
+  <text x="1056" y="254" class="label">MemoryIndex</text><text x="1056" y="281" class="body">关键词 · 中文二元组 · 路径</text><text x="1056" y="307" class="body">状态 · revision · 时间衰减</text><text x="1056" y="330" class="meta">最多 6 条 / 4000 字符</text>
+  <text x="1292" y="254" class="label">最近协议组</text><text x="1292" y="281" class="body">用户与助手原文</text><text x="1292" y="307" class="body">Assistant + Tool 必须成组</text><text x="1292" y="330" class="meta">按协议组裁剪，不按消息条数</text>
+
+  <path d="M202 346V388H792" class="line"/><path d="M438 346V378H792" class="line"/><path d="M674 346V368H792" class="line"/>
+  <path d="M910 346V368H808" class="line"/><path d="M1146 346V378H808" class="line"/><path d="M1382 346V388H808" class="line"/>
+
+  <rect x="542" y="404" width="516" height="130" rx="22" fill="url(#brand)" filter="url(#shadow)"/>
+  <text x="800" y="448" text-anchor="middle" class="white" style="font:700 23px 'Segoe UI','Microsoft YaHei'">ContextBuilder + ContextBudgetAllocator</text>
+  <text x="800" y="480" text-anchor="middle" class="white" style="font:400 16px 'Segoe UI','Microsoft YaHei'">按优先级组装 · 估算 token · 保护工具协议 · 注入相关证据</text>
+  <text x="800" y="508" text-anchor="middle" class="white" style="font:500 15px Consolas,'Microsoft YaHei'">availableInput = window − maxOutput − max(2048, window × 5%)</text>
+
+  <text x="92" y="604" class="section">自动压缩：达到 75% 预算才启动，目标降到 60% 以下</text>
+  <rect x="92" y="630" width="141" height="74" rx="16" fill="#fff" stroke="#a99db5"/><text x="162" y="661" text-anchor="middle" class="label">估算输入</text><text x="162" y="686" text-anchor="middle" class="meta">Unicode 启发式</text>
+  <path d="M233 667H294" class="line"/>
+  <polygon points="378,614 462,667 378,720 294,667" fill="#fff7e8" stroke="#e2bb67" stroke-width="2"/><text x="378" y="661" text-anchor="middle" class="label">超过</text><text x="378" y="684" text-anchor="middle" class="body">75%？</text>
+  <path d="M462 667H523" class="line"/><text x="491" y="652" text-anchor="middle" class="meta">是</text>
+  <rect x="534" y="610" width="222" height="114" rx="18" fill="#fbf8ff" stroke="#b99aef"/><text x="645" y="645" text-anchor="middle" class="label">语义摘要</text><text x="645" y="672" text-anchor="middle" class="body">当前模型 · tools = []</text><text x="645" y="697" text-anchor="middle" class="meta">temperature 0 · 30 秒超时</text>
+  <path d="M756 667H817" class="line"/>
+  <rect x="828" y="610" width="222" height="114" rx="18" fill="#eef8f4" stroke="#72b99f"/><text x="939" y="645" text-anchor="middle" class="label">校验与回退</text><text x="939" y="672" text-anchor="middle" class="body">合法 JSON 直接采用</text><text x="939" y="697" text-anchor="middle" class="meta">失败则确定性摘要，Turn 继续</text>
+  <path d="M1050 667H1111" class="line"/>
+  <rect x="1122" y="598" width="370" height="138" rx="18" fill="#fff" stroke="#8247d6" stroke-width="2"/><text x="1148" y="635" class="label">仍超预算时按顺序减量</text><text x="1148" y="665" class="body">召回条目 → 旧 revision 证据 → 旧摘要</text><text x="1148" y="692" class="body">→ 最早且未受保护的自然语言协议组</text><text x="1148" y="718" class="meta">Ledger、当前目标和最近工具组不被删除</text>
+  <path d="M378 720V762H1307V746" class="dash"/><text x="778" y="756" text-anchor="middle" class="meta">否：跳过摘要，直接形成当前模型视图</text>
+
+  <path d="M800 534V568H72V800H245" class="line"/>
+  <path d="M1307 736V800H1355" class="line"/>
+  <rect x="256" y="776" width="1088" height="188" rx="24" fill="#f9f7fa" stroke="#d8cae5"/>
+  <text x="800" y="816" text-anchor="middle" class="section">最终 ModelRequest：每一轮重新构建，不修改原始历史</text>
+  <rect x="286" y="842" width="185" height="84" rx="14" fill="#4d0099"/><text x="378" y="875" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI','Microsoft YaHei'">系统与安全规则</text><text x="378" y="902" text-anchor="middle" class="white" style="font:400 13px 'Segoe UI','Microsoft YaHei'">固定 + 工具定义</text>
+  <rect x="490" y="842" width="185" height="84" rx="14" fill="#eef5ff" stroke="#65a9ff"/><text x="582" y="875" text-anchor="middle" class="label">Ledger</text><text x="582" y="902" text-anchor="middle" class="meta">当前权威状态</text>
+  <rect x="694" y="842" width="185" height="84" rx="14" fill="#eef8f4" stroke="#72b99f"/><text x="786" y="875" text-anchor="middle" class="label">相关证据</text><text x="786" y="902" text-anchor="middle" class="meta">Evidence + Retrieval</text>
+  <rect x="898" y="842" width="185" height="84" rx="14" fill="#fff7e8" stroke="#e2bb67"/><text x="990" y="875" text-anchor="middle" class="label">摘要</text><text x="990" y="902" text-anchor="middle" class="meta">较早自然语言</text>
+  <rect x="1102" y="842" width="212" height="84" rx="14" fill="#fff" stroke="#8247d6"/><text x="1208" y="875" text-anchor="middle" class="label">最近完整协议组</text><text x="1208" y="902" text-anchor="middle" class="meta">原文 + 当前 Tool 组</text>
+
+  <rect x="92" y="995" width="1400" height="60" rx="15" fill="#eef8f4" stroke="#72b99f"/>
+  <text x="118" y="1021" class="label">原始 JSONL 历史始终保留</text><text x="118" y="1046" class="body">压缩只影响模型下一轮“看到什么”；审计、恢复和完整 ToolResult 不会因摘要而丢失。</text>
+  <rect x="92" y="1073" width="1400" height="44" rx="12" fill="#4d0099"/>
+  <text x="792" y="1101" text-anchor="middle" class="white" style="font:600 16px 'Segoe UI','Microsoft YaHei'">关键不变量 · 权威状态优先 · 当前 revision 优先 · 工具协议不拆组 · 摘要不可覆盖事实 · 工作区之间不共享证据</text>
+</svg>

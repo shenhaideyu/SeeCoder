@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="2420" viewBox="0 0 1760 2420" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 一次编程任务的 UML 时序图</title>
+  <desc id="desc">展示用户从 Renderer 发送任务，经 Preload 与 Electron Main 进入 AgentCore，构建混合上下文、流式调用 OpenAI 兼容 API、聚合 Tool Call、等待可选审批、执行本地工具、回填 Observation，最终完成、失败或取消的真实调用链。</desc>
+  <defs>
+    <linearGradient id="brandGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#8247d6"/>
+      <stop offset="1" stop-color="#4d0099"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#4d0099" flood-opacity=".10"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#62596a"/>
+    </marker>
+    <marker id="arrowBrand" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#4d0099"/>
+    </marker>
+    <style>
+      .pageTitle{font:700 34px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}
+      .pageSubtitle{font:400 16px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}
+      .participant{fill:#fff;stroke:#c9badb;stroke-width:1.8;filter:url(#shadow)}
+      .participantCore{fill:url(#brandGradient);stroke:#4d0099;stroke-width:1.8;filter:url(#shadow)}
+      .participantText{font:700 14px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#342b3c;text-anchor:middle}
+      .participantTextWhite{font:700 14px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#fff;text-anchor:middle}
+      .participantHint{font:400 11px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79;text-anchor:middle}
+      .participantHintWhite{font:400 11px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#eee6f7;text-anchor:middle}
+      .lifeline{stroke:#b8afbf;stroke-width:1.5;stroke-dasharray:7 7}
+      .activation{fill:#efe5f8;stroke:#8247d6;stroke-width:1.3}
+      .activationNeutral{fill:#f4f1f6;stroke:#a99db5;stroke-width:1.2}
+      .message{fill:none;stroke:#62596a;stroke-width:1.8;marker-end:url(#arrow)}
+      .return{fill:none;stroke:#746d79;stroke-width:1.7;stroke-dasharray:7 5;marker-end:url(#arrow)}
+      .event{fill:none;stroke:#4d0099;stroke-width:2;marker-end:url(#arrowBrand)}
+      .cancel{fill:none;stroke:#d84b63;stroke-width:2;marker-end:url(#arrow)}
+      .messageText{font:600 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#44394c;text-anchor:middle}
+      .eventText{font:600 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099;text-anchor:middle}
+      .smallText{font:400 12px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79;text-anchor:middle}
+      .frame{fill:#fff;fill-opacity:.45;stroke:#b99aef;stroke-width:1.7}
+      .frameLabel{fill:#f0e7fa;stroke:#b99aef;stroke-width:1.4}
+      .frameTitle{font:700 13px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}
+      .separator{stroke:#b99aef;stroke-width:1.4;stroke-dasharray:8 6}
+      .condition{font:600 12px Consolas,'Microsoft YaHei',monospace;fill:#62596a}
+      .note{fill:#fff;stroke:#d8cce6;stroke-width:1.4;filter:url(#shadow)}
+      .noteAccent{fill:#f0e7fa;stroke:#b99aef;stroke-width:1.4}
+      .noteTitle{font:700 14px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}
+      .noteText{font:400 12px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#62596a}
+      .code{font:500 12px Consolas,'Microsoft YaHei',monospace;fill:#514759}
+      .phase{font:700 12px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#fff;text-anchor:middle;dominant-baseline:middle}
+      .phaseCircle{fill:#4d0099}
+      .terminalOk{fill:#eefaf5;stroke:#36a978;stroke-width:1.3}
+      .terminalError{fill:#fff3f5;stroke:#e35b72;stroke-width:1.3}
+      .legend{font:400 12px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}
+    </style>
+  </defs>
+
+  <rect width="1760" height="2420" fill="#f6f6f7"/>
+  <text x="44" y="55" class="pageTitle">02 · SeeCoder 任务执行时序</text>
+  <text x="44" y="86" class="pageSubtitle">一条真实调用链：类型化 IPC → 自研 Agent 循环 → OpenAI 兼容 SSE → 受控本地工具 → JSONL 会话恢复</text>
+
+  <!-- 参与者 -->
+  <g>
+    <rect x="30" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="110" y="145" class="participantText">用户</text>
+    <text x="110" y="168" class="participantHint">User</text>
+
+    <rect x="225" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="305" y="145" class="participantText">Renderer</text>
+    <text x="305" y="168" class="participantHint">React 界面</text>
+
+    <rect x="420" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="500" y="141" class="participantText">Preload +</text>
+    <text x="500" y="160" class="participantText">Electron Main</text>
+    <text x="500" y="179" class="participantHint">可信桌面边界</text>
+
+    <rect x="615" y="116" width="160" height="72" rx="12" class="participantCore"/>
+    <text x="695" y="145" class="participantTextWhite">AgentCore</text>
+    <text x="695" y="168" class="participantHintWhite">状态机与主循环</text>
+
+    <rect x="810" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="890" y="145" class="participantText">ContextBuilder</text>
+    <text x="890" y="168" class="participantHint">混合上下文</text>
+
+    <rect x="1005" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="1085" y="145" class="participantText">ModelProvider</text>
+    <text x="1085" y="168" class="participantHint">协议适配</text>
+
+    <rect x="1200" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="1280" y="145" class="participantText">OpenAI 兼容 API</text>
+    <text x="1280" y="168" class="participantHint">HTTPS / SSE</text>
+
+    <rect x="1395" y="116" width="160" height="72" rx="12" class="participant"/>
+    <text x="1475" y="145" class="participantText">ToolRuntime</text>
+    <text x="1475" y="168" class="participantHint">本地文件与命令</text>
+
+    <rect x="1590" y="116" width="140" height="72" rx="12" class="participant"/>
+    <text x="1660" y="145" class="participantText">SessionStore</text>
+    <text x="1660" y="168" class="participantHint">追加式 JSONL</text>
+  </g>
+
+  <!-- 生命周期线 -->
+  <g>
+    <line x1="110" y1="188" x2="110" y2="2385" class="lifeline"/>
+    <line x1="305" y1="188" x2="305" y2="2385" class="lifeline"/>
+    <line x1="500" y1="188" x2="500" y2="2385" class="lifeline"/>
+    <line x1="695" y1="188" x2="695" y2="2385" class="lifeline"/>
+    <line x1="890" y1="188" x2="890" y2="2385" class="lifeline"/>
+    <line x1="1085" y1="188" x2="1085" y2="2385" class="lifeline"/>
+    <line x1="1280" y1="188" x2="1280" y2="2385" class="lifeline"/>
+    <line x1="1475" y1="188" x2="1475" y2="2385" class="lifeline"/>
+    <line x1="1660" y1="188" x2="1660" y2="2385" class="lifeline"/>
+  </g>
+
+  <!-- 阶段 1：任务进入系统 -->
+  <circle cx="36" cy="228" r="15" class="phaseCircle"/><text x="36" y="228" class="phase">1</text>
+  <text x="60" y="233" class="noteTitle">任务进入可信执行边界</text>
+  <line x1="110" y1="265" x2="305" y2="265" class="message"/>
+  <text x="207" y="254" class="messageText">输入 Prompt、附件并发送</text>
+  <line x1="305" y1="307" x2="500" y2="307" class="event"/>
+  <text x="402" y="296" class="eventText">类型化 IPC：turn.start</text>
+  <text x="402" y="323" class="smallText">sessionId、text、attachments、skillId</text>
+  <rect x="494" y="298" width="12" height="99" rx="3" class="activationNeutral"/>
+  <line x1="500" y1="352" x2="695" y2="352" class="message"/>
+  <text x="597" y="341" class="messageText">startTurn(...)：创建 Turn 与 AbortController</text>
+  <rect x="689" y="343" width="12" height="1980" rx="3" class="activation"/>
+  <line x1="695" y1="397" x2="1660" y2="397" class="event"/>
+  <text x="1177" y="386" class="eventText">append：turn.started、message.user、ContextLedger</text>
+  <line x1="1660" y1="424" x2="695" y2="424" class="return"/>
+  <text x="1177" y="417" class="smallText">按 Session 写入 events.jsonl（原始历史保留）</text>
+
+  <!-- 阶段 2：每轮模型迭代 -->
+  <rect x="18" y="452" width="1724" height="1350" rx="12" class="frame"/>
+  <path d="M18 452H330V481H18Z" class="frameLabel"/>
+  <text x="33" y="472" class="frameTitle">loop　每次模型迭代［iteration 1..24 且未终止］</text>
+  <circle cx="36" cy="514" r="15" class="phaseCircle"/><text x="36" y="514" class="phase">2</text>
+  <text x="60" y="519" class="noteTitle">构建本轮模型视图</text>
+
+  <line x1="695" y1="552" x2="890" y2="552" class="message"/>
+  <text x="792" y="541" class="messageText">build(Session 消息、Ledger、Evidence、Memory、预算)</text>
+  <rect x="884" y="543" width="12" height="128" rx="3" class="activationNeutral"/>
+  <rect x="805" y="577" width="505" height="72" rx="10" class="noteAccent"/>
+  <text x="823" y="599" class="noteTitle">混合上下文：按价值分层，而非整段历史照搬</text>
+  <text x="823" y="622" class="noteText">安全规则与目标 → Ledger V2 → 当前 revision 代码证据 → 最近交互 → 历史检索与语义摘要</text>
+  <text x="823" y="641" class="noteText">超过输入预算 75% 时压缩到 60% 以下；保持完整 assistant/tool 协议组并再次 sanitize</text>
+  <line x1="890" y1="671" x2="695" y2="671" class="return"/>
+  <text x="792" y="660" class="messageText">ModelMessage[] + token/检索/压缩指标</text>
+
+  <circle cx="36" cy="708" r="15" class="phaseCircle"/><text x="36" y="708" class="phase">3</text>
+  <text x="60" y="713" class="noteTitle">流式请求与增量解析</text>
+  <line x1="695" y1="746" x2="1085" y2="746" class="message"/>
+  <text x="890" y="735" class="messageText">stream(ModelRequest, AbortSignal)</text>
+  <rect x="1079" y="737" width="12" height="178" rx="3" class="activationNeutral"/>
+  <line x1="1085" y1="782" x2="1280" y2="782" class="message"/>
+  <text x="1182" y="771" class="messageText">HTTPS Chat Completions</text>
+  <rect x="1274" y="773" width="12" height="70" rx="3" class="activationNeutral"/>
+  <line x1="1280" y1="843" x2="1085" y2="843" class="return"/>
+  <text x="1182" y="831" class="messageText">SSE：文本、Tool Call 碎片、usage、finish reason</text>
+  <line x1="1085" y1="884" x2="695" y2="884" class="return"/>
+  <text x="890" y="873" class="messageText">归一化 ModelEvent；429/502/503 最多重试 3 次</text>
+  <path d="M695 918H773V954H695" class="message"/>
+  <text x="860" y="930" class="messageText">按 callId 聚合；流结束后才解析完整 JSON 参数</text>
+  <line x1="695" y1="966" x2="1660" y2="966" class="event"/>
+  <text x="1177" y="955" class="eventText">先追加 model metrics 与完整 assistant(tool_calls)</text>
+  <line x1="695" y1="1004" x2="500" y2="1004" class="event"/>
+  <text x="597" y="993" class="eventText">AgentEvent（文本增量只实时转发，不逐片写盘）</text>
+  <line x1="500" y1="1038" x2="305" y2="1038" class="event"/>
+  <text x="402" y="1027" class="eventText">安全事件桥：进度、用量与活动状态</text>
+
+  <!-- Tool Call 分支 -->
+  <rect x="28" y="1064" width="1704" height="710" rx="9" class="frame"/>
+  <path d="M28 1064H204V1091H28Z" class="frameLabel"/>
+  <text x="43" y="1083" class="frameTitle">alt　模型本轮输出</text>
+  <text x="47" y="1116" class="condition">[没有 Tool Call，且 finishReason 不是 length]</text>
+  <path d="M695 1104H773V1134H695" class="message"/>
+  <text x="912" y="1116" class="messageText">完整文本响应视为本轮收敛；length 截断会压缩后有限重试</text>
+
+  <line x1="28" y1="1150" x2="1732" y2="1150" class="separator"/>
+  <text x="47" y="1175" class="condition">[存在 Tool Call]</text>
+  <rect x="600" y="1184" width="1105" height="570" rx="8" class="frame"/>
+  <path d="M600 1184H795V1211H600Z" class="frameLabel"/>
+  <text x="615" y="1203" class="frameTitle">loop　按模型顺序处理每个 callId</text>
+  <path d="M695 1225H782V1256H695" class="message"/>
+  <text x="930" y="1237" class="messageText">Zod 参数校验、工具白名单、路径与风险策略、callId 幂等</text>
+
+  <rect x="610" y="1267" width="1083" height="225" rx="8" class="frame"/>
+  <path d="M610 1267H886V1294H610Z" class="frameLabel"/>
+  <text x="625" y="1286" class="frameTitle">opt　Guided 或高风险操作需要用户审批</text>
+  <line x1="695" y1="1311" x2="1660" y2="1311" class="event"/>
+  <text x="1177" y="1302" class="eventText">append approval.requested</text>
+  <line x1="695" y1="1338" x2="500" y2="1338" class="event"/>
+  <line x1="500" y1="1363" x2="305" y2="1363" class="event"/>
+  <text x="402" y="1354" class="eventText">显示审批卡</text>
+  <line x1="305" y1="1387" x2="110" y2="1387" class="message"/>
+  <text x="207" y="1378" class="messageText">说明目标、命令/路径与风险</text>
+  <line x1="110" y1="1418" x2="305" y2="1418" class="message"/>
+  <text x="207" y="1409" class="messageText">允许或拒绝</text>
+  <line x1="305" y1="1448" x2="500" y2="1448" class="event"/>
+  <text x="402" y="1439" class="eventText">IPC approval.resolve</text>
+  <line x1="500" y1="1478" x2="695" y2="1478" class="message"/>
+  <text x="597" y="1469" class="messageText">恢复等待中的 Promise</text>
+
+  <rect x="610" y="1508" width="1083" height="143" rx="8" class="frame"/>
+  <path d="M610 1508H801V1535H610Z" class="frameLabel"/>
+  <text x="625" y="1527" class="frameTitle">alt　审批结果与执行</text>
+  <text x="625" y="1555" class="condition">[允许或无需审批]</text>
+  <line x1="695" y1="1567" x2="1475" y2="1567" class="message"/>
+  <text x="1085" y="1558" class="messageText">execute(call, AbortSignal)：受控文件 / 搜索 / 命令 / Git</text>
+  <line x1="1475" y1="1595" x2="695" y2="1595" class="return"/>
+  <text x="1085" y="1586" class="messageText">结构化 ToolResult：ok、output/error、duration</text>
+  <line x1="610" y1="1607" x2="1693" y2="1607" class="separator"/>
+  <text x="625" y="1631" class="condition">[拒绝] → 生成 approval_denied ToolResult，不执行副作用</text>
+  <line x1="695" y1="1680" x2="1660" y2="1680" class="event"/>
+  <text x="1177" y="1671" class="eventText">append tool.completed；写入时另存 checkpoint / changes.created</text>
+  <path d="M695 1702H790V1738H695" class="message"/>
+  <text x="1005" y="1715" class="messageText">压缩为 Observation，更新 Ledger / Evidence，再回到下一次模型迭代</text>
+
+  <!-- 协议说明 -->
+  <rect x="42" y="1822" width="1500" height="72" rx="11" class="note"/>
+  <text x="62" y="1846" class="noteTitle">工具协议不变量</text>
+  <text x="62" y="1869" class="code">assistant(tool_calls) 必须先写入；随后每个 callId 恰好对应一个 tool result；Observation 才进入下一轮模型上下文。</text>
+  <text x="62" y="1888" class="noteText">模型只能提出工具请求。文件系统、命令、Git、审批和回滚均由 Electron Main 内的本地运行时控制；这里不代表操作系统级沙箱。</text>
+
+  <!-- 阶段 4：显式终态 -->
+  <circle cx="36" cy="1930" r="15" class="phaseCircle"/><text x="36" y="1930" class="phase">4</text>
+  <text x="60" y="1935" class="noteTitle">显式终止并同步界面</text>
+  <rect x="28" y="1954" width="1704" height="335" rx="9" class="frame"/>
+  <path d="M28 1954H278V1981H28Z" class="frameLabel"/>
+  <text x="43" y="1973" class="frameTitle">alt　完成 / 失败 / 取消</text>
+
+  <text x="47" y="2004" class="condition">[完成：纯文本收敛或 finish 成功]</text>
+  <line x1="695" y1="2016" x2="1660" y2="2016" class="event"/>
+  <text x="1177" y="2006" class="eventText">append turn.completed（含验证新鲜度）</text>
+
+  <line x1="28" y1="2040" x2="1732" y2="2040" class="separator"/>
+  <text x="47" y="2064" class="condition">[失败：不可恢复错误、24 轮上限或连续 3 次无进展]</text>
+  <line x1="695" y1="2077" x2="1660" y2="2077" class="event"/>
+  <text x="1177" y="2067" class="eventText">append turn.failed / limitReached（稳定错误码与可重试性）</text>
+
+  <line x1="28" y1="2100" x2="1732" y2="2100" class="separator"/>
+  <text x="47" y="2123" class="condition">[取消：用户可在模型、审批或工具阶段触发]</text>
+  <line x1="110" y1="2136" x2="305" y2="2136" class="cancel"/>
+  <text x="207" y="2127" class="messageText">点击停止</text>
+  <line x1="305" y1="2165" x2="500" y2="2165" class="cancel"/>
+  <text x="402" y="2156" class="messageText">IPC turn.cancel</text>
+  <line x1="500" y1="2194" x2="695" y2="2194" class="cancel"/>
+  <text x="597" y="2185" class="messageText">AbortController.abort()</text>
+  <line x1="695" y1="2223" x2="1085" y2="2223" class="cancel"/>
+  <text x="890" y="2214" class="messageText">中止模型请求</text>
+  <line x1="695" y1="2252" x2="1475" y2="2252" class="cancel"/>
+  <text x="1085" y="2243" class="messageText">中止子进程与子 Agent；释放审批等待</text>
+
+  <line x1="695" y1="2280" x2="1660" y2="2280" class="event"/>
+  <text x="1177" y="2271" class="eventText">append turn.cancelled</text>
+  <line x1="695" y1="2320" x2="500" y2="2320" class="event"/>
+  <text x="597" y="2311" class="eventText">终态 AgentEvent（写盘完成后发布）</text>
+  <line x1="500" y1="2350" x2="305" y2="2350" class="event"/>
+  <text x="402" y="2341" class="eventText">安全事件桥</text>
+  <line x1="305" y1="2380" x2="110" y2="2380" class="message"/>
+  <text x="207" y="2371" class="messageText">完成摘要 / 可恢复错误 / 已取消</text>
+</svg>

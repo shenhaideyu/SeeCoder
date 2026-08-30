@@ -18,7 +18,7 @@
   </defs>
 
   <rect width="1600" height="1080" fill="#f6f6f7"/>
-  <text x="48" y="58" class="title">SeeCoder Agent 主循环</text>
+  <text x="48" y="58" class="title">06 · SeeCoder Agent 主循环</text>
   <text x="48" y="88" class="subtitle">一个用户请求对应一个 Turn；Turn 内进行最多 24 次“模型决策 → 工具观察”迭代</text>
 
   <rect x="42" y="116" width="1018" height="916" rx="24" class="lane"/>
@@ -70,7 +70,7 @@
     <rect width="466" height="126" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">5</text><text x="62" y="28" class="cardTitle">工具执行是受控事务</text><text x="62" y="54" class="cardBody">参数经 Zod 校验，路径经工作区策略检查；Guided</text><text x="62" y="74" class="cardBody">模式用 Promise 暂停等待审批。主 Agent 顺序执行，</text><text x="62" y="94" class="cardBody">结果压缩成 Observation 回填；重复 callId 不重放</text><text x="62" y="114" class="cardBody">副作用，写入前创建 Checkpoint。</text>
   </g>
   <g transform="translate(1090 761)">
-    <rect width="466" height="126" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">6</text><text x="62" y="28" class="cardTitle">显式收敛与终止</text><text x="62" y="54" class="cardBody">无 Tool Call 的文本、finish 成功可正常完成；取消、</text><text x="62" y="74" class="cardBody">24 轮上限、3 次无进展、3 次输出截断或不可恢复</text><text x="62" y="94" class="cardBody">错误进入保护性终止。finish 会检查当前 revision</text><text x="62" y="114" class="cardBody">的验证新鲜度，并在必要时给出未验证警告。</text>
+    <rect width="466" height="126" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">6</text><text x="62" y="28" class="cardTitle">显式收敛与终止</text><text x="62" y="54" class="cardBody">无 Tool Call 的文本、finish 成功可正常完成；取消、</text><text x="62" y="74" class="cardBody">24 轮上限、3 次无进展、3 次输出截断或不可恢复</text><text x="62" y="94" class="cardBody">错误进入保护性终止。finish 会检查当前 revision</text><text x="62" y="114" class="cardBody">的验证新鲜度，并在内部结果中记录验证状态。</text>
   </g>
   <g transform="translate(1090 899)">
     <rect width="466" height="105" rx="14" fill="#f0e7fa" stroke="#b99aef" stroke-width="1.5"/><text x="22" y="29" class="cardTitle">关键不变量</text><text x="22" y="55" class="mono">assistant(tool_calls) 必须先于 tool result</text><text x="22" y="76" class="mono">toolCallId 必须配对；当前工具组不可被压缩拆散</text><text x="22" y="97" class="mono">AbortSignal 贯穿模型、工具、命令与子 Agent</text>

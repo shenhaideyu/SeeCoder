@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1260" viewBox="0 0 1600 1260" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 工具定义与本地执行</title>
+  <desc id="desc">展示工具双层 Schema、调用幂等、模式审批、本地执行、ChangeSet 与 Checkpoint，以及工具观察回流模型的完整链路。</desc>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3c2850" flood-opacity=".10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#746d79"/></marker>
+    <style>
+      .h1{font:700 38px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.sub{font:400 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.section{font:700 21px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.label{font:700 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.body{font:400 15px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4e4753}.meta{font:400 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.mono{font:500 14px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}.white{fill:#fff}.line{stroke:#746d79;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#8247d6;stroke-width:2;fill:none;stroke-dasharray:7 7;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1600" height="1260" fill="#f6f6f7"/>
+  <rect x="48" y="44" width="1504" height="1130" rx="28" fill="#fff" stroke="#e5e1e8" filter="url(#shadow)"/>
+  <rect x="48" y="44" width="12" height="1130" rx="6" fill="url(#brand)"/>
+  <text x="92" y="104" class="h1">08 · 工具定义与本地执行</text>
+  <text x="92" y="139" class="sub">工具调用经过“声明、校验、授权、执行、审计、观察”六道边界；Renderer 与模型都不能直接访问文件系统或子进程。</text>
+
+  <text x="92" y="194" class="section">工具定义：给模型看的说明，与运行时真正执行的校验分离</text>
+  <rect x="92" y="218" width="312" height="116" rx="18" fill="#fbf8ff" stroke="#b99aef"/>
+  <text x="118" y="254" class="label">模型侧 JSON Schema</text><text x="118" y="283" class="body">名称、描述、参数形状</text><text x="118" y="309" class="meta">帮助模型生成结构化 Tool Call</text>
+  <text x="440" y="284" class="label">+</text>
+  <rect x="480" y="218" width="312" height="116" rx="18" fill="#eef8f4" stroke="#72b99f"/>
+  <text x="506" y="254" class="label">运行时 Zod Schema</text><text x="506" y="283" class="body">在可信主进程再次校验</text><text x="506" y="309" class="meta">任何模型输出都视为不可信输入</text>
+  <path d="M792 276H858" class="line"/>
+  <rect x="870" y="206" width="622" height="140" rx="20" fill="url(#brand)" filter="url(#shadow)"/>
+  <text x="902" y="244" class="white" style="font:700 20px 'Segoe UI','Microsoft YaHei'">ToolDefinition</text>
+  <text x="902" y="276" class="white" style="font:400 15px Consolas">name · description · parameters · sideEffect · risk</text>
+  <text x="902" y="304" class="white" style="font:400 15px Consolas">execute(args, { workspacePath, signal, onOutput })</text>
+  <text x="902" y="330" class="white" style="font:400 13px 'Segoe UI','Microsoft YaHei'">模型只能提出调用；Electron Main 内的 ToolRegistry 决定是否执行</text>
+
+  <text x="92" y="402" class="section">调用门禁：相同 callId 不重复产生副作用</text>
+  <rect x="92" y="426" width="214" height="90" rx="17" fill="#fff" stroke="#8247d6"/><text x="199" y="460" text-anchor="middle" class="label">完整 Tool Call</text><text x="199" y="489" text-anchor="middle" class="mono">id · name · args</text>
+  <path d="M306 471H358" class="line"/>
+  <polygon points="432,421 506,471 432,521 358,471" fill="#fff7e8" stroke="#e2bb67" stroke-width="2"/><text x="432" y="465" text-anchor="middle" class="label">callId</text><text x="432" y="488" text-anchor="middle" class="body">已执行？</text>
+  <path d="M432 521V524" class="line"/><rect x="322" y="528" width="220" height="28" rx="14" fill="#eef8f4" stroke="#72b99f"/><text x="432" y="547" text-anchor="middle" class="meta">是：直接复用已保存 ToolResult</text>
+  <path d="M506 471H558" class="line"/><text x="530" y="456" text-anchor="middle" class="meta">否</text>
+  <rect x="570" y="426" width="214" height="90" rx="17" fill="#fff" stroke="#8247d6"/><text x="677" y="460" text-anchor="middle" class="label">名称 + 参数</text><text x="677" y="489" text-anchor="middle" class="body">Registry · JSON.parse · Zod</text>
+  <path d="M784 471H836" class="line"/>
+  <rect x="848" y="426" width="214" height="90" rx="17" fill="#fff" stroke="#8247d6"/><text x="955" y="460" text-anchor="middle" class="label">ExecutionMode</text><text x="955" y="489" text-anchor="middle" class="body">Plan · Guided · Auto</text>
+  <path d="M1062 471H1114" class="line"/>
+  <rect x="1126" y="414" width="366" height="114" rx="17" fill="#fff7e8" stroke="#e2bb67"/>
+  <text x="1150" y="449" class="label">需要审批时暂停</text><text x="1150" y="477" class="body">Guided：写入与命令 · Auto：高风险动作</text><text x="1150" y="503" class="meta">Promise 等待用户决定，不轮询、不提前执行</text>
+
+  <text x="92" y="582" class="section">本地执行：所有能力位于 Electron Main 的可信边界</text>
+  <rect x="92" y="606" width="1400" height="330" rx="22" fill="#f9f7fa" stroke="#d8cae5"/>
+  <rect x="118" y="632" width="420" height="276" rx="18" fill="#fff" stroke="#72b99f"/>
+  <text x="144" y="669" class="label">文件 / 搜索 / Diff</text>
+  <text x="144" y="701" class="body">WorkspacePolicy</text><text x="289" y="701" class="meta">词法路径 + realpath + 敏感文件名</text>
+  <line x1="144" y1="718" x2="510" y2="718" stroke="#e5e1e8"/>
+  <text x="144" y="751" class="body">read · list · search</text><text x="144" y="780" class="meta">读取仍先校验路径；重复正文可进入 Evidence</text>
+  <text x="144" y="819" class="body">write_file</text><text x="249" y="819" class="meta">临时文件 + rename</text>
+  <text x="144" y="858" class="body">apply_patch</text><text x="249" y="858" class="meta">先校验全部旧内容，再事务写入</text>
+  <text x="144" y="885" class="meta">中途失败按相反顺序补偿恢复</text>
+
+  <rect x="564" y="632" width="420" height="276" rx="18" fill="#fff" stroke="#e2bb67"/>
+  <text x="590" y="669" class="label">受控命令</text>
+  <text x="590" y="701" class="body">cwd 必须位于工作区</text><text x="590" y="727" class="meta">Windows 使用 PowerShell -NonInteractive</text>
+  <line x1="590" y1="744" x2="956" y2="744" stroke="#e5e1e8"/>
+  <text x="590" y="777" class="body">stdout / stderr 分流并实时发事件</text>
+  <text x="590" y="811" class="body">单流保留约 1 MiB，避免内存无限增长</text>
+  <text x="590" y="845" class="body">timeout → taskkill 进程树</text>
+  <text x="590" y="879" class="body">AbortSignal → taskkill / SIGTERM</text>
+
+  <rect x="1010" y="632" width="456" height="276" rx="18" fill="#fff" stroke="#65a9ff"/>
+  <text x="1036" y="669" class="label">Core 控制工具</text>
+  <text x="1036" y="701" class="body">ask_user · delegate · checkpoint</text>
+  <text x="1036" y="728" class="body">review_changes · compact_context</text>
+  <line x1="1036" y1="744" x2="1438" y2="744" stroke="#e5e1e8"/>
+  <text x="1036" y="777" class="body">主 Agent 顺序调度多个工具</text>
+  <text x="1036" y="811" class="body">Explore / Review 子 Agent 只读</text>
+  <text x="1036" y="845" class="body">preToolUse / postFileEdit Hook 受信任控制</text>
+  <text x="1036" y="879" class="meta">主 Agent 保持唯一写入者</text>
+
+  <path d="M800 528V588" class="line"/>
+  <text x="92" y="985" class="section">结果回流：完整轨迹用于审计，紧凑 Observation 用于下一轮模型</text>
+  <rect x="92" y="1008" width="320" height="108" rx="18" fill="#eef8f4" stroke="#72b99f"/>
+  <text x="118" y="1041" class="label">ToolResult</text><text x="118" y="1069" class="mono">ok · output/error · durationMs</text><text x="118" y="1094" class="meta">写入 callId 幂等缓存与 tool.completed</text>
+  <path d="M412 1062H464" class="line"/>
+  <rect x="476" y="996" width="408" height="132" rx="18" fill="#fff" stroke="#8247d6"/>
+  <text x="502" y="1029" class="label">有文件变更时</text><text x="502" y="1057" class="body">ChangeSet · revision++ · Evidence 失效</text><text x="502" y="1083" class="body">Snapshot · Checkpoint · before/after hash</text><text x="502" y="1108" class="meta">恢复前检查冲突，避免覆盖后续编辑</text>
+  <path d="M884 1062H936" class="line"/>
+  <rect x="948" y="996" width="544" height="132" rx="18" fill="#fff7e8" stroke="#e2bb67"/>
+  <text x="974" y="1029" class="label">Tool Observation Compressor</text><text x="974" y="1057" class="body">read→证据引用 · command→退出码与诊断 · diff→关键 hunk</text><text x="974" y="1083" class="body">使用原 callId 生成 tool message，进入下一次模型请求</text><text x="974" y="1108" class="meta">完整 ToolResult 不会因上下文压缩而从事件轨迹消失</text>
+
+  <rect x="92" y="1151" width="1400" height="44" rx="12" fill="#4d0099"/>
+  <text x="792" y="1179" text-anchor="middle" class="white" style="font:600 16px 'Segoe UI','Microsoft YaHei'">关键不变量 · 模型无本地权限 · 参数运行时复验 · 先审批再副作用 · callId 幂等 · 主 Agent 单写 · 结果可审计</text>
+</svg>
