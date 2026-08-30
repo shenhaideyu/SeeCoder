@@ -11,8 +11,48 @@ export type TurnStatus =
 export type PermissionMode = 'guided' | 'auto';
 export type ExecutionMode = 'plan' | PermissionMode;
 export type SubagentRole = 'explore' | 'review';
+export type HookStage = 'preToolUse' | 'postFileEdit' | 'turnEnd';
 
-export interface Thread {
+export interface ModelProfile {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  enabled: boolean;
+  hasApiKey: boolean;
+  keyStorage: 'environment' | 'os' | 'none';
+  apiKeyHint?: string;
+}
+
+export interface ModelProfileInput {
+  id?: string;
+  name: string;
+  provider: string;
+  model: string;
+  baseUrl: string;
+  enabled?: boolean;
+  apiKey?: string;
+  clearApiKey?: boolean;
+}
+
+export interface HookCommand {
+  id: string;
+  command: string;
+  timeoutMs: number;
+}
+
+export interface HookExecutionContext {
+  sessionId: string;
+  turnId: string;
+  stage: HookStage;
+  toolName?: string;
+  callId?: string;
+  changedPaths?: string[];
+  turnStatus?: TurnStatus;
+}
+
+export interface Session {
   id: string;
   title: string;
   workspacePath: string;
@@ -26,7 +66,7 @@ export interface Thread {
 
 export interface Turn {
   id: string;
-  threadId: string;
+  sessionId: string;
   status: TurnStatus;
   startedAt: string;
   completedAt?: string;
@@ -89,7 +129,7 @@ export interface ChangeFile {
 
 export interface ChangeSet {
   id: string;
-  threadId?: string;
+  sessionId?: string;
   turnId: string;
   files: ChangeFile[];
   createdAt: string;
@@ -97,7 +137,7 @@ export interface ChangeSet {
 
 export interface Checkpoint {
   id: string;
-  threadId: string;
+  sessionId: string;
   turnId: string;
   changeSetIds: string[];
   files: Array<{ path: string; beforeHash: string | null; afterHash: string | null }>;
@@ -123,6 +163,15 @@ export interface AttachmentRef {
   size: number;
 }
 
+export interface LocalSkill {
+  id: string;
+  name: string;
+  description: string;
+  relativePath: string;
+  scope?: 'workspace' | 'managed';
+  sourcePath?: string;
+}
+
 export interface ScheduleDefinition {
   id: string;
   projectPath: string;
@@ -132,7 +181,7 @@ export interface ScheduleDefinition {
   nextRunAt?: string;
 }
 
-export interface ThreadSummary extends Thread {
+export interface SessionSummary extends Session {
   status: 'idle' | 'running' | 'waitingInput' | 'waitingApproval' | 'completed' | 'failed';
   pinned: boolean;
   archived: boolean;
@@ -175,7 +224,7 @@ export type Item =
   | { kind: 'error'; id: string; error: AgentError; createdAt: string };
 
 export type AgentEventPayload =
-  | { type: 'thread.created'; timestamp: string; thread: Thread }
+  | { type: 'session.created'; timestamp: string; session: Session }
   | { type: 'turn.started'; timestamp: string; turn: Turn }
   | { type: 'message.user'; timestamp: string; turnId: string; text: string }
   | { type: 'message.delta'; timestamp: string; turnId: string; text: string }
@@ -210,16 +259,19 @@ export type AgentEventPayload =
   | { type: 'review.finding'; timestamp: string; turnId: string; finding: ReviewFinding }
   | { type: 'review.completed'; timestamp: string; turnId: string; findings: ReviewFinding[] }
   | { type: 'attachment.added'; timestamp: string; turnId?: string; attachment: AttachmentRef }
-  | { type: 'notification.created'; timestamp: string; threadId: string; level: 'info' | 'success' | 'warning' | 'error'; title: string; body: string };
+  | { type: 'skill.activated'; timestamp: string; turnId: string; skill: LocalSkill }
+  | { type: 'hook.started'; timestamp: string; turnId: string; stage: HookStage; hookId: string }
+  | { type: 'hook.completed'; timestamp: string; turnId: string; stage: HookStage; hookId: string; ok: boolean; durationMs: number; errorCode?: string }
+  | { type: 'notification.created'; timestamp: string; sessionId: string; level: 'info' | 'success' | 'warning' | 'error'; title: string; body: string };
 
-export type AgentEvent = AgentEventPayload & { threadId?: string };
+export type AgentEvent = AgentEventPayload & { sessionId?: string };
 
 export interface AgentEventEnvelope<T extends AgentEventPayload = AgentEventPayload> {
-  version: 2;
+  version: 3;
   id: string;
   seq: number;
   type: T['type'];
-  threadId: string;
+  sessionId: string;
   turnId?: string;
   timestamp: string;
   payload: T;
@@ -229,10 +281,13 @@ export interface SessionEvent {
   event: AgentEvent;
   payload?: AgentEvent;
   item?: Item;
-  version?: 1 | 2;
+  version?: 3;
   id?: string;
   seq?: number;
-  threadId?: string;
+  type?: AgentEvent['type'];
+  sessionId?: string;
+  turnId?: string;
+  timestamp?: string;
 }
 
 export type ContentBlock =

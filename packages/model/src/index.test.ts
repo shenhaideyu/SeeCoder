@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FakeModelProvider, OpenAICompatibleProvider, serializeModelMessages } from './index';
+import { FakeModelProvider, normalizeToolProtocolMessages, OpenAICompatibleProvider, serializeModelMessages } from './index';
 
 describe('OpenAICompatibleProvider', () => {
   it('serializes tool messages to the Chat Completions wire format', () => {
@@ -10,6 +10,55 @@ describe('OpenAICompatibleProvider', () => {
       { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
       { role: 'tool', content: '{"ok":true}', tool_call_id: 'call-1', name: 'read_file' },
     ]);
+  });
+
+  it('drops orphan and incomplete tool groups before sending', () => {
+    expect(normalizeToolProtocolMessages([
+      { role: 'tool', content: 'orphan', toolCallId: 'missing' },
+      { role: 'assistant', content: '先读取文件', toolCalls: [
+        { id: 'call-1', name: 'read_file', arguments: '{}' },
+        { id: 'call-2', name: 'read_file', arguments: '{}' },
+      ] },
+      { role: 'tool', content: 'only one result', toolCallId: 'call-1' },
+      { role: 'user', content: '继续' },
+    ])).toEqual([
+      { role: 'assistant', content: '先读取文件' },
+      { role: 'user', content: '继续' },
+    ]);
+  });
+
+  it('keeps a complete multi-tool group and orders results by tool call order', () => {
+    const assistant = { role: 'assistant' as const, content: '', toolCalls: [
+      { id: 'call-1', name: 'read_file', arguments: '{}' },
+      { id: 'call-2', name: 'search_text', arguments: '{}' },
+    ] };
+    expect(normalizeToolProtocolMessages([
+      assistant,
+      { role: 'tool', content: 'second', toolCallId: 'call-2' },
+      { role: 'tool', content: 'first', toolCallId: 'call-1' },
+    ])).toEqual([
+      assistant,
+      { role: 'tool', content: 'first', toolCallId: 'call-1' },
+      { role: 'tool', content: 'second', toolCallId: 'call-2' },
+    ]);
+  });
+
+  it('disables DeepSeek thinking for tool requests without persisting reasoning content', async () => {
+    process.env.SEECODER_TEST_KEY = 'test-key';
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n')); controller.close(); },
+    });
+    let capturedInit: RequestInit | undefined;
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedInit = init;
+      return new Response(stream, { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAICompatibleProvider({ baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat', apiKeyEnv: 'SEECODER_TEST_KEY', contextWindow: 1000, temperature: 0, maxOutputTokens: 100 });
+    for await (const _event of provider.stream({ messages: [], tools: [{ type: 'function', function: { name: 'read_file', description: '', parameters: {} } }], model: 'deepseek-chat', temperature: 0, maxOutputTokens: 100 }, new AbortController().signal)) void _event;
+    expect(JSON.parse(String(capturedInit?.body))).toMatchObject({ thinking: { type: 'disabled' } });
+    vi.unstubAllGlobals();
+    delete process.env.SEECODER_TEST_KEY;
   });
 
   it('reassembles streamed text and tool calls', async () => {

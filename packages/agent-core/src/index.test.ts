@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FakeModelProvider } from '@seecoder/model';
-import type { ModelEvent, ModelProvider, ModelRequest } from '@seecoder/protocol';
+import type { HookStage, ModelEvent, ModelProvider, ModelRequest } from '@seecoder/protocol';
 import { SessionStore } from '@seecoder/storage';
 import { ToolRegistry } from '@seecoder/tools';
-import { AgentCore } from './index';
+import { AgentCore, type HookRuntime } from './index';
 
 const model = { baseUrl: 'http://fake', model: 'fake', apiKeyEnv: 'UNUSED', contextWindow: 20_000, temperature: 0, maxOutputTokens: 2000 };
 
@@ -28,6 +28,52 @@ class RecordingProvider implements ModelProvider {
 }
 
 describe('AgentCore', () => {
+  it('runs trusted hooks at tool, file edit and turn end lifecycle points', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-hooks-'));
+    try {
+      const stages: HookStage[] = [];
+      const hooks: HookRuntime = {
+        async resolve(stage) { return [{ id: `${stage}-hook`, command: 'test', timeoutMs: 1000 }]; },
+        async execute(_command, context) { stages.push(context.stage); return { ok: true, durationMs: 1 }; },
+      };
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'write-hooked', name: 'write_file', argsDelta: '{"path":"hooked.txt","content":"ok"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'finish-hooked', name: 'finish', argsDelta: '{"summary":"完成","verification":[]}' }, { type: 'completed', finishReason: 'tool_calls' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto', hooks });
+      const events: string[] = [];
+      const ended = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'hook.completed' && event.stage === 'turnEnd') resolve(); }));
+      const session = await core.createSession('Hooks 生命周期');
+      await core.startTurn(session.id, '写入并完成');
+      await ended;
+      expect(stages).toEqual(['preToolUse', 'postFileEdit', 'preToolUse', 'turnEnd']);
+      expect(events.filter((event) => event === 'hook.started')).toHaveLength(4);
+      expect(await readFile(join(root, 'hooked.txt'), 'utf8')).toBe('ok');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('blocks a tool when preToolUse fails without damaging the turn state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-hook-block-'));
+    try {
+      const hooks: HookRuntime = {
+        async resolve(stage) { return stage === 'preToolUse' ? [{ id: 'guard', command: 'guard', timeoutMs: 1000 }] : []; },
+        async execute() { return { ok: false, durationMs: 1, error: { code: 'command_failed', message: 'guard rejected' } }; },
+      };
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'blocked-write', name: 'write_file', argsDelta: '{"path":"blocked.txt","content":"bad"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'textDelta', text: '已停止写入。' }, { type: 'completed', finishReason: 'stop' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto', hooks });
+      let blockedCode = '';
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'tool.completed' && event.callId === 'blocked-write') blockedCode = event.result.error?.code ?? ''; if (event.type === 'turn.completed') resolve(); }));
+      const session = await core.createSession('Hook 阻止');
+      await core.startTurn(session.id, '不要让 guard 失败');
+      await completed;
+      expect(blockedCode).toBe('hook_blocked');
+      await expect(readFile(join(root, 'blocked.txt'), 'utf8')).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('streams text live but persists only the completed assistant message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-stream-storage-'));
     try {
@@ -43,12 +89,12 @@ describe('AgentCore', () => {
         if (event.type === 'message.delta') live.push(event.text);
         if (event.type === 'turn.completed') resolve();
       }));
-      const thread = await core.createThread('流式持久化');
-      await core.startTurn(thread.id, '回复我');
+      const session = await core.createSession('流式持久化');
+      await core.startTurn(session.id, '回复我');
       await completed;
 
       expect(live).toEqual(['第一段', '第二段']);
-      const history = await store.readEvents(thread.id);
+      const history = await store.readEvents(session.id);
       expect(history.some((record) => record.event.type === 'message.delta')).toBe(false);
       expect(history.some((record) => record.event.type === 'message.completed')).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -60,17 +106,53 @@ describe('AgentCore', () => {
       const provider = new RecordingProvider([[{ type: 'textDelta', text: '完成' }, { type: 'completed', finishReason: 'stop' }]]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), registry: new ToolRegistry(), mode: 'plan' });
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('自然任务');
-      await core.startTurn(thread.id, '后端从哪里启动？请用几句话说明。');
+      const session = await core.createSession('自然任务');
+      await core.startTurn(session.id, '后端从哪里启动？请用几句话说明。');
       await completed;
       const system = provider.requests[0]?.messages[0]?.content;
       expect(system).toContain('严格匹配用户要求的回答长度');
       expect(system).toContain('一次调用 read_files');
       expect(system).toContain('证据足以回答或实施就停止探索');
+      expect(system).toContain('所有用户可见的行动说明、计划、问题、错误解释和最终总结必须使用简体中文');
       const setPlan = provider.requests[0]?.tools.find((tool) => tool.function.name === 'set_plan');
       expect(setPlan?.function.parameters).toMatchObject({
         properties: { steps: { items: { required: ['id', 'label', 'status'] } } },
       });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('injects an explicitly activated local skill below safety rules and records activation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-skill-prompt-'));
+    try {
+      const provider = new RecordingProvider([[{ type: 'textDelta', text: '已完成' }, { type: 'completed', finishReason: 'stop' }]]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'plan' });
+      const events: string[] = [];
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'turn.completed') resolve(); }));
+      const session = await core.createSession('Skill 测试');
+      await core.startTurn(session.id, '请检查项目结构', undefined, [], {
+        skill: { id: 'seecoder:project-review', name: 'project-review', description: '项目审查', relativePath: '.seecoder/skills/project-review/SKILL.md' },
+        content: '先读取入口文件，再用中文给出三点结论。',
+      });
+      await completed;
+      expect(provider.agentRequests[0]?.messages[0]?.content).toContain('[本轮已激活 Skill：project-review');
+      expect(provider.agentRequests[0]?.messages[0]?.content).toContain('先读取入口文件');
+      expect(events).toContain('skill.activated');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('deletes an idle session but rejects deletion while its turn is active', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-delete-session-'));
+    try {
+      const provider: ModelProvider = { async *stream() { await new Promise((resolve) => setTimeout(resolve, 100)); yield { type: 'textDelta', text: '完成' }; yield { type: 'completed', finishReason: 'stop' }; } };
+      const store = new SessionStore(join(root, '.sessions'));
+      const core = new AgentCore({ workspace: root, provider, model, store, mode: 'plan' });
+      const session = await core.createSession('待删除');
+      const turnId = await core.startTurn(session.id, '执行中');
+      await expect(core.deleteSession(session.id)).rejects.toThrow('运行中的任务不能删除');
+      core.cancelTurn(turnId);
+      await new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.cancelled') resolve(); }));
+      await core.deleteSession(session.id);
+      expect(await store.readSession(session.id)).toBeNull();
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -88,8 +170,8 @@ describe('AgentCore', () => {
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), registry: new ToolRegistry(), mode: 'auto' });
       const events: string[] = [];
       const wait = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('测试');
-      await core.startTurn(thread.id, '查看项目');
+      const session = await core.createSession('测试');
+      await core.startTurn(session.id, '查看项目');
       await wait;
       expect(events).toContain('tool.completed');
       expect(events).toContain('message.completed');
@@ -106,7 +188,7 @@ describe('AgentCore', () => {
       ]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'guided' });
       const approvals: string[] = []; const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'approval.requested') approvals.push(event.approval.id); if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('审批测试'); await core.startTurn(thread.id, '写文件');
+      const session = await core.createSession('审批测试'); await core.startTurn(session.id, '写文件');
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(approvals).toHaveLength(1);
       await core.resolveApproval(approvals[0]!, 'allow'); await completed;
@@ -122,8 +204,8 @@ describe('AgentCore', () => {
       ]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('截断恢复');
-      await core.startTurn(thread.id, '完成一个任务');
+      const session = await core.createSession('截断恢复');
+      await core.startTurn(session.id, '完成一个任务');
       await completed;
 
       expect(provider.requests).toHaveLength(2);
@@ -157,8 +239,8 @@ describe('AgentCore', () => {
       const completed = new Promise<void>((resolve) => core.onEvent((event) => {
         if (event.type === 'turn.completed') resolve();
       }));
-      const thread = await core.createThread('长任务收敛');
-      await core.startTurn(thread.id, '完成一个长任务');
+      const session = await core.createSession('长任务收敛');
+      await core.startTurn(session.id, '完成一个长任务');
       await completed;
 
       const reminder = '[迭代预算提醒]';
@@ -189,8 +271,8 @@ describe('AgentCore', () => {
         if (event.type === 'tool.completed' && event.result.error) errors.push(event.result.error.code);
         if (event.type === 'turn.completed') resolve();
       }));
-      const thread = await core.createThread('探索预算');
-      await core.startTurn(thread.id, '定位后做最小修复');
+      const session = await core.createSession('探索预算');
+      await core.startTurn(session.id, '定位后做最小修复');
       await completed;
 
       expect(errors).toContain('exploration_budget_exhausted');
@@ -203,10 +285,10 @@ describe('AgentCore', () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-hydrate-chain-'));
     try {
       const store = new SessionStore(join(root, '.sessions'));
-      const thread = { id: 'legacy-thread', title: '旧会话', workspacePath: root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-      await store.saveThread(thread);
-      await store.append(thread.id, {
-        event: { type: 'context.compacted', timestamp: new Date().toISOString(), turnId: 'old-turn', threadId: thread.id, summary: '旧摘要' },
+      const session = { id: 'legacy-session', title: '旧会话', workspacePath: root, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      await store.saveSession(session);
+      await store.append(session.id, {
+        event: { type: 'context.compacted', timestamp: new Date().toISOString(), turnId: 'old-turn', sessionId: session.id, summary: '旧摘要' },
         item: { kind: 'compaction', id: 'old-item', summary: '旧摘要', messages: [
           { role: 'user', content: '原任务' },
           { role: 'tool', content: '{"ok":true}', toolCallId: 'orphan' },
@@ -214,9 +296,9 @@ describe('AgentCore', () => {
       });
       const provider = new RecordingProvider([[{ type: 'textDelta', text: '恢复完成' }, { type: 'completed', finishReason: 'stop' }]]);
       const core = new AgentCore({ workspace: root, provider, model, store, mode: 'auto' });
-      await core.hydrateThread(thread.id);
+      await core.hydrateSession(session.id);
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      await core.startTurn(thread.id, '继续任务');
+      await core.startTurn(session.id, '继续任务');
       await completed;
 
       expect(provider.requests[0]!.messages.some((message) => message.role === 'tool')).toBe(false);
@@ -228,16 +310,16 @@ describe('AgentCore', () => {
     try {
       const store = new SessionStore(join(root, '.sessions'));
       const timestamp = new Date().toISOString();
-      const thread = { id: 'interrupted-thread', title: '中断任务', workspacePath: root, createdAt: timestamp, updatedAt: timestamp };
-      const turn = { id: 'interrupted-turn', threadId: thread.id, status: 'running' as const, startedAt: timestamp, iteration: 3 };
-      await store.saveThread(thread);
-      await store.append(thread.id, { event: { type: 'turn.started', timestamp, threadId: thread.id, turn } });
-      await store.append(thread.id, { event: { type: 'model.requested', timestamp, threadId: thread.id, turnId: turn.id, iteration: 3 } });
+      const session = { id: 'interrupted-session', title: '中断任务', workspacePath: root, createdAt: timestamp, updatedAt: timestamp };
+      const turn = { id: 'interrupted-turn', sessionId: session.id, status: 'running' as const, startedAt: timestamp, iteration: 3 };
+      await store.saveSession(session);
+      await store.append(session.id, { event: { type: 'turn.started', timestamp, sessionId: session.id, turn } });
+      await store.append(session.id, { event: { type: 'model.requested', timestamp, sessionId: session.id, turnId: turn.id, iteration: 3 } });
 
       const core = new AgentCore({ workspace: root, provider: new FakeModelProvider([]), model, store, mode: 'auto' });
-      await core.hydrateThread(thread.id);
-      await core.hydrateThread(thread.id);
-      const events = await store.readEvents(thread.id);
+      await core.hydrateSession(session.id);
+      await core.hydrateSession(session.id);
+      const events = await store.readEvents(session.id);
       const interrupted = events.filter((record) => record.event.type === 'turn.failed' && record.event.error.code === 'interrupted');
       expect(interrupted).toHaveLength(1);
       expect(interrupted[0]!.event.type === 'turn.failed' && interrupted[0]!.event.turn.status).toBe('failed');
@@ -255,15 +337,15 @@ describe('AgentCore', () => {
       let turnId = '';
       const approval = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'approval.requested') resolve(); }));
       const cancelled = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.cancelled') resolve(); }));
-      const thread = await core.createThread('取消审批');
-      turnId = await core.startTurn(thread.id, '写文件');
+      const session = await core.createSession('取消审批');
+      turnId = await core.startTurn(session.id, '写文件');
       await approval;
-      await expect(core.startTurn(thread.id, '并发任务')).rejects.toThrow('已有执行中的 Turn');
+      await expect(core.startTurn(session.id, '并发任务')).rejects.toThrow('已有执行中的 Turn');
       core.cancelTurn(turnId);
       await cancelled;
       await expect(readFile(join(root, 'blocked.txt'), 'utf8')).rejects.toThrow();
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      await expect(core.startTurn(thread.id, '取消后可再次执行')).resolves.toBeTypeOf('string');
+      await expect(core.startTurn(session.id, '取消后可再次执行')).resolves.toBeTypeOf('string');
       await completed;
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -285,8 +367,8 @@ describe('AgentCore', () => {
       let streamedResolve!: () => void;
       const streamed = new Promise<void>((resolve) => { streamedResolve = resolve; });
       const cancelled = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'message.delta') streamedResolve(); if (event.type === 'turn.cancelled') resolve(); }));
-      const thread = await core.createThread('模型取消');
-      const turnId = await core.startTurn(thread.id, '开始长任务');
+      const session = await core.createSession('模型取消');
+      const turnId = await core.startTurn(session.id, '开始长任务');
       await streamed;
       core.cancelTurn(turnId);
       await cancelled;
@@ -305,7 +387,7 @@ describe('AgentCore', () => {
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
       let changeSetId = '';
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'changes.created') changeSetId = event.changeSet.id; if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('撤销测试'); await core.startTurn(thread.id, '修改文件'); await completed;
+      const session = await core.createSession('撤销测试'); await core.startTurn(session.id, '修改文件'); await completed;
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('after');
       expect((await core.revertChangeSet(changeSetId)).ok).toBe(true);
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('before');
@@ -323,12 +405,12 @@ describe('AgentCore', () => {
       const core = new AgentCore({ workspace: root, provider, model, store, mode: 'plan' });
       const results: string[] = [];
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'tool.completed') results.push(event.result.error?.code ?? 'ok'); if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('Plan 只读');
-      await core.startTurn(thread.id, '请不要写文件');
+      const session = await core.createSession('Plan 只读');
+      await core.startTurn(session.id, '请不要写文件');
       await completed;
       await expect(readFile(join(root, 'blocked.txt'), 'utf8')).rejects.toThrow();
       expect(results).toContain('plan_read_only');
-      const history = await store.readEvents(thread.id);
+      const history = await store.readEvents(session.id);
       expect(history.some((record) => record.item?.kind === 'assistant_message' && record.item.toolCalls?.[0]?.id === 'plan-write')).toBe(true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -344,7 +426,7 @@ describe('AgentCore', () => {
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
       let checkpointId = '';
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'checkpoint.created') checkpointId = event.checkpoint.id; if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('冲突检查'); await core.startTurn(thread.id, '修改文件'); await completed;
+      const session = await core.createSession('冲突检查'); await core.startTurn(session.id, '修改文件'); await completed;
       await writeFile(join(root, 'a.txt'), '外部修改', 'utf8');
       const result = await core.restoreCheckpoint(checkpointId);
       expect(result.ok).toBe(false);
@@ -352,17 +434,17 @@ describe('AgentCore', () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it('isolates threads by workspace after a workspace switch', async () => {
+  it('isolates sessions by workspace after a workspace switch', async () => {
     const rootA = await mkdtemp(join(tmpdir(), 'seecoder-workspace-a-'));
     const rootB = await mkdtemp(join(tmpdir(), 'seecoder-workspace-b-'));
     const store = new SessionStore(join(tmpdir(), `seecoder-shared-${Date.now()}`));
     try {
       const coreA = new AgentCore({ workspace: rootA, provider: new FakeModelProvider([]), model, store, mode: 'plan' });
-      const threadA = await coreA.createThread('A');
+      const sessionA = await coreA.createSession('A');
       const coreB = new AgentCore({ workspace: rootB, provider: new FakeModelProvider([]), model, store, mode: 'plan' });
-      expect(await coreB.listThreads()).toEqual([]);
-      expect(await coreB.hydrateThread(threadA.id)).toBeNull();
-      expect(await coreB.readThreadEvents(threadA.id)).toEqual([]);
+      expect(await coreB.listSessions()).toEqual([]);
+      expect(await coreB.hydrateSession(sessionA.id)).toBeNull();
+      expect(await coreB.readSessionEvents(sessionA.id)).toEqual([]);
     } finally {
       await rm(rootA, { recursive: true, force: true });
       await rm(rootB, { recursive: true, force: true });
@@ -380,10 +462,10 @@ describe('AgentCore', () => {
       ]);
       const store = new SessionStore(join(root, '.sessions'));
       const core = new AgentCore({ workspace: root, provider, model, store, mode: 'auto' });
-      const thread = await core.createThread('压缩测试');
+      const session = await core.createSession('压缩测试');
       const run = async (prompt: string) => {
         const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-        await core.startTurn(thread.id, prompt);
+        await core.startTurn(session.id, prompt);
         await completed;
       };
       for (let index = 0; index < 5; index += 1) await run(`用户任务 ${index} ${'内容'.repeat(200)}`);
@@ -395,14 +477,14 @@ describe('AgentCore', () => {
       unsubscribe();
       expect(metrics.compacted).toBe(true);
       expect(metrics.afterTokens).toBeLessThan(metrics.beforeTokens!);
-      const history = await store.readEvents(thread.id);
+      const history = await store.readEvents(session.id);
       expect(history.some((record) => record.item?.kind === 'compaction')).toBe(true);
 
       const restoredProvider = new RecordingProvider([[{ type: 'textDelta', text: '恢复完成' }, { type: 'completed', finishReason: 'stop' }]]);
       const restored = new AgentCore({ workspace: root, provider: restoredProvider, model, store, mode: 'auto' });
-      await restored.hydrateThread(thread.id);
+      await restored.hydrateSession(session.id);
       const restoredCompleted = new Promise<void>((resolve) => restored.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      await restored.startTurn(thread.id, '恢复后继续');
+      await restored.startTurn(session.id, '恢复后继续');
       await restoredCompleted;
       const restoredMessages = restoredProvider.agentRequests[0]?.messages ?? [];
       const serialized = JSON.stringify(restoredMessages);
@@ -431,8 +513,8 @@ describe('AgentCore', () => {
       const compactModel = { ...model, contextWindow: 1_000 };
       const core = new AgentCore({ workspace: root, provider, model: compactModel, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('多工具压缩');
-      await core.startTurn(thread.id, '读取大文件');
+      const session = await core.createSession('多工具压缩');
+      await core.startTurn(session.id, '读取大文件');
       await completed;
 
       const compactedRequest = provider.agentRequests[2]!.messages.slice(1);
@@ -459,8 +541,8 @@ describe('AgentCore', () => {
       let executionResult: boolean | undefined;
       let executionError = '';
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'tool.completed' && event.callId === 'same-write') { executionCount += 1; executionResult = event.result.ok; executionError = event.result.error?.message ?? ''; } if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('幂等测试');
-      await core.startTurn(thread.id, '只写一次');
+      const session = await core.createSession('幂等测试');
+      await core.startTurn(session.id, '只写一次');
       await completed;
       expect(executionCount).toBe(1);
       expect(executionResult, executionError).toBe(true);
@@ -478,10 +560,10 @@ describe('AgentCore', () => {
         [{ type: 'textDelta', text: '第二轮完成' }, { type: 'completed', finishReason: 'stop' }],
       ]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
-      const thread = await core.createThread('跨 Turn 幂等隔离');
+      const session = await core.createSession('跨 Turn 幂等隔离');
       const run = async (prompt: string) => {
         const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-        await core.startTurn(thread.id, prompt);
+        await core.startTurn(session.id, prompt);
         await completed;
       };
       await run('写入 first');
@@ -502,8 +584,8 @@ describe('AgentCore', () => {
       ]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'plan' });
       const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-      const thread = await core.createThread('子 Agent 消息链');
-      await core.startTurn(thread.id, '委派探索');
+      const session = await core.createSession('子 Agent 消息链');
+      await core.startTurn(session.id, '委派探索');
       await completed;
       const childFollowUp = provider.requests[2]!;
       expect(childFollowUp.messages).toEqual(expect.arrayContaining([
@@ -524,10 +606,10 @@ describe('AgentCore', () => {
       ], [[{ type: 'error', code: 'network_error', message: '摘要服务不可用', retryable: true }]]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
       const events: string[] = [];
-      const thread = await core.createThread('摘要失败降级');
+      const session = await core.createSession('摘要失败降级');
       const run = async (prompt: string) => {
         const completed = new Promise<void>((resolve) => core.onEvent((event) => { events.push(event.type); if (event.type === 'turn.completed') resolve(); }));
-        await core.startTurn(thread.id, prompt);
+        await core.startTurn(session.id, prompt);
         await completed;
       };
       for (let index = 0; index < 5; index += 1) await run(`用户历史 ${index}`);
@@ -553,8 +635,8 @@ describe('AgentCore', () => {
         if (event.type === 'tool.completed' && event.callId === 'finish-stale') finishOutput = event.result.output;
         if (event.type === 'turn.completed') resolve();
       }));
-      const thread = await core.createThread('验证 revision');
-      await core.startTurn(thread.id, '修改、测试、再次修改后完成');
+      const session = await core.createSession('验证 revision');
+      await core.startTurn(session.id, '修改、测试、再次修改后完成');
       await completed;
       expect(finishOutput).toMatchObject({ verificationStatus: 'warning', warning: expect.stringContaining('没有成功验证') });
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -579,10 +661,10 @@ describe('AgentCore', () => {
         },
       };
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
-      const thread = await core.createThread('取消摘要');
+      const session = await core.createSession('取消摘要');
       const run = async (prompt: string) => {
         const completed = new Promise<void>((resolve) => core.onEvent((event) => { if (event.type === 'turn.completed') resolve(); }));
-        await core.startTurn(thread.id, prompt);
+        await core.startTurn(session.id, prompt);
         await completed;
       };
       for (let index = 0; index < 5; index += 1) await run(`历史 ${index}`);
@@ -591,10 +673,10 @@ describe('AgentCore', () => {
         if (event.type === 'context.summary.requested') { turnId = event.turnId; core.cancelTurn(event.turnId); }
         if (event.type === 'turn.cancelled' && event.turn.id === turnId) resolve();
       }));
-      turnId = await core.startTurn(thread.id, '现在压缩，但我要取消');
+      turnId = await core.startTurn(session.id, '现在压缩，但我要取消');
       await cancelled;
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const nextTurnId = await core.startTurn(thread.id, '取消后可以重新开始');
+      const nextTurnId = await core.startTurn(session.id, '取消后可以重新开始');
       expect(nextTurnId).not.toBe(turnId);
       core.cancelTurn(nextTurnId);
     } finally { await rm(root, { recursive: true, force: true }); }

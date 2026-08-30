@@ -1,14 +1,15 @@
 import { spawn } from 'node:child_process';
-import { readFile, readdir, realpath, writeFile, mkdir, stat, unlink } from 'node:fs/promises';
+import { readFile, readdir, realpath, writeFile, mkdir, stat, rename, rm } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { z, type ZodTypeAny } from 'zod';
-import type { ChangeFile, PermissionMode, ToolCall, ToolResult } from '@seecoder/protocol';
+import type { ChangeFile, HookCommand, HookStage, PermissionMode, ToolCall, ToolResult } from '@seecoder/protocol';
 
 export interface ToolContext {
   workspace: string;
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void;
   signal?: AbortSignal;
+  env?: Record<string, string>;
 }
 
 export interface ToolDefinition {
@@ -111,6 +112,79 @@ async function atomicWrite(path: string, content: string): Promise<void> {
   await writeFile(temporary, content, 'utf8');
   const fs = await import('node:fs/promises');
   await fs.rename(temporary, path);
+}
+
+const hookCommandSchema = z.object({
+  id: z.string().min(1).max(80).regex(/^[a-zA-Z0-9._-]+$/),
+  command: z.string().min(1).max(2000),
+  timeoutMs: z.number().int().min(1000).max(120_000).default(30_000),
+});
+const hookConfigSchema = z.object({
+  version: z.literal(1),
+  hooks: z.object({
+    preToolUse: z.array(hookCommandSchema).max(8).default([]),
+    postFileEdit: z.array(hookCommandSchema).max(8).default([]),
+    turnEnd: z.array(hookCommandSchema).max(8).default([]),
+  }),
+});
+
+export type HookConfig = { version: 1; hooks: Record<HookStage, HookCommand[]> };
+export function parseHookConfig(value: unknown): HookConfig { return hookConfigSchema.parse(value) as HookConfig; }
+
+type TransactionEntry = { path: string; before: string | null; after: string | null };
+
+/**
+ * 先准备全部临时文件，再逐个提交；提交途中失败时按逆序恢复备份。
+ * renameFile 参数只用于故障注入测试，生产环境始终使用 node:fs rename。
+ */
+export async function transactionalWriteFiles(
+  entries: TransactionEntry[],
+  renameFile: typeof rename = rename,
+): Promise<void> {
+  if (new Set(entries.map((entry) => entry.path)).size !== entries.length) throw new Error('事务包含重复目标路径');
+  const transactionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const prepared = entries.map((entry, index) => ({
+    ...entry,
+    temporary: `${entry.path}.seecoder-${transactionId}-${index}.tmp`,
+    backup: `${entry.path}.seecoder-${transactionId}-${index}.bak`,
+    originalMoved: false,
+    targetInstalled: false,
+  }));
+  let preserveBackups = false;
+  try {
+    for (const item of prepared) {
+      await mkdir(dirname(item.path), { recursive: true });
+      if (item.after !== null) await writeFile(item.temporary, item.after, 'utf8');
+    }
+    for (const item of prepared) {
+      if (item.before !== null) {
+        await renameFile(item.path, item.backup);
+        item.originalMoved = true;
+      }
+      if (item.after !== null) {
+        await renameFile(item.temporary, item.path);
+        item.targetInstalled = true;
+      }
+    }
+  } catch (error) {
+    let rollbackError: unknown;
+    for (const item of [...prepared].reverse()) {
+      try {
+        if (item.targetInstalled) await rm(item.path, { force: true });
+        if (item.originalMoved) await renameFile(item.backup, item.path);
+      } catch (cause) { rollbackError ??= cause; }
+    }
+    if (rollbackError) {
+      preserveBackups = true;
+      throw new AggregateError([error, rollbackError], '多文件事务失败，且补偿恢复未完全成功；备份已保留');
+    }
+    throw error;
+  } finally {
+    for (const item of prepared) {
+      await rm(item.temporary, { force: true }).catch(() => undefined);
+      if (!preserveBackups) await rm(item.backup, { force: true }).catch(() => undefined);
+    }
+  }
 }
 
 function result(ok: boolean, output: unknown, durationMs: number, error?: ToolResult['error']): ToolResult {
@@ -309,7 +383,7 @@ export function commandRunner(command: string, cwd: string, context: ToolContext
     const windows = process.platform === 'win32';
     const child = spawn(windows ? 'powershell.exe' : 'sh', windows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-lc', command], {
       cwd,
-      env: { ...process.env, CI: '1' },
+      env: { ...process.env, CI: '1', ...context.env },
       windowsHide: true,
     });
     let stdout = '';
@@ -422,7 +496,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       parameters: z.object({ patch: z.string().min(1) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { patch: string };
-        try { const files = parseUnifiedPatch(args.patch); const policy = new WorkspacePolicy(context.workspace); const changes: ChangeFile[] = []; const next: Array<{ path: string; before: string | null; after: string }> = []; for (const file of files) { const name = (file.newPath || file.oldPath).replace(/^([ab])\//, ''); const path = await policy.path(name); const before = await readExisting(path); if (before === null) throw new Error(`补丁目标不存在: ${name}`); const after = applyFilePatch(before, file); changes.push({ path: relative(context.workspace, path), before, after }); next.push({ path, before, after }); } for (const item of next) await atomicWrite(item.path, item.after); return result(true, { kind: 'changes', files: changes }, Date.now() - started); }
+        try { const files = parseUnifiedPatch(args.patch); const policy = new WorkspacePolicy(context.workspace); const changes: ChangeFile[] = []; const next: TransactionEntry[] = []; for (const file of files) { const name = (file.newPath || file.oldPath).replace(/^([ab])\//, ''); const path = await policy.path(name); const before = await readExisting(path); if (before === null) throw new Error(`补丁目标不存在: ${name}`); const after = applyFilePatch(before, file); changes.push({ path: relative(context.workspace, path), before, after }); next.push({ path, before, after }); } await transactionalWriteFiles(next); return result(true, { kind: 'changes', files: changes }, Date.now() - started); }
         catch (error) { return result(false, undefined, Date.now() - started, { code: 'patch_failed', message: error instanceof Error ? error.message : '补丁失败' }); }
       },
     },
@@ -485,11 +559,12 @@ export async function restoreChangeSet(workspace: string, files: ChangeFile[]): 
   const started = Date.now();
   const policy = new WorkspacePolicy(workspace);
   try {
+    const entries: TransactionEntry[] = [];
     for (const file of files) {
       const path = await policy.path(file.path);
-      if (file.before === null) await unlink(path).catch(() => undefined);
-      else await atomicWrite(path, file.before);
+      entries.push({ path, before: await readExisting(path), after: file.before });
     }
+    await transactionalWriteFiles(entries);
     return result(true, { restored: files.map((file) => file.path) }, Date.now() - started);
   } catch (error) {
     return result(false, undefined, Date.now() - started, { code: 'restore_failed', message: error instanceof Error ? error.message : '撤销失败' });

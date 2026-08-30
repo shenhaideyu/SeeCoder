@@ -1,10 +1,17 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { commandRisk, commandRunner, ToolRegistry, WorkspacePolicy } from './index';
+import { commandRisk, commandRunner, parseHookConfig, ToolRegistry, transactionalWriteFiles, WorkspacePolicy } from './index';
 
 describe('WorkspacePolicy', () => {
+  it('validates bounded lifecycle hook configuration', () => {
+    expect(parseHookConfig({ version: 1, hooks: { preToolUse: [{ id: 'lint', command: 'pnpm lint' }] } })).toMatchObject({
+      hooks: { preToolUse: [{ id: 'lint', timeoutMs: 30_000 }], postFileEdit: [], turnEnd: [] },
+    });
+    expect(() => parseHookConfig({ version: 1, hooks: { preToolUse: [{ id: 'bad id', command: 'echo bad' }] } })).toThrow();
+  });
+
   it('rejects paths outside the workspace', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-policy-'));
     try {
@@ -140,6 +147,42 @@ describe('file tools', () => {
       const rejected = await tool!.execute({ patch: stale }, { workspace: root });
       expect(rejected.ok).toBe(false);
       expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('one\nchanged\n');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rolls back earlier files when a later transaction commit fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-transaction-'));
+    const first = join(root, 'first.txt');
+    const second = join(root, 'second.txt');
+    try {
+      await writeFile(first, 'first-before', 'utf8');
+      await writeFile(second, 'second-before', 'utf8');
+      let renameCalls = 0;
+      const failFourthRename: typeof rename = async (oldPath, newPath) => {
+        renameCalls += 1;
+        if (renameCalls === 4) throw new Error('injected commit failure');
+        await rename(oldPath, newPath);
+      };
+      await expect(transactionalWriteFiles([
+        { path: first, before: 'first-before', after: 'first-after' },
+        { path: second, before: 'second-before', after: 'second-after' },
+      ], failFourthRename)).rejects.toThrow('injected commit failure');
+      expect(await readFile(first, 'utf8')).toBe('first-before');
+      expect(await readFile(second, 'utf8')).toBe('second-before');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not touch original files when transaction preparation fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-transaction-prepare-'));
+    const original = join(root, 'original.txt');
+    try {
+      await writeFile(original, 'unchanged', 'utf8');
+      await writeFile(join(root, 'parent-is-file'), 'not a directory', 'utf8');
+      await expect(transactionalWriteFiles([
+        { path: original, before: 'unchanged', after: 'changed' },
+        { path: join(root, 'parent-is-file', 'blocked.txt'), before: null, after: 'blocked' },
+      ])).rejects.toThrow();
+      expect(await readFile(original, 'utf8')).toBe('unchanged');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
