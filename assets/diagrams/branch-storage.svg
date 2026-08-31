@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="570" viewBox="0 0 1120 570" role="img" aria-labelledby="title desc">
+  <title id="title">父子 Session 的磁盘存储</title>
+  <desc id="desc">父 Session 保存完整事件一到五，子 Session 的元数据引用父 Session 和事件三，自己的事件文件只保存新增事件。</desc>
+  <style>
+    .bg{fill:#fbf9fd}.box{fill:#fff;stroke:#d8cde2;stroke-width:2}.parent{stroke:#8247d6}.child{stroke:#269c76}.head1{fill:#f1e9fb}.head2{fill:#eaf8f3}.title{font:700 22px 'Microsoft YaHei',sans-serif;fill:#252127}.label{font:600 17px 'Microsoft YaHei',sans-serif;fill:#252127}.code{font:15px Consolas,'Microsoft YaHei',sans-serif;fill:#4f4655}.small{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.arrow{stroke:#8c7c99;stroke-width:3;fill:none;marker-end:url(#m)}
+  </style>
+  <defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#8c7c99"/></marker></defs>
+  <rect class="bg" width="1120" height="570" rx="26"/><text class="title" x="60" y="58">磁盘只保存父历史一次</text>
+  <rect class="box parent" x="65" y="105" width="410" height="330" rx="18"/><path class="head1" d="M83 105H457Q475 105 475 123V170H65V123Q65 105 83 105Z"/><text class="title" x="95" y="146">父 Session 目录</text>
+  <text class="label" x="100" y="213">meta.json</text><text class="small" x="100" y="240">普通 Session 元数据</text>
+  <line x1="95" y1="265" x2="445" y2="265" stroke="#e3dce8"/>
+  <text class="label" x="100" y="307">events.jsonl</text><text class="code" x="100" y="344">1　2　3　4　5</text><text class="small" x="100" y="382">父分支事件只保存在这里</text>
+  <rect class="box child" x="645" y="105" width="410" height="330" rx="18"/><path class="head2" d="M663 105H1037Q1055 105 1055 123V170H645V123Q645 105 663 105Z"/><text class="title" x="675" y="146">子 Session 目录</text>
+  <text class="label" x="680" y="210">meta.json</text><text class="code" x="680" y="240">父 Session：左侧目录</text><text class="code" x="680" y="266">分叉位置：事件 3</text>
+  <line x1="675" y1="288" x2="1025" y2="288" stroke="#d7e9e2"/>
+  <text class="label" x="680" y="330">events.jsonl</text><text class="code" x="680" y="367">4′　5′</text><text class="small" x="680" y="405">只保存子分支自己的新增事件</text>
+  <path class="arrow" d="M645 230C570 230 550 300 478 300"/><text class="small" x="560" y="218" text-anchor="middle">引用，不复制</text>
+  <rect x="215" y="480" width="690" height="52" rx="13" fill="#f1eef5"/><text class="label" x="560" y="513" text-anchor="middle">节省空间的代价：有子分支时，父 Session 不能先删除</text>
+</svg>

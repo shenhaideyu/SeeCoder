@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc">
+  <title id="title">一次模型请求的组成</title>
+  <desc id="desc">系统规则、任务上下文、工具定义和模型参数分别生成，随后合并为一次模型请求。</desc>
+  <style>
+    .bg{fill:#fbf9fd}.box{fill:#fff;stroke:#d8cde2;stroke-width:2}.sys{fill:#f1e9fb;stroke:#8247d6;stroke-width:2}.ctx{fill:#eaf8f3;stroke:#269c76;stroke-width:2}.tool{fill:#eef5fd;stroke:#3979b8;stroke-width:2}.cfg{fill:#fff6e8;stroke:#d28a2f;stroke-width:2}.request{fill:#fff;stroke:#8247d6;stroke-width:4}.title{font:700 22px 'Microsoft YaHei',sans-serif;fill:#252127}.label{font:700 17px 'Microsoft YaHei',sans-serif;fill:#252127}.small{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.arrow{stroke:#8c7c99;stroke-width:3;fill:none;marker-end:url(#m)}
+  </style>
+  <defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#8c7c99"/></marker></defs>
+  <rect class="bg" width="1120" height="660" rx="26"/><text class="title" x="58" y="56">提示词工程 = 组织整个模型请求</text>
+  <rect class="sys" x="65" y="105" width="420" height="120" rx="16"/><text class="label" x="90" y="140">① System Message</text><text class="small" x="90" y="170">身份、安全边界、语言、模式、工作方法</text><text class="small" x="90" y="198">+ 项目规则 + 本轮 Skill</text>
+  <rect class="ctx" x="65" y="250" width="420" height="120" rx="16"/><text class="label" x="90" y="285">② Context Messages</text><text class="small" x="90" y="315">用户目标、历史消息、工具结果、账本、证据</text><text class="small" x="90" y="343">先按 token 预算压缩，再放进请求</text>
+  <rect class="tool" x="65" y="395" width="420" height="100" rx="16"/><text class="label" x="90" y="430">③ Tool Schemas</text><text class="small" x="90" y="460">工具名称、用途说明、参数 JSON Schema</text>
+  <rect class="cfg" x="65" y="520" width="420" height="90" rx="16"/><text class="label" x="90" y="555">④ Model Settings</text><text class="small" x="90" y="585">模型、温度和最大输出</text>
+  <path class="arrow" d="M490 165C570 165 575 245 645 280"/><path class="arrow" d="M490 310H640"/><path class="arrow" d="M490 445C570 445 575 370 645 340"/><path class="arrow" d="M490 565C585 565 590 420 650 375"/>
+  <rect class="request" x="650" y="185" width="405" height="295" rx="22"/><text class="title" x="852" y="230" text-anchor="middle">一次 ModelRequest</text>
+  <rect class="box" x="695" y="260" width="315" height="52" rx="11"/><text class="label" x="852" y="293" text-anchor="middle">messages = system + context</text>
+  <rect class="box" x="695" y="330" width="315" height="52" rx="11"/><text class="label" x="852" y="363" text-anchor="middle">tools = schemas</text>
+  <rect class="box" x="695" y="400" width="315" height="52" rx="11"/><text class="label" x="852" y="433" text-anchor="middle">model + temperature + limits</text>
+  <text class="small" x="852" y="532" text-anchor="middle">每次模型迭代前重新组装</text><text class="small" x="852" y="560" text-anchor="middle">提示词引导决策，执行器强制安全</text>
+</svg>

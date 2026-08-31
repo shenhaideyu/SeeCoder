@@ -4,19 +4,36 @@ const chapters = [
   { id: "03", group: "先看全局", title: "核心模块怎样分工", file: "03-architecture.html" },
   { id: "04", group: "理解核心", title: "Session、事件与分支", file: "04-session-history.html" },
   { id: "05", group: "理解核心", title: "上下文怎样保持清醒", file: "05-context.html" },
-  { id: "06", group: "理解核心", title: "TurnRunner 主循环", file: "06-agent-loop.html" },
-  { id: "07", group: "理解核心", title: "动态干预与生命周期", file: "07-model-parsing.html" },
-  { id: "08", group: "理解核心", title: "工具执行与并发控制", file: "08-tools.html" },
-  { id: "09", group: "保证可靠", title: "模型协议与流式解析", file: "09-stop-errors.html" },
-  { id: "10", group: "保证可靠", title: "终止、安全与恢复", file: "10-safety-recovery.html" },
-  { id: "11", group: "保证可靠", title: "测试怎样证明系统可信", file: "11-testing.html" },
-  { id: "12", group: "进入源码", title: "源码阅读路线", file: "12-defense.html" },
+  { id: "06", group: "理解核心", title: "提示词是怎样组织的", file: "06-prompt-engineering.html" },
+  { id: "07", group: "理解核心", title: "TurnRunner 主循环", file: "06-agent-loop.html" },
+  { id: "08", group: "理解核心", title: "动态干预与生命周期", file: "07-model-parsing.html" },
+  { id: "09", group: "理解核心", title: "工具执行与并发控制", file: "08-tools.html" },
+  { id: "10", group: "保证可靠", title: "模型协议与流式解析", file: "09-stop-errors.html" },
+  { id: "11", group: "保证可靠", title: "终止、安全与恢复", file: "10-safety-recovery.html" },
+  { id: "12", group: "保证可靠", title: "测试怎样证明系统可信", file: "11-testing.html" },
+  { id: "13", group: "进入源码", title: "源码阅读路线", file: "12-defense.html" },
 ];
+
+const completedKey = "seecoder-docs-completed";
+const progressSchemaKey = "seecoder-docs-progress-schema";
+
+function loadCompletedChapters() {
+  const saved = JSON.parse(localStorage.getItem(completedKey) || "[]");
+  if (localStorage.getItem(progressSchemaKey) === "2") return new Set(saved);
+  // 新增第 6 章后，原来的第 6～12 章整体后移一位；迁移旧进度，避免把旧章节误记到新章节。
+  const migrated = saved.map((id) => {
+    const number = Number(id);
+    return Number.isInteger(number) && number >= 6 ? String(number + 1).padStart(2, "0") : id;
+  });
+  localStorage.setItem(completedKey, JSON.stringify(migrated));
+  localStorage.setItem(progressSchemaKey, "2");
+  return new Set(migrated);
+}
 
 const state = {
   current: 0,
   contents: new Map(),
-  completed: new Set(JSON.parse(localStorage.getItem("seecoder-docs-completed") || "[]")),
+  completed: loadCompletedChapters(),
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -99,7 +116,7 @@ async function navigate(index, updateHash = true) {
     article.innerHTML = await loadChapter(index);
     resolveChapterAssets();
     state.completed.add(chapters[index].id);
-    localStorage.setItem("seecoder-docs-completed", JSON.stringify([...state.completed]));
+    localStorage.setItem(completedKey, JSON.stringify([...state.completed]));
     $("#chapterCrumb").textContent = chapters[index].title;
     document.title = `${chapters[index].title} · SeeCoder 技术教程`;
     configureChapterButtons();
