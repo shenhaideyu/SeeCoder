@@ -1,46 +1,22 @@
-<span class="chapter-kicker">第一部分 · 建立整体认识</span>
-<h1>系统架构与信任边界</h1>
-<p class="lead">SeeCoder 采用模块化单体：界面、可信后端和 Agent 模块随桌面应用一起运行，但通过协议和权限边界保持分工。它不需要额外数据库、Redis 或远程任务队列。</p>
-
-<h2>为什么选择桌面端一体化架构</h2>
-<p>编程智能体必须访问用户本地项目和本地开发工具。如果使用传统 Web 前端加远程服务器，文件需要上传，命令执行环境也与用户电脑不同；如果让浏览器直接获得 Node.js 权限，则任意渲染层漏洞都可能读取磁盘。Electron 提供了更合适的中间方案：Renderer 保持普通 Web 权限，Main 负责本地可信操作，Preload 只暴露经过约束的 IPC。</p>
-
-<div class="diagram">
-  <div class="diagram-title">SeeCoder 分层架构</div>
-  <div class="layer-stack">
-    <div class="layer"><b>交互层 · Renderer</b>React、任务列表、对话、审批、Diff、Terminal、Trace</div>
-    <div class="layer"><b>通信层 · Preload</b>类型化 IPC；不暴露 fs、child_process 或任意路径接口</div>
-    <div class="layer"><b>可信边界 · Main</b>窗口生命周期、工作区、密钥、设置、Session 服务与事件转发</div>
-    <div class="layer"><b>决策层 · Agent Core</b>Turn 状态机、主循环、上下文、调度、审批和终止</div>
-    <div class="layer"><b>能力层 · Model / Tools</b>OpenAI 兼容 SSE；文件、搜索、补丁、命令和 Git 工具</div>
-    <div class="layer"><b>证据层 · Storage</b>JSONL 事件、状态 JSON、Snapshot、Checkpoint 和恢复</div>
-  </div>
-</div>
-
-<h2>前端与后端怎样分工</h2>
-<p>Renderer 只表达用户意图，例如“创建 Session”“开始 Turn”“允许审批”。它不自行判断工具是否完成，也不保存 API Key。Main 才是本地后端：接收 IPC 后调用 Agent Core、Storage 和 Tools，再把 AgentEvent 推给 Renderer。界面状态由事件驱动，避免前端维护一套与后台不同的业务状态机。</p>
-<p>BrowserWindow 使用 <code>contextIsolation: true</code> 和 <code>nodeIntegration: false</code>。这意味着网页脚本即使出错，也无法直接调用 Node 文件系统。当前由于 Preload ESM 兼容原因，Electron 的 <code>sandbox</code> 开关未启用，所以必须准确表述为“Renderer 最小权限 + 应用层执行策略”，而不是操作系统沙箱。</p>
-
-<h2>核心包为什么分开</h2>
-<div class="source-map">
-  <div class="source-row"><code>protocol</code><span>定义各模块共同理解的数据：Session、Turn、Item、Event、ModelMessage、ToolCall 和 ToolResult。</span></div>
-  <div class="source-row"><code>agent-core</code><span>只关心任务怎样运行，不直接实现 HTTP 细节和具体文件操作。</span></div>
-  <div class="source-row"><code>model</code><span>把统一 ModelRequest 转换成 OpenAI 兼容请求，并解析 SSE 增量。</span></div>
-  <div class="source-row"><code>tools</code><span>实现本地能力、参数校验、WorkspacePolicy、原子写入和命令管理。</span></div>
-  <div class="source-row"><code>storage</code><span>追加写入事件，原子保存元数据与状态，提供回放和恢复。</span></div>
-</div>
-<p>这些包仍处于同一进程，因此没有网络序列化、服务发现和分布式事务成本。分层的目的不是追求“微服务数量”，而是让模型协议、业务状态和本地副作用可以独立测试。对当前规模，模块化单体比拆成多个后台服务更简单可靠。</p>
-
-<h2>数据流与控制流的区别</h2>
-<p>控制流描述“谁调用谁”：Renderer 调 Main，Main 调 Core，Core 调 Model 或 Tools。数据流描述“事实怎样传播”：用户消息成为 Item；模型增量成为 AgentEvent；工具结果进入历史；ChangeSet 更新 Ledger；事件再驱动 UI。区分两者有助于定位问题：按钮无响应通常在控制流，UI 状态错乱通常在事件数据流。</p>
-
-<h2>为什么不使用数据库</h2>
-<p>首版数据天然以 Session 为边界，主要写入模式是按时间追加事件。JSONL 每一行独立，便于审计、迁移和损坏尾行恢复；少量当前状态使用 JSON 原子替换；文件修改前内容直接保存为 Snapshot。引入数据库会增加 schema、迁移和原生打包成本，却不能明显改善当前规模下的查询。</p>
-<p>这不表示 JSONL 适合无限规模。如果未来需要跨数万 Session 全文检索、多设备同步或复杂统计，数据库才有明确收益。技术选型应由实际读写模式决定，而不是由“后端必须有数据库”的习惯决定。</p>
-
-<h2>架构中的三个边界</h2>
-<p><strong>权限边界</strong>位于 Main 和 Tools：模型永远不能直接操作系统。<strong>状态边界</strong>位于 Agent Core：Renderer 只消费事件，不复制主状态机。<strong>兼容边界</strong>位于 ModelProvider：Core 使用统一事件，不依赖某个模型厂商的 SSE 细节。</p>
-<div class="callout warning"><span class="callout-title">当前已知限制</span><p>工具 JSON Schema 在 Core 中用于提供给模型，Zod Schema 在 Tools 中用于运行时校验，两份定义存在维护同步成本。这是当前可控的技术债，不应在答辩中描述为完全单一来源。</p></div>
-
-<div class="defense"><h2>怎样讲清楚</h2><p>“SeeCoder 有前后端，但后端是 Electron Main，不是远程服务器。Renderer 无 Node 权限，Main 是唯一可信执行边界。Core、Model、Tools、Storage 用包划分职责，同时仍在一个进程运行，既容易测试，也避免分布式系统复杂度。”</p></div>
-
+<span class="chapter-kicker">第一部分 · 先看全局</span>
+<h1>核心模块怎样分工</h1>
+<p class="lead">当前 Agent Core 已完成拆分。AgentCore 只保留对外 API 和依赖装配，具体工作交给职责单一的运行组件。</p>
+<h2>为什么要拆分</h2>
+<p>如果会话、循环、工具、审批、上下文和恢复都写在一个大类中，任何修改都可能影响整条链路。拆分后的原则很简单：每个模块只回答一个问题，AgentCore 负责把它们连接起来。</p>
+<table class="data-table"><thead><tr><th>模块</th><th>负责什么</th><th>核心入口</th></tr></thead><tbody>
+<tr><td>AgentCore</td><td>对外门面、依赖装配、事件持久化和广播</td><td><code>startTurn</code>、<code>forkFrom</code>、<code>emit</code></td></tr><tr><td>SessionLifecycle</td><td>创建、删除、分支、恢复 Session</td><td><code>create</code>、<code>forkFrom</code>、<code>hydrate</code></td></tr><tr><td>TurnRunner</td><td>Turn 状态机和模型工具循环</td><td><code>start</code>、<code>run</code></td></tr><tr><td>ToolCallExecutor</td><td>一批或一次工具调用的完整管线</td><td><code>executeBatch</code>、<code>execute</code></td></tr><tr><td>Context</td><td>账本、证据、记忆、预算和上下文组装</td><td><code>buildHybridContext</code></td></tr><tr><td>ChangeManager</td><td>记录修改、撤销和检查点恢复</td><td><code>record</code>、<code>revert</code>、<code>restore</code></td></tr><tr><td>SubagentRunner</td><td>运行只读 Explore 和 Review 子 Agent</td><td><code>run</code></td></tr>
+</tbody></table>
+<h2>AgentCore 现在做什么</h2>
+<p>构造函数创建工具注册表、工作区策略、写入协调器、拦截器和各运行组件。公共方法只是把请求转发给正确组件。所有重要事件最后经过 <code>emit()</code>，统一写入 SessionStore，再通知界面。</p>
+<pre class="code-block"><span class="code-label">简化结构</span>class AgentCore {
+  startTurn(...)       { return turnRunner.start(...); }
+  forkFrom(...)        { return sessionLifecycle.forkFrom(...); }
+  revertChangeSet(...) { return changes.revert(...); }
+  resolveApproval(...) { return toolExecutor.resolveApproval(...); }
+}</pre>
+<h2>桌面应用的权限边界</h2>
+<p>Renderer 没有 Node.js 权限，不能直接读取文件或运行命令。Preload 只暴露明确的 IPC 方法。Electron Main 才持有 AgentCore、工作区和模型配置。模型生成的内容必须经过 Main、Core 和 Tools 才可能影响本地项目。</p>
+<h2>五个基础包</h2>
+<div class="source-map"><div class="source-row"><code>protocol</code><span>所有模块共同使用的数据类型。</span></div><div class="source-row"><code>agent-core</code><span>Agent 状态、循环、上下文和调度。</span></div><div class="source-row"><code>model</code><span>统一模型接口和流式响应解析。</span></div><div class="source-row"><code>tools</code><span>本地文件、搜索、补丁、命令和 Git 能力。</span></div><div class="source-row"><code>storage</code><span>JSONL 事件、元数据、状态和快照。</span></div></div>
+<h2>本章只需记住</h2>
+<div class="callout"><span class="callout-title">拆分后的主线</span><p>AgentCore 接收请求；SessionLifecycle 管长期会话；TurnRunner 管一轮任务；ToolCallExecutor 管一次工具调用；Context 管模型看到什么。</p></div>

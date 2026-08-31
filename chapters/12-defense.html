@@ -1,54 +1,39 @@
-<span class="chapter-kicker">第四部分 · 进入源码与答辩</span>
-<h1>源码阅读与答辩路线</h1>
-<p class="lead">最后一章把前面的概念映射到真实源码，并给出一条可以在答辩中自然讲完的主线。不要按目录逐个介绍文件，而要围绕“一次任务怎样可靠完成”展开。</p>
+<span class="chapter-kicker">第四部分 · 进入源码</span>
+<h1>源码阅读路线</h1>
+<p class="lead">不要从最大的文件第一行开始。先沿一次任务的调用路径阅读，再分别深入 Session、上下文和工具。</p>
 
-<h2>推荐的源码阅读顺序</h2>
-<p>先读 Protocol，因为它定义系统共同语言。然后从 Agent Core 的 startTurn 进入 runTurn，顺着一次迭代看到 ContextBuilder、ModelProvider 和 executeCall。理解控制流后再分别深入 context、model、tools 和 storage。Main 负责把这些能力接到 Electron，Renderer 最后阅读。</p>
+<h2>第一遍：只看主干</h2>
+<ol class="plain-list"><li>从 Protocol 认识 Session、Turn、事件和工具结果。</li><li>看 AgentCore 构造函数，理解运行组件怎样装配。</li><li>从 <code>startTurn()</code> 跳到 TurnRunner 的 <code>start()</code> 和 <code>run()</code>。</li><li>看到工具请求后，进入 ToolCallExecutor 的 <code>executeBatch()</code> 和 <code>execute()</code>。</li><li>最后看 AgentCore 的 <code>emit()</code> 怎样保存事件并通知界面。</li></ol>
 
+<h2>第二遍：按主题深入</h2>
 <div class="source-map">
-  <div class="source-row"><code>packages/protocol/src/index.ts</code><span>Session、Turn、Item、Event、ModelMessage、ToolCall、ToolResult。</span></div>
-  <div class="source-row"><code>packages/agent-core/src/index.ts</code><span>startTurn、runTurn、工具调度、审批、子 Agent、终止与错误归一化。</span></div>
-  <div class="source-row"><code>packages/agent-core/src/context.ts</code><span>Ledger、Evidence、Observation、MemoryIndex、摘要与预算分配。</span></div>
-  <div class="source-row"><code>packages/model/src/index.ts</code><span>fetch、SSE、Tool Call 聚合、usage、finishReason 与重试。</span></div>
-  <div class="source-row"><code>packages/tools/src/index.ts</code><span>工具定义、WorkspacePolicy、原子写入、补丁、命令和 Git。</span></div>
-  <div class="source-row"><code>packages/storage/src/index.ts</code><span>JSONL、状态原子写入、Snapshot、Checkpoint 与回放。</span></div>
-  <div class="source-row"><code>apps/desktop/src/main/main.ts</code><span>可信后端、IPC、工作区、设置、安全存储和事件转发。</span></div>
+<div class="source-row"><code>protocol/src/index.ts</code><span>系统共同语言。先理解数据，不必背字段。</span></div>
+<div class="source-row"><code>agent-core/src/index.ts</code><span>门面和依赖装配。</span></div>
+<div class="source-row"><code>runtime/turn-runner.ts</code><span>主循环、终态、取消和收敛。</span></div>
+<div class="source-row"><code>runtime/tool-call-executor.ts</code><span>工具校验、审批、并行、超时和结果。</span></div>
+<div class="source-row"><code>context.ts</code><span>账本、证据、记忆和混合上下文。</span></div>
+<div class="source-row"><code>runtime/session-lifecycle.ts</code><span>Session 创建、分支和恢复。</span></div>
+<div class="source-row"><code>storage/src/index.ts</code><span>JSONL、增量分支、Artifact 和状态文件。</span></div>
+<div class="source-row"><code>tools/src/index.ts</code><span>工作区策略和具体本地工具。</span></div>
 </div>
 
-<h2>用一条主线讲完整项目</h2>
-<p><strong>第一步，定义问题。</strong>普通聊天模型不能读取本地项目，也不能保证自己声称的修改真实发生。SeeCoder 的目标是让模型在安全、可恢复、可审计的 Harness 中完成真实编程任务。</p>
-<p><strong>第二步，解释架构。</strong>React Renderer 是最小权限前端，Electron Main 是本地可信后端。Agent Core 维护循环，ModelProvider 负责 SSE，Tools 负责本地执行，Storage 保存事件和快照。核心逻辑全部自研。</p>
-<p><strong>第三步，走一遍循环。</strong>用户消息启动 Turn；ContextBuilder 生成受预算约束的上下文；模型返回文字或 Tool Call；Core 依次经过 Schema、路径、模式、风险和审批；Tool Result 反馈模型；循环直到完成、取消、失败或上限。</p>
-<p><strong>第四步，说明长任务。</strong>Session 保存完整历史，模型只接收分层视图。ContextLedger 保存权威事实，FileEvidence 避免重复代码，Observation 压缩长日志，轻量检索召回相关历史，语义摘要失败时可以确定性回退。</p>
-<p><strong>第五步，给出正确性证据。</strong>文件修改产生 revision、Snapshot 和 ChangeSet；测试记录绑定 revision；JSONL 保存轨迹；Fake Provider、集成测试和真实 Prompt Eval 分别验证 Harness 与模型表现。</p>
+<h2>核心方法之间怎样连接</h2>
+<pre class="code-block"><span class="code-label">阅读路径</span>AgentCore.startTurn
+  → TurnRunner.start
+  → TurnRunner.run
+      → buildHybridContext
+      → ModelProvider.stream
+      → ToolCallExecutor.executeBatch
+          → WorkspaceMutationCoordinator
+          → ChangeManager.record
+  → AgentCore.emit
+      → SessionStore.append</pre>
 
-<h2>高频问题的简洁回答</h2>
-<div class="concept-card"><h3>为什么不用 Agent SDK？</h3><p>考核要求核心逻辑自行实现；同时自研能完整控制消息协议、上下文、安全、终止和错误恢复，答辩可以落到代码。代价是需要自行维护供应商兼容与工具 Schema。</p></div>
-<div class="concept-card"><h3>为什么不是传统前后端？</h3><p>它仍有前后端，只是后端是 Electron Main。本地代码和命令无需绕远程服务器，API Key 也不进入 Renderer。</p></div>
-<div class="concept-card"><h3>上下文压缩会不会丢历史？</h3><p>不会删除 JSONL。压缩只重建下一轮 ModelRequest；Ledger 的权威事实、工具协议组和当前证据优先保留。</p></div>
-<div class="concept-card"><h3>模型为什么不能绕过权限？</h3><p>模型只能生成 Tool Call。真正执行由 Core 的代码策略决定，Plan 副作用和工作区外路径会被硬拒绝。</p></div>
-<div class="concept-card"><h3>怎样判断任务真的完成？</h3><p>Core 根据无工具最终文本或 finish 进入完成，同时检查当前 revision 的验证。测试过期会明确警告，模型自述不作为验证证据。</p></div>
-<div class="concept-card"><h3>是否支持沙箱？</h3><p>当前是应用层策略隔离，不是 OS 沙箱。路径、审批、敏感文件和回滚已经实现；进程仍使用当前用户权限。</p></div>
+<h2>遇到专有名词怎么办</h2>
+<p>先问它解决什么问题，再看数据字段。例如“调用标识”只是为了把一次工具请求与结果配对并防止重复执行；“事件序号”只是 Session 内的时间顺序；“代码版本号”只是说明测试对应哪次文件修改。理解用途后再看具体字段名。</p>
 
-<h2>设计取舍要诚实说明</h2>
-<table class="data-table">
-  <thead><tr><th>当前选择</th><th>获得的好处</th><th>接受的限制</th></tr></thead>
-  <tbody>
-    <tr><td>模块化单体</td><td>本地运行简单、模块可独立测试</td><td>超大规模任务不适合单进程</td></tr>
-    <tr><td>JSONL + JSON</td><td>追加审计、无需数据库、易恢复</td><td>复杂跨 Session 查询能力有限</td></tr>
-    <tr><td>只读子 Agent</td><td>无并行写冲突、审批清晰</td><td>不能并发实施多个修改</td></tr>
-    <tr><td>轻量历史检索</td><td>本地、可解释、无 Embedding 成本</td><td>弱于语义向量检索的模糊召回</td></tr>
-    <tr><td>无原生 PTY</td><td>跨环境简单、无需原生依赖</td><td>不支持交互式 TUI</td></tr>
-  </tbody>
-</table>
+<h2>当前实现的关键设计决定</h2>
+<ul><li>不用 Agent 框架，核心循环和工具执行自行实现。</li><li>AgentCore 是门面，TurnRunner 和 ToolCallExecutor 承载执行细节。</li><li>完整历史与模型上下文分离。</li><li>只读工具可受控并行，写操作由 Workspace 协调器保护。</li><li>Session 分支保存增量，不复制父历史。</li><li>任何历史恢复都不重新执行副作用。</li></ul>
 
-<h2>演示时应展示什么</h2>
-<p>选择独立演示工作区，输入一个需要搜索、修改和测试的真实任务。先展示 Explore 的只读证据，再展示计划和审批；修改后打开 Changes；运行测试并让第一次失败触发修复；最后使用 Review 检查 Diff，展示当前 revision 验证和 Trace。演示重点是“证据怎样推动下一步”，不是工具卡数量。</p>
-
-<h2>完成学习后的自检</h2>
-<p>如果你能不看文档回答下面五个问题，就已经掌握项目主干：为什么模型不能直接执行工具；Session 和 Model Context 有什么区别；Tool Call 为什么要与 Tool Result 成组保存；测试为何要绑定 revision；取消怎样从按钮到达 fetch 和子进程。</p>
-
-<div class="callout"><span class="callout-title">继续深入</span><p>本教程用于建立清晰主线。需要查看完整需求、测试矩阵、安全威胁和质量门禁时，继续阅读项目根目录的 <code>docs/</code>。当网站描述与源码冲突时，以已经测试的源码为准，并应及时修正文档。</p></div>
-
-<div class="defense"><h2>一分钟总结</h2><p>“SeeCoder 用 Electron Main 建立本地可信边界，用自研 Agent Core 维护模型—工具循环。Session 与 JSONL 保存完整历史，混合 ContextBuilder 控制模型视图，Tool Runtime 通过路径、模式和审批执行副作用，Snapshot 与 revision 保证恢复和验证。它不是现成 Agent 的封装，也不把模型输出等同于事实。”</p></div>
-
+<h2>本章只需记住</h2>
+<div class="callout"><span class="callout-title">推荐顺序</span><p>Protocol → AgentCore → TurnRunner → ToolCallExecutor → Context → Session/Storage → Tools → Desktop。先看调用关系，再看底层实现。</p></div>

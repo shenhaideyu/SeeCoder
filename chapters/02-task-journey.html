@@ -1,180 +1,28 @@
-<span class="chapter-kicker">第一部分 · 建立整体认识</span>
+<span class="chapter-kicker">第一部分 · 先看全局</span>
 <h1>一次任务怎样完成</h1>
-<p class="lead">这一章只讲一件事：用户在输入框中写下一项编程任务以后，SeeCoder 内部依次发生了什么。我们从桌面窗口开始，沿着同一条调用链经过 Renderer、Preload、Electron Main、Agent Core、模型和本地工具，最后回到用户界面。</p>
-
-<h2>先认识桌面应用中的三个部分</h2>
-<p>打开 SeeCoder 后，屏幕上的窗口看起来像一个普通网页：左侧有工作区和 Session，中间是对话与输入框，右侧显示文件、变更、终端和执行轨迹。这部分界面叫 <strong>Renderer</strong>，中文可以理解为“渲染进程”。它由 React 编写，负责把数据画到屏幕上，也负责接收点击、输入和键盘操作。</p>
-<p>Renderer 运行在 Chromium 页面中。它能创建按钮、更新文字、切换标签页，却没有直接读取磁盘和启动命令的权限。项目设置了 <code>nodeIntegration: false</code>，因此页面脚本无法直接使用 Node.js 的 <code>fs</code> 或 <code>child_process</code>。这项限制很重要：显示模型文本的页面不应同时拥有完整电脑权限。</p>
-<p><strong>Electron Main</strong> 是桌面应用的主进程，可以理解为 SeeCoder 的本地后端。它运行 Node.js，负责窗口生命周期、工作区、Session、模型配置、API Key、本地文件、命令执行和 Agent Core。用户看不到 Main 的页面，但所有真正影响电脑的动作都必须经过它。</p>
-<p>Renderer 和 Main 之间还有一层很薄的 <strong>Preload</strong>。Preload 使用 Electron 的 <code>contextBridge</code>，在页面中提供一个受限制的 <code>window.seecoder</code> 对象。这个对象只包含项目明确允许的操作，例如 <code>workspace.select</code>、<code>session.create</code>、<code>turn.start</code> 和 <code>turn.cancel</code>。Renderer 无法通过它调用任意 Node.js 函数。</p>
-
-<div class="diagram">
-  <div class="diagram-title">Renderer、Preload 与 Electron Main</div>
-  <div class="layer-stack">
-    <div class="layer"><b>Renderer · 用户界面</b>显示输入框、消息、工具卡、Diff 和状态；收集用户操作</div>
-    <div class="layer"><b>Preload · 通信桥</b>只暴露预先定义的 window.seecoder API；把调用转换成 IPC 消息</div>
-    <div class="layer"><b>Electron Main · 本地后端</b>校验 IPC 参数，管理 Session，调用 Agent Core、模型、工具和存储</div>
-    <div class="layer"><b>操作系统与模型服务</b>本地文件、PowerShell 子进程、安全存储、DeepSeek HTTP API</div>
-  </div>
-</div>
-
-<p><strong>IPC</strong> 是 Inter-Process Communication 的缩写，中文是“进程间通信”。Renderer 和 Main 位于不同进程，IPC 就像一条有固定消息格式的内部通道。页面发送 <code>turn:start</code>，Main 处理它并返回 turnId；Main 随后通过 <code>seecoder:event</code> 持续推送执行进度。IPC 只在本机应用内部传递，不需要启动 HTTP 后端。</p>
-
-<h2>本章使用的真实任务</h2>
-<p>假设用户打开一个待办事项项目，然后输入：</p>
-<div class="callout"><span class="callout-title">用户任务</span><p>修复待办事项允许空标题提交的问题，并补充测试。纯空格标题也应当被拒绝。请修改后运行相关测试。</p></div>
-<p>要完成这项任务，SeeCoder 需要找到提交入口，理解现有校验，定位测试文件，修改代码，运行测试，并根据结果决定是否继续。下面按照真实发生顺序讲解。</p>
-
-<h2>第一步：用户选择工作区</h2>
-<p><strong>Workspace</strong> 是允许 SeeCoder 操作的项目根目录。用户点击左侧工作区选择器时，Renderer 调用 <code>window.seecoder.workspace.select()</code>。Preload 将它转换成 <code>workspace:select</code> IPC 请求。Main 打开系统目录选择窗口，用户选中项目以后，Main 保存当前路径并重新建立与该工作区对应的 Core、ToolRegistry 和存储上下文。</p>
-<p>工作区同时是一条安全边界。后续文件工具收到 <code>src/TodoForm.tsx</code> 时，会把它解析到当前根目录下；如果路径经过 <code>..</code> 或符号链接跳到其他位置，WorkspacePolicy 会拒绝。Session 列表、计划任务、文件证据和恢复点也按工作区隔离。</p>
-<p>界面此时只显示目录名称和最近任务。Renderer 不会提前读取整个项目。只有用户打开 Files 面板或 Agent 调用文件工具时，Main 才会执行相应读取。</p>
-
-<h2>第二步：创建并选中 Session</h2>
-<p>用户点击“新建任务”，Renderer 调用 <code>session.create</code>。Main 收到 <code>session:create</code> 后，请 Agent Core 建立一个 Session，并通过 SessionStore 保存元数据。Session 是一段长期对话的容器，包含标题、工作区、创建时间和更新时间。以后关闭应用再打开，这条任务仍然可以出现在左侧栏。</p>
-<p>一个 Session 可以包含多次用户请求。首次请求负责修复问题，后续用户还可以追问“为什么这样改”或“再补一个边界测试”。每次发送都会创建新的 Turn。这样长期对话与单次执行状态可以分别管理。</p>
-<p>Renderer 得到 Session 数据后，把它加入左侧任务列表，并将当前 sessionId 保存在界面状态中。这个 ID 后面会随发送请求交给 Main，使后台知道消息属于哪一条任务。</p>
-
-<h2>第三步：用户点击发送</h2>
-<p>用户在 Composer 输入任务并点击发送。Renderer 先检查输入是否为空，然后立即把用户消息显示在对话区域，让操作得到即时反馈。接着它调用：</p>
-<pre class="code-block"><span class="code-label">Renderer 发出的调用</span>window.seecoder.turn.start(
-  currentSessionId,
-  "修复待办事项允许空标题提交的问题，并补充测试……",
-  attachments,
-  selectedSkillId
-)</pre>
-<p>Preload 将调用转换成 <code>turn:start</code> IPC。这里传递的是文本、sessionId、最多四个附件引用和可选 Skill ID。API Key、文件系统对象和 Node 函数都不会进入 Renderer。</p>
-<p>Main 收到请求后先校验参数。sessionId 和文本必须是字符串，附件必须位于工作区且符合大小与类型限制，Skill 必须来自已导入列表。Main 随后调用 <code>core.startTurn</code>。如果同一个 Session 已经有活动 Turn，Core 会拒绝第二次启动，并提示用户追加要求或先取消当前任务。这项限制保证一个 Session 只有一个主写入者。</p>
-
-<h2>第四步：Agent Core 建立 Turn</h2>
-<p><strong>Turn</strong> 表示一次用户请求从开始到结束的执行过程。Core 为它生成 turnId，初始状态设为 <code>queued</code>，记录开始时间和迭代次数，并创建 AbortController。AbortController 提供的 signal 会传给模型请求、子 Agent 和命令工具，用户点击停止时可以沿整条调用链取消后台工作。</p>
-<p>Core 将 sessionId 与 turnId 写入 <code>activeSessionTurns</code>，保存用户消息，并发出 <code>turn.started</code> 事件。随后状态进入 <code>running</code>，异步执行 <code>runTurn</code>。IPC 的 <code>turn:start</code> 可以很快返回 turnId，长时间运行的模型和工具不会堵住界面。</p>
-<p>Main 订阅 Core 产生的 AgentEvent，再把事件发送到 Renderer 的 <code>seecoder:event</code> 通道。Renderer 已经通过 <code>events.subscribe</code> 注册监听器，因此它能把状态从“准备中”更新为“正在运行”。到这里，模型尚未被调用。</p>
-
-<h2>第五步：为模型准备本轮上下文</h2>
-<p>Agent Core 进入第一次迭代。它调用 ContextBuilder 构造 ModelRequest。模型每次只能看到请求中携带的内容，所以 ContextBuilder 需要选择当前最有价值的信息。</p>
-<p>请求首先包含 SeeCoder 的固定规则，例如不得越出工作区、不得伪造工具结果、使用与用户相同的主要语言。随后加入当前项目的 AGENTS.md、用户目标、ExecutionMode、可用工具说明和 ContextLedger。新任务尚未读取文件，FileEvidence 为空。最近用户消息以原文保留。</p>
-<p>ContextLedger 可以理解为任务工作记录。此时它至少保存目标：“拒绝空字符串和纯空格标题，并补充测试”。后续产生计划、修改、验证和错误时，Ledger 会持续更新。它帮助模型在长流程中保留当前事实。</p>
-<p>ContextBuilder 估算 token，并为模型输出预留空间。输入超过预算阈值时，它才会进行检索、Observation 压缩和语义摘要。第一次请求通常较短，无需压缩。消息组装完成后，<code>sanitizeModelMessages</code> 再检查 Tool Call 与 Tool Result 是否配对。</p>
-
-<div class="diagram">
-  <div class="diagram-title">第一次模型请求包含什么</div>
-  <div class="flow-row">
-    <div class="flow-node primary">系统安全规则</div><div class="flow-arrow">+</div>
-    <div class="flow-node">工作区规则</div><div class="flow-arrow">+</div>
-    <div class="flow-node">用户目标</div><div class="flow-arrow">+</div>
-    <div class="flow-node">任务状态</div><div class="flow-arrow">+</div>
-    <div class="flow-node">工具 Schema</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">ModelRequest</div>
-  </div>
-</div>
-
-<h2>第六步：调用 DeepSeek 并显示流式内容</h2>
-<p>Agent Core 把 ModelRequest 交给 ModelProvider。Provider 从 Main 当前配置中取得 Base URL、模型名称和 API Key，使用 <code>fetch</code> 请求 OpenAI 兼容 Chat Completions 接口。API Key 只在 Main 进程内使用。</p>
-<p>DeepSeek 通过 SSE 分段返回数据。Provider 使用 TextDecoder 处理字节流，把完整的 <code>data:</code> 行解析成 ModelEvent。普通文字形成 <code>textDelta</code>，Renderer 可以逐字显示“我先定位提交逻辑和相关测试”。工具调用参数形成 <code>toolCallDelta</code>，先按 callId 聚合，等流结束后再解析 JSON。</p>
-<p>假设模型决定先搜索代码，它可能返回：</p>
-<pre class="code-block"><span class="code-label">模型生成的 Tool Call</span>{
-  "id": "call_search_todo",
-  "name": "search_text",
-  "arguments": {
-    "query": "addTodo",
-    "path": "."
-  }
-}</pre>
-<p>这段 Tool Call 只是模型提出的下一步。Provider 不执行搜索。它把完整调用交回 Agent Core，同时记录本轮耗时、token 使用量、重试次数和 finishReason。</p>
-
-<h2>第七步：校验并执行第一次工具调用</h2>
-<p>Core 先把包含完整 Tool Calls 的 assistant 消息写入 Session 历史。随后 <code>executeCall</code> 从 ToolRegistry 查找 <code>search_text</code>。不存在的工具会返回 UNKNOWN_TOOL；存在时使用 Zod 校验 query、path 等参数。</p>
-<p>WorkspacePolicy 将 path 解析到当前项目根目录，敏感文件过滤器排除 .env、私钥和凭据文件。search_text 属于只读低风险工具，在 Plan、Guided 和 Auto 中都可以直接执行。Runtime 优先调用 rg；本机没有 rg 时使用 Node 搜索回退。</p>
-<p>搜索完成后生成结构化 Tool Result，其中包含 <code>ok</code>、命中数量、文件路径、行号、耗时和错误码。Core 为模型生成较短的 Observation，例如“找到 TodoForm.tsx 的 submitTodo 和 todo.test.ts 的相关测试”。完整 Tool Result 仍写入 JSONL，便于 Trace 和恢复。</p>
-<p>Core 使用同一个 callId 保存 tool 消息。这使下一轮模型可以明确知道结果属于哪次请求。Renderer 同时收到 <code>tool.requested</code> 和 <code>tool.completed</code> 事件，将过程显示成“搜索代码 · 已完成”卡片。默认卡片只展示摘要，详细参数和命中可按需展开。</p>
-
-<h2>第八步：模型读取实现与测试</h2>
-<p>主循环开始第二次迭代。ContextBuilder 保留用户目标、搜索 Observation 和完整工具协议组。模型看到搜索结果后调用 <code>read_files</code>，一次读取组件和测试文件。批量读取减少多次 HTTP 往返，也让模型同时比较实现与测试。</p>
-<p>读取工具返回代码正文，并创建 FileEvidence。Evidence 记录路径、行范围、内容哈希和当前 revision。若模型在文件未变化时再次读取相同范围，系统可以返回 evidenceRef，减少重复代码进入上下文。文件发生修改后，对应 Evidence 会失效。</p>
-<p>这一次模型发现提交函数只检查 <code>if (!title)</code>。字符串 <code>"   "</code> 在 JavaScript 中为真，因此纯空格可以通过。现有测试只覆盖空字符串。模型据此调用 <code>set_plan</code>，把计划更新为“统一 trim 后校验；补充纯空格测试；运行相关测试”。Renderer 在消息区域显示计划卡。</p>
-
-<h2>第九步：写入前经过模式和审批</h2>
-<p>模型下一轮提出 <code>apply_patch</code>。写入工具具有副作用，Core 根据当前模式决定如何处理。Plan 模式直接拒绝写入，并把原因作为 Tool Result 返回；Guided 模式把 Turn 状态改为 <code>waitingApproval</code>，生成审批卡；Auto 模式允许工作区内普通文件修改自动继续。</p>
-<p>假设当前使用 Guided。Renderer 收到 <code>approval.requested</code>，展示目标文件、修改类型和风险说明。用户点击允许后，Renderer 调用 <code>approval.resolve</code>。Main 将决定交给 Core，等待中的 Promise 被解决，Turn 恢复 <code>running</code>。等待期间没有轮询，也没有继续消耗模型 token。</p>
-<p>用户也可以拒绝。拒绝会生成带原因的 Tool Result，模型可以缩小修改范围、继续解释或询问用户。审批属于正常控制流程，不会把 Turn 标记为系统失败。</p>
-
-<h2>第十步：创建恢复点并修改文件</h2>
-<p>执行补丁前，Tools 读取目标文件的当前内容，记录内容哈希，并创建 Snapshot。Snapshot 保存修改前文本。多个相关文件的修改还会组织成 Checkpoint，供用户稍后恢复。</p>
-<p><code>apply_patch</code> 先解析补丁，再检查全部旧代码片段是否与磁盘一致。只有所有目标都能匹配时才开始写入。每个文件使用临时文件和 rename 完成原子替换；多文件过程中任一写入失败，系统使用备份恢复已经修改的文件。</p>
-<p>补丁成功后产生 ChangeSet，记录文件路径、修改前后哈希和行数统计。ContextLedger 的 <code>changeRevision</code> 从 0 增加到 1。TodoForm.tsx 和测试文件的旧 Evidence 随即失效。Renderer 收到 <code>changes.created</code> 后，右侧 Changes 标签显示两个文件和 Diff。</p>
-
-<div class="diagram">
-  <div class="diagram-title">一次文件修改的内部顺序</div>
-  <div class="flow-row">
-    <div class="flow-node primary">apply_patch 请求</div><div class="flow-arrow">→</div>
-    <div class="flow-node">权限审批</div><div class="flow-arrow">→</div>
-    <div class="flow-node">Snapshot + hash</div><div class="flow-arrow">→</div>
-    <div class="flow-node">校验全部旧内容</div><div class="flow-arrow">→</div>
-    <div class="flow-node">原子写入</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">ChangeSet + revision 1</div>
-  </div>
-</div>
-
-<h2>第十一步：运行测试并读取真实结果</h2>
-<p>模型根据计划调用 <code>run_command</code>，例如 <code>pnpm test TodoForm</code>。Guided 模式再次请求审批；Auto 模式可以自动执行被识别为低风险的测试命令。命令 cwd 位于当前 Workspace，默认超时 60 秒。</p>
-<p>Runtime 启动受控 PowerShell 子进程。stdout 和 stderr 分别流式发送，Renderer 在 Terminal 标签按命令分组显示。输出分别受到 1 MiB 上限约束。超时或取消时，系统终止整个进程树，防止测试启动的子进程继续留在后台。</p>
-<p>假设第一次测试失败，因为实现调用了 <code>title.trim()</code>，而某个旧测试传入了 undefined。Tool Result 明确包含 <code>ok=false</code>、exitCode、关键错误行和耗时。错误不会被隐藏，Turn 也不会立刻结束。Observation 把必要诊断交给模型，完整日志留在事件历史。</p>
-
-<h2>第十二步：模型根据失败继续修复</h2>
-<p>主循环进入下一轮。模型看到用户目标、当前 revision、刚才的失败诊断和最新 Diff。它重新读取相关类型定义，确认 title 可能为 undefined，于是提出更小的补丁：先把值规范化为 <code>(title ?? "").trim()</code>，再判断是否为空。</p>
-<p>新的写入再次经过权限策略和 Snapshot。成功后 changeRevision 增加到 2。revision 1 上的测试失败记录仍保留，用来解释修复原因；它不会被当作当前结果。模型再次运行测试，这次 exitCode 为 0，Core 建立 <code>ValidationRecord</code>，记录命令、status=passed、revision=2、摘要和时间。</p>
-<p>这一过程体现了 Agent 的闭环：模型先决策，工具给出真实观察，模型再依据观察调整方案。Agent Core 负责保证每一轮使用的是当前事实。</p>
-
-<div class="diagram">
-  <div class="diagram-title">模型与工具的多轮闭环</div>
-  <div class="flow-row">
-    <div class="flow-node primary">模型分析</div><div class="flow-arrow">→</div>
-    <div class="flow-node">读取或修改</div><div class="flow-arrow">→</div>
-    <div class="flow-node">运行测试</div><div class="flow-arrow">→</div>
-    <div class="flow-node">失败诊断</div><div class="flow-arrow">→</div>
-    <div class="flow-node">重新规划</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">测试通过</div>
-  </div>
-</div>
-
-<h2>第十三步：Core 判断任务能否结束</h2>
-<p>测试通过后，模型可以调用 <code>finish</code>，提交修改摘要和验证说明；也可以返回一段没有 Tool Call 的最终文本。Core 接到 finish 时检查 Ledger：当前 revision 是 2，成功验证也属于 revision 2，因此验证有效。Turn 状态进入 <code>completed</code>。</p>
-<p>如果模型修改文件后没有重新测试，Core 会发现最新成功验证属于旧 revision。任务仍可完成，因为有些任务只需要分析或文档修改，但最终结果会明确显示“当前修改未验证”或“验证已过期”。用户可以据此决定是否继续。</p>
-<p>Core 还有其他终止分支。用户取消进入 <code>cancelled</code>；达到 24 次模型迭代进入 <code>limitReached</code>；不可恢复的认证或协议错误进入 <code>failed</code>；连续三次工具失败会判定缺乏进展并停止。每条路径都会产生对应终态事件。</p>
-
-<h2>第十四步：界面如何得到最终结果</h2>
-<p>执行过程中，Renderer 一直订阅 Main 推送的 AgentEvent。它依据事件类型更新不同区域：<code>message.delta</code> 追加模型文字，<code>plan.updated</code> 更新计划卡，<code>tool.output</code> 写入 Terminal，<code>changes.created</code> 更新 Diff，<code>turn.completed</code> 显示完成摘要。</p>
-<p>Renderer 不会通过“最后一条消息看起来像完成”来猜测状态。Turn 的终态由 Core 产生，界面只呈现这个事实。用户此时可以查看修改文件、测试命令、耗时、token、工具轨迹和 Review 结果，也可以继续输入下一条消息。</p>
-<p>如果用户发送“再解释一下为什么要处理 undefined”，Renderer 会在同一个 Session 中创建新的 Turn。ContextBuilder 从 Session 历史和 Ledger 中取得相关事实，模型能够基于刚才的修改继续回答。</p>
-
-<h2>第十五步：历史如何保存与恢复</h2>
-<p>SessionStore 将重要事件按顺序追加到 <code>events.jsonl</code>。每条事件携带 sessionId、turnId、seq、timestamp、type 和 payload。Session 元数据与 ContextLedger 状态使用临时文件写入后 rename，降低写到一半造成损坏的概率。Snapshot 和 Checkpoint 单独保存在恢复目录。</p>
-<p>关闭 SeeCoder 后，内存中的 fetch 和子进程都会结束。再次启动时，Core 读取 Session 元数据并回放 JSONL，恢复用户消息、工具记录、计划、ChangeSet 和终态。恢复过程只读取已经发生的事实，不会重新执行补丁或测试命令。</p>
-<p>如果应用在一条 JSONL 写到一半时退出，恢复器会跳过损坏尾行并记录诊断，前面完整事件仍可使用。若上次 Turn 没有正常终态，系统将它恢复为中断失败，避免界面永久显示“运行中”。</p>
-
-<h2>用户中途追加和取消时走哪条路</h2>
-<p>运行过程中输入 Follow-up，Renderer 调用 <code>turn.followUp</code>。Main 将文字交给 Core 的待处理队列。当前模型请求和工具执行结束后，在下一次 ContextBuilder 运行前，Core 才把 Follow-up 注入消息。这个边界保证已经发出的 HTTP 请求保持稳定，同时允许用户及时纠正任务方向。</p>
-<p>用户点击停止时，Renderer 调用 <code>turn.cancel</code>。Core 触发 AbortController。正在请求 DeepSeek 时，fetch 收到取消；正在运行命令时，Runtime 终止进程树；正在等待审批或输入时，等待 Promise 被结束；子 Agent 也收到父 signal。最后 Core 清理 <code>activeSessionTurns</code> 并发送 <code>turn.cancelled</code>，界面停止加载。</p>
-
-<h2>把完整调用链连起来</h2>
-<div class="diagram">
-  <div class="diagram-title">从用户输入到任务完成</div>
-  <div class="layer-stack">
-    <div class="layer"><b>1 · 用户与 Renderer</b>选择 Workspace 和 Session，输入任务，点击发送</div>
-    <div class="layer"><b>2 · Preload</b>把 turn.start 转换成受控 IPC；不暴露 Node.js 权限</div>
-    <div class="layer"><b>3 · Electron Main</b>校验参数、读取配置，把任务交给 Agent Core</div>
-    <div class="layer"><b>4 · Agent Core</b>创建 Turn、建立取消信号、构建上下文、启动主循环</div>
-    <div class="layer"><b>5 · ModelProvider</b>请求 DeepSeek，解析 SSE 文本和 Tool Call</div>
-    <div class="layer"><b>6 · Tool Runtime</b>校验路径与权限，读取代码、修改文件、运行测试</div>
-    <div class="layer"><b>7 · Agent Core</b>保存 Observation，按真实结果继续、修复或终止</div>
-    <div class="layer"><b>8 · Storage 与 Main</b>保存事件、Ledger、ChangeSet 和 Checkpoint，向界面推送事件</div>
-    <div class="layer"><b>9 · Renderer</b>显示最终回答、Diff、验证证据和执行轨迹</div>
-  </div>
-</div>
-
-<h2>最后记住四个职责</h2>
-<p><strong>Renderer 负责交互。</strong>它收集用户操作并显示后台事件。<strong>Preload 负责限制通信。</strong>它只开放经过设计的 SeeCoder API。<strong>Electron Main 负责可信本地能力。</strong>它管理配置、文件、命令、存储和 Agent Core。<strong>Agent Core 负责完成任务。</strong>它让模型与工具形成循环，并处理状态、上下文、审批、取消、终止和错误。</p>
-<p>沿着这四个职责看源码，可以快速判断问题所在。按钮没有正确发出调用时检查 Renderer 与 Preload；IPC 参数或配置错误时检查 Main；模型循环、状态或工具反馈错误时检查 Agent Core；文件和命令行为错误时检查 Tool Runtime。</p>
-
-<div class="defense"><h2>怎样讲清楚</h2><p>“用户点击发送后，Renderer 通过 Preload 的受控 IPC 把任务交给 Electron Main。Main 是本地后端，它校验参数并启动 Agent Core。Core 建立 Turn、构建上下文、流式调用 DeepSeek。模型提出 Tool Call，Core 经过权限与路径检查后执行本地工具，再把真实结果反馈模型。文件修改产生 Checkpoint 和 revision，测试记录与 revision 绑定。Core 最终决定完成、失败、取消或达到上限，Main 将事件推回 Renderer，SessionStore 保存完整过程。”</p></div>
+<p class="lead">用“修复空标题可以提交，并补充测试”这一件事，看清 SeeCoder 从接收任务到给出结果的完整路径。</p>
+<h2>第一步：界面提交任务</h2>
+<p>Renderer 把当前 Session、用户文字、附件和可选 Skill 交给 Electron Main。Main 校验参数后调用 <code>AgentCore.startTurn()</code>。这个方法很快返回，真正的模型和工具执行在后台继续，因此界面不会被长任务卡住。</p>
+<h2>第二步：TurnRunner 建立运行状态</h2>
+<p>TurnRunner 创建 Turn，保存用户消息，把目标写入任务账本，然后进入 <code>running</code>。同一个 Session 同时只允许一个活动 Turn，避免两段对话历史互相穿插。</p>
+<h2>第三步：为模型准备必要信息</h2>
+<p>上下文构建器不会简单发送全部历史。它组合当前目标、计划、最近消息、相关文件证据、历史摘要和工具说明，并确保工具请求与工具结果保持完整配对。</p>
+<h2>第四步：模型选择下一步</h2>
+<p>模型可能先请求 <code>search_text</code> 定位表单，再请求 <code>read_files</code> 查看实现和测试。模型只产生请求，真正的文件读取由本机工具执行。</p>
+<h2>第五步：工具经过统一执行管线</h2>
+<ol class="plain-list"><li>确认工具存在，并校验参数。</li><li>检查执行模式、风险和用户审批。</li><li>运行拦截器与 Hook。</li><li>执行工具，并处理取消和超时。</li><li>保存结果；文件变化同时生成可撤销记录。</li></ol>
+<p>只读工具只有在整组都声明为安全并行时才会并行。写文件和补丁会按目标文件加锁；命令可能修改任意文件，因此锁住整个工作区。</p>
+<h2>第六步：测试结果回到下一轮</h2>
+<p>如果测试失败，结果会作为新的事实返回模型。模型可以继续修改并再次验证。每次文件变化都会增加代码版本号，旧测试不会被误认为当前代码的有效证明。</p>
+<h2>第七步：任务结束</h2>
+<p>模型可以调用 <code>finish</code>，也可以直接给出不含工具请求的最终回复。TurnRunner 将状态改为 <code>completed</code>，执行结束 Hook，释放运行资源，并把最终事件发给界面。</p>
+<pre class="code-block"><span class="code-label">概念流程</span>用户任务
+  → startTurn
+  → 构建上下文
+  → 调用模型
+  → 执行工具
+  → 保存结果
+  → 仍需处理？继续下一轮
+  → 完成或失败</pre>
+<h2>本章只需记住</h2>
+<div class="callout"><span class="callout-title">真实闭环</span><p>一次任务不是“模型回答一次”，而是“模型决定、程序执行、结果反馈、再次决定”，直到出现明确终态。</p></div>

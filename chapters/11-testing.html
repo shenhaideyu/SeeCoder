@@ -1,55 +1,24 @@
-<span class="chapter-kicker">第三部分 · 保证正确运行</span>
-<h1>测试、评估与可观测性</h1>
-<p class="lead">Agent 输出具有不确定性，只看一次演示成功不能证明系统可靠。SeeCoder 把协议、状态和工具做成确定性测试，再用真实 Prompt 评估端到端任务成功率。</p>
+<span class="chapter-kicker">第三部分 · 保证可靠</span>
+<h1>测试怎样证明系统可信</h1>
+<p class="lead">Agent 的正确性不能只看最终回答，还要验证执行顺序、文件结果、事件轨迹和异常路径。</p>
 
-<h2>测试对象不是只有最终回答</h2>
-<p>一次任务可能最终给出正确文字，但中间重复执行副作用、越出工作区或错误标记测试状态，仍然是不合格。测试需要同时检查消息协议、状态转换、Tool Call 数量、文件结果、验证 revision、取消效果和最终终态。</p>
+<h2>四类验证</h2>
+<table class="data-table"><thead><tr><th>层级</th><th>验证重点</th></tr></thead><tbody><tr><td>Lint</td><td>代码风格、未使用变量和常见错误。</td></tr><tr><td>Typecheck</td><td>Protocol、IPC 和模块接口是否一致。</td></tr><tr><td>Vitest</td><td>Core、Storage、Tools、Model 和界面状态的行为。</td></tr><tr><td>Electron E2E</td><td>真实窗口、输入、事件和页面交互。</td></tr></tbody></table>
 
-<h2>四层测试体系</h2>
-<table class="data-table">
-  <thead><tr><th>层次</th><th>主要验证</th><th>为什么需要</th></tr></thead>
-  <tbody>
-    <tr><td>单元测试</td><td>SSE 分片、Schema、预算、路径、补丁、状态转换</td><td>快速定位纯逻辑错误</td></tr>
-    <tr><td>集成测试</td><td>Fake Provider + 临时 Git 仓库 + JSONL 恢复</td><td>验证多个模块形成真实闭环</td></tr>
-    <tr><td>Electron E2E</td><td>创建、发送、审批、取消、Changes、Terminal、Trace</td><td>证明用户界面和 Main 真正连接</td></tr>
-    <tr><td>真实 Prompt Eval</td><td>简单、中等、复杂任务及长上下文</td><td>观察真实模型策略和任务成功率</td></tr>
-  </tbody>
-</table>
+<h2>当前核心测试覆盖什么</h2>
+<ul><li>模型流式文字与工具参数聚合。</li><li>审批、取消、Hook、拦截器和动态干预。</li><li>上下文压缩、摘要降级、Artifact 和 token 校准。</li><li>并行安全工具、工具超时和异常归一化。</li><li>ChangeSet 撤销、检查点冲突和验证版本。</li><li>Session 增量分支、压缩下界、循环引用和父分支删除保护。</li><li>同文件写入排队、不同文件并行以及异常后的锁释放。</li></ul>
 
-<h2>Fake Provider 为什么重要</h2>
-<p>真实模型响应会变化，也需要网络和费用，不能用于精确断言状态机。Fake Provider 按脚本返回文本、Tool Call、错误和 usage，可稳定复现“读取 → 修改 → 测试失败 → 修复 → 完成”。摘要请求通过 purpose 区分，不会消耗主 Agent 预设响应序列。</p>
-<p>Fake 测试证明 Harness 按协议运行，真实 Eval 证明模型能在这个 Harness 中完成自然任务。两者互补，不能互相替代。</p>
+<h2>为什么使用 FakeModelProvider</h2>
+<p>测试预先给出模型事件序列，因此不依赖网络、API Key 或模型随机性。它可以稳定制造工具调用、截断、重试、错误和摘要结果，让状态机的每条分支都可重复验证。</p>
 
-<h2>上下文方案怎样量化</h2>
-<p>长任务记录 beforeTokens、afterTokens、availableInput、summarySource、retrievedEntries 和 droppedEvidence。确定性验收包括：压缩后低于 availableInput 的 60%；工具协议组完整率 100%；摘要失败不增加 Turn 失败；相同文件重复正文注入减少至少 50%；固定夹具峰值输入 token 相比旧方案下降至少 25%。</p>
-<p>真实 Eval 还记录重复读取、无效工具调用、修改文件范围、测试失败后的恢复、最终验证 revision 和完成状态。成功率不能只按“模型说完成”计算，而要按工作区最终状态和验证证据计算。</p>
-
-<h2>一条任务怎样形成 Trace</h2>
-<div class="diagram">
-  <div class="diagram-title">端到端可观测链路</div>
-  <div class="flow-row">
-    <div class="flow-node primary">sessionId<br/>turnId</div><div class="flow-arrow">→</div>
-    <div class="flow-node">模型请求<br/>iteration</div><div class="flow-arrow">→</div>
-    <div class="flow-node">toolCallId<br/>duration</div><div class="flow-arrow">→</div>
-    <div class="flow-node">ChangeSet<br/>revision</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">Validation<br/>终态</div>
-  </div>
-</div>
-<p>每个事件携带 sessionId、可选 turnId、timestamp 和 seq，工具事件继续携带 callId。开发日志记录类别、耗时和错误码；普通聊天只呈现用户做决定所需的信息。Trace 面板将主 Agent 与子 Agent 的阶段、token、耗时和结果组织在一起，因此能够回答“点击发送后后台发生了什么”。</p>
-
-<h2>性能重点看哪里</h2>
-<p>首屏主要受 Renderer 资源影响；发送到首个增量受 ContextBuilder 和模型网络影响；长会话受模型输入规模和 UI 消息数量影响；命令任务还要关注孤儿进程。上下文预算和 Observation 压缩解决网络与模型输入增长，工具卡默认折叠减少渲染噪音，AbortSignal 与进程树终止处理后台资源。</p>
-<p>当前没有数据库、WebSocket、Redis 或 Queue，所以不应编造这些监控项。Electron Main 内部事件流通过 IPC 到 Renderer；模型流使用 SSE；本地命令使用子进程流。</p>
-
-<h2>发布门禁</h2>
+<h2>一次改动的最低验证</h2>
 <pre class="code-block"><span class="code-label">项目命令</span>pnpm lint
 pnpm typecheck
-pnpm test:unit
-pnpm test:integration
-pnpm test:e2e
-pnpm test:eval:unit
-pnpm build</pre>
-<p>核心、工具和权限代码以单元与集成测试为主，UI 行为使用 Electron E2E。真实 DeepSeek Eval 在独立工作区运行，不能让 SeeCoder 修改自己的源码目录，以免与正在开发的 Codex 进程产生并行写入冲突。</p>
+pnpm test</pre>
+<p>本轮源码更新的最终结果是 10 个测试文件、94 项测试通过。文档站还需要额外检查章节加载、图片路径、搜索、桌面布局和移动端布局。</p>
 
-<div class="defense"><h2>怎样讲清楚</h2><p>“我把模型不确定性与 Harness 确定性分开测试。Fake Provider 精确验证协议、状态和失败路径；真实 Prompt Eval 评估自然任务成功率。最终结论来自文件结果、工具轨迹和当前 revision 的验证，而不是模型自述。”</p></div>
+<h2>什么叫“验证证据”</h2>
+<p>“应该没问题”不是证据。证据至少包含运行了什么命令、退出状态和测试数量。涉及文件行为时，还要断言磁盘内容；涉及状态机时，还要断言事件和终态。</p>
 
+<h2>本章只需记住</h2>
+<div class="callout"><span class="callout-title">测试目标</span><p>不仅验证成功路径，还要验证取消、超时、失败、重启、冲突和并发。Agent 的可靠性主要体现在这些边界上。</p></div>

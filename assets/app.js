@@ -1,16 +1,16 @@
 const chapters = [
-  { id: "01", group: "建立整体认识", title: "初识 SeeCoder", file: "01-overview.html" },
-  { id: "02", group: "建立整体认识", title: "一次任务怎样完成", file: "02-task-journey.html" },
-  { id: "03", group: "建立整体认识", title: "系统架构与信任边界", file: "03-architecture.html" },
-  { id: "04", group: "理解核心机制", title: "Session 与对话历史", file: "04-session-history.html" },
-  { id: "05", group: "理解核心机制", title: "上下文管理与压缩", file: "05-context.html" },
-  { id: "06", group: "理解核心机制", title: "Agent 主循环", file: "06-agent-loop.html" },
-  { id: "07", group: "理解核心机制", title: "模型输出解析", file: "07-model-parsing.html" },
-  { id: "08", group: "理解核心机制", title: "工具与本地执行", file: "08-tools.html" },
-  { id: "09", group: "保证正确运行", title: "终止条件与错误处理", file: "09-stop-errors.html" },
-  { id: "10", group: "保证正确运行", title: "安全、审批与恢复", file: "10-safety-recovery.html" },
-  { id: "11", group: "保证正确运行", title: "测试、评估与可观测性", file: "11-testing.html" },
-  { id: "12", group: "进入源码与答辩", title: "源码阅读与答辩路线", file: "12-defense.html" },
+  { id: "01", group: "先看全局", title: "SeeCoder 是怎样的系统", file: "01-overview.html" },
+  { id: "02", group: "先看全局", title: "一次任务怎样完成", file: "02-task-journey.html" },
+  { id: "03", group: "先看全局", title: "核心模块怎样分工", file: "03-architecture.html" },
+  { id: "04", group: "理解核心", title: "Session、事件与分支", file: "04-session-history.html" },
+  { id: "05", group: "理解核心", title: "上下文怎样保持清醒", file: "05-context.html" },
+  { id: "06", group: "理解核心", title: "TurnRunner 主循环", file: "06-agent-loop.html" },
+  { id: "07", group: "理解核心", title: "动态干预与生命周期", file: "07-model-parsing.html" },
+  { id: "08", group: "理解核心", title: "工具执行与并发控制", file: "08-tools.html" },
+  { id: "09", group: "保证可靠", title: "模型协议与流式解析", file: "09-stop-errors.html" },
+  { id: "10", group: "保证可靠", title: "终止、安全与恢复", file: "10-safety-recovery.html" },
+  { id: "11", group: "保证可靠", title: "测试怎样证明系统可信", file: "11-testing.html" },
+  { id: "12", group: "进入源码", title: "源码阅读路线", file: "12-defense.html" },
 ];
 
 const state = {

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="560" viewBox="0 0 1080 560" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 系统全景</title><desc id="desc">界面经由安全桥接调用主进程，主进程装配 Agent Core，Core 再协调状态机、上下文、工具和存储。</desc>
+  <style>.bg{fill:#fbf9fd}.box{fill:#fff;stroke:#d8c0ef;stroke-width:2}.core{fill:#f1e8fb;stroke:#8247d6;stroke-width:3}.safe{fill:#eefaf6;stroke:#31a77c;stroke-width:2}.t{font:600 21px 'Microsoft YaHei',sans-serif;fill:#252127}.s{font:15px 'Microsoft YaHei',sans-serif;fill:#675e6d}.a{stroke:#8247d6;stroke-width:3;fill:none;marker-end:url(#m)}</style>
+  <defs><marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#8247d6"/></marker></defs>
+  <rect class="bg" width="1080" height="560" rx="24"/>
+  <rect class="box" x="55" y="70" width="210" height="105" rx="16"/><text class="t" x="160" y="112" text-anchor="middle">Renderer</text><text class="s" x="160" y="142" text-anchor="middle">页面、输入、审批、轨迹</text>
+  <rect class="safe" x="330" y="70" width="210" height="105" rx="16"/><text class="t" x="435" y="112" text-anchor="middle">Preload</text><text class="s" x="435" y="142" text-anchor="middle">只暴露受控 IPC</text>
+  <rect class="box" x="605" y="70" width="210" height="105" rx="16"/><text class="t" x="710" y="112" text-anchor="middle">Electron Main</text><text class="s" x="710" y="142" text-anchor="middle">可信本地后端</text>
+  <rect class="core" x="330" y="235" width="485" height="105" rx="18"/><text class="t" x="572" y="278" text-anchor="middle">AgentCore · 对外门面与依赖装配</text><text class="s" x="572" y="308" text-anchor="middle">统一入口，不再承载整条 Agent 循环</text>
+  <rect class="box" x="55" y="410" width="210" height="95" rx="16"/><text class="t" x="160" y="448" text-anchor="middle">TurnRunner</text><text class="s" x="160" y="477" text-anchor="middle">一轮任务的状态机</text>
+  <rect class="box" x="300" y="410" width="210" height="95" rx="16"/><text class="t" x="405" y="448" text-anchor="middle">Context</text><text class="s" x="405" y="477" text-anchor="middle">选择模型需要的事实</text>
+  <rect class="box" x="545" y="410" width="210" height="95" rx="16"/><text class="t" x="650" y="448" text-anchor="middle">Tool Executor</text><text class="s" x="650" y="477" text-anchor="middle">校验、审批、执行、记账</text>
+  <rect class="box" x="790" y="410" width="210" height="95" rx="16"/><text class="t" x="895" y="448" text-anchor="middle">Session Store</text><text class="s" x="895" y="477" text-anchor="middle">事件、分支、快照、恢复</text>
+  <path class="a" d="M265 122H330"/><path class="a" d="M540 122H605"/><path class="a" d="M710 175V235"/><path class="a" d="M572 340V375H160V410"/><path class="a" d="M572 375H405V410"/><path class="a" d="M572 375H650V410"/><path class="a" d="M572 375H895V410"/>
+</svg>

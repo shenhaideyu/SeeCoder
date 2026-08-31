@@ -1,238 +1,26 @@
-<span class="chapter-kicker">第二部分 · 理解核心机制</span>
-<h1>模型输出解析</h1>
-<p class="lead">ModelProvider 负责把 SeeCoder 的统一 ModelRequest 转换成 OpenAI 兼容 HTTP 请求，再把 DeepSeek 持续返回的 SSE 字节流解析成统一 ModelEvent。Agent Core 只处理文本增量、工具增量、token、重试、完成和错误，无需了解供应商响应的字段位置。</p>
+<span class="chapter-kicker">第二部分 · 理解核心</span>
+<h1>动态干预与生命周期</h1>
+<p class="lead">任务运行后，用户仍然可以改变方向；扩展代码也可以在关键步骤前后检查或改写数据。</p>
 
-<h2>先理解一次模型调用的输入和输出</h2>
-<p>Agent Core 每次 iteration 都会创建一个 <strong>ModelRequest</strong>。它包含消息、工具说明、模型名称、temperature 和最大输出 token。消息已经由 ContextBuilder 处理，包含系统规则、当前任务状态、相关代码证据、最近历史和 Tool Results。</p>
-<p>Provider 接收 ModelRequest 与 AbortSignal。它的返回类型是 <code>AsyncIterable&lt;ModelEvent&gt;</code>，可以理解为“能够按时间逐个产生事件的异步序列”。模型生成一个字，Provider 可以立即产生 textDelta；模型生成一段工具参数，Provider 产生 toolCallDelta；请求结束后产生 completed。</p>
+<h2>Steering 和 Follow-up 有什么区别</h2>
+<table class="data-table"><thead><tr><th>类型</th><th>什么时候生效</th><th>适合什么内容</th></tr></thead><tbody><tr><td>Steering</td><td>下一次模型调用边界优先注入</td><td>“停止改后端，只修前端”这类方向调整</td></tr><tr><td>Follow-up</td><td>当前工作完成后按顺序进入上下文</td><td>“完成后再补一个测试”这类追加任务</td></tr></tbody></table>
 
-<pre class="code-block"><span class="code-label">内部统一事件</span>type ModelEvent =
-  | { type: "textDelta"; text: string }
-  | { type: "toolCallDelta"; callId: string; name?: string; argsDelta: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number }
-  | { type: "completed"; finishReason: string }
-  | { type: "retry"; attempt: number }
-  | { type: "error"; code: string; message: string; retryable: boolean };</pre>
+<h2>InterventionQueue 解决什么问题</h2>
+<p>用户消息可能在模型输出或工具执行期间到达。直接修改正在使用的消息数组会造成协议断裂。InterventionQueue 先按 Turn 保存消息，再由 TurnRunner 在安全边界消费。每条干预都有 pending、consumed 或 discarded 状态，并写入事件。</p>
 
-<p>这个事件协议是 ModelProvider 与 Agent Core 的边界。DeepSeek、其他 OpenAI 兼容服务和 FakeModelProvider 都向 Core 提供相同事件。Core 不需要为每个供应商重写主循环。</p>
+<h2>拦截器可以做什么</h2>
+<p><code>AgentInterceptorPipeline</code> 是进程内扩展点。拦截器可以观察关键阶段，也可以返回三种结果：继续、阻止或替换。当前阶段包括用户输入、Turn 启动前、模型请求前、文字分片、工具调用前和工具结果后。</p>
+<pre class="code-block"><span class="code-label">概念接口</span>intercept(context) →
+  continue
+  block(reason)
+  replace(newValue)</pre>
+<p>拦截器异常不会破坏整个事件链，而会转成可控错误。系统也不会把模型私有思维写入事件或交给扩展。</p>
 
-<h2>为什么使用流式响应</h2>
-<p>如果等待模型生成完整响应后再显示，复杂任务可能几十秒没有任何反馈。SeeCoder 在请求体中设置 <code>stream: true</code>，服务端会把生成结果分批发送。Renderer 因此可以尽早显示行动说明，Core 也能逐步收集 Tool Call。</p>
-<p>OpenAI 兼容接口通常使用 <strong>SSE</strong>，全称 Server-Sent Events。服务端保持一个 HTTP 连接，并连续发送以 <code>data:</code> 开头的文本行。每一行可以包含一段 JSON。最后通常发送 <code>data: [DONE]</code>。</p>
+<h2>Hook 与拦截器的区别</h2>
+<p>Hook 来自受信任的本地配置，可以在工具执行前、文件修改后和 Turn 结束时运行命令。拦截器是 Agent Core 内的程序扩展点，可以改写模型请求或工具数据。二者都必须经过超时、取消和结果归一化。</p>
 
-<div class="diagram">
-  <div class="diagram-title">从 ModelRequest 到 Agent Core</div>
-  <div class="flow-row">
-    <div class="flow-node primary">ModelRequest</div><div class="flow-arrow">→</div>
-    <div class="flow-node">OpenAI 消息序列化</div><div class="flow-arrow">→</div>
-    <div class="flow-node">fetch POST</div><div class="flow-arrow">→</div>
-    <div class="flow-node">DeepSeek SSE</div><div class="flow-arrow">→</div>
-    <div class="flow-node">流式解析</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">ModelEvent</div>
-  </div>
-</div>
+<h2>事件为什么重要</h2>
+<p>事件同时服务三件事：SessionStore 用它恢复状态；Renderer 用它更新界面；日志和测试用它证明执行顺序。事件是公开事实，不包含模型内部推理。</p>
 
-<h2>发送前先整理工具消息协议</h2>
-<p>Session 历史中可能包含 assistant Tool Calls 和对应 Tool Results。OpenAI 兼容协议要求每条 tool 消息紧跟声明它的 assistant 消息，并且每个 callId 都有且只有一个结果。应用异常退出或旧历史迁移时，消息组可能不完整。</p>
-<p><code>normalizeToolProtocolMessages</code> 是 Provider 发送前的最后一道检查。它跳过孤立 tool 消息；遇到 assistant Tool Calls 时，收集后面连续的 tool 消息，确认 callId 唯一并且全部配对。完整组按 Tool Call 原顺序输出。不完整组不发送工具字段，其中可见自然语言说明仍可保留。</p>
-<p>ContextBuilder 之前也运行过 <code>sanitizeModelMessages</code>。Provider 再检查一次可以防止恢复、裁剪或调用方错误产生 HTTP 400。协议校验属于低成本的边界保护。</p>
-
-<h2>内部消息怎样转换成接口格式</h2>
-<p>SeeCoder 内部使用 camelCase，例如 <code>toolCallId</code> 和 <code>toolCalls</code>。Chat Completions 使用 snake_case，例如 <code>tool_call_id</code> 和 <code>tool_calls</code>。<code>serializeModelMessages</code> 负责转换字段。</p>
-<p>普通文本直接作为 content。图片 ContentBlock 转成 <code>image_url</code>，其中 URL 是 Main 读取后形成的 data URL。assistant Tool Calls 转成 function 类型，包含 id、name 和 arguments 字符串。tool 消息带有 tool_call_id 和可选 name。</p>
-
-<pre class="code-block"><span class="code-label">发送给兼容接口的消息</span>{
-  "role": "assistant",
-  "content": "我先搜索提交入口。",
-  "tool_calls": [
-    {
-      "id": "call_search",
-      "type": "function",
-      "function": {
-        "name": "search_text",
-        "arguments": "{\"query\":\"addTodo\"}"
-      }
-    }
-  ]
-}</pre>
-
-<h2>HTTP 请求怎样构造</h2>
-<p>Provider 从配置的 <code>apiKeyEnv</code> 读取 API Key。Main 负责把环境变量或安全存储中解密出的 Key 放到主进程运行环境，Renderer 无法取得明文。Key 缺失时 Provider 直接产生 <code>missing_api_key</code>，不会发起网络请求。</p>
-<p>请求地址由 Base URL 去掉末尾斜杠后拼接 <code>/chat/completions</code>。请求方法为 POST，Authorization 使用 Bearer，Content-Type 为 application/json。请求体核心字段如下：</p>
-
-<pre class="code-block"><span class="code-label">实际请求体</span>{
-  model: config.model || request.model,
-  messages: serializeModelMessages(normalizedMessages),
-  tools: request.tools,
-  temperature: config.temperature,
-  max_tokens: config.maxOutputTokens,
-  stream: true,
-  stream_options: { include_usage: true }
-}</pre>
-
-<p>Provider 当前以 ModelConfig 为最终模型参数来源。Main 修改模型配置后会重建 Provider，因此下一次请求会使用新模型、temperature 和输出上限。</p>
-<p>官方 DeepSeek 地址在存在工具 Schema 时会额外设置 <code>thinking: { type: "disabled" }</code>。DeepSeek 思考模式要求后续消息回传 reasoning_content，SeeCoder不保存私有思维链。关闭思考模式可以保持工具协议完整，也符合隐私边界。其他兼容 Base URL 不添加该厂商字段。</p>
-
-<h2>fetch 返回后先检查什么</h2>
-<p>fetch 收到 AbortSignal。用户取消 Turn 时，signal 会中断网络读取。HTTP 响应到达后，Provider先检查 <code>response.ok</code>。非 2xx 响应读取最多 1000 字符错误正文，并根据状态码判断能否自动重试。</p>
-<p>429 表示请求过多；502、503 和 504 通常表示网关或服务暂时不可用。这四类错误最多进行三次总尝试。401、403、400 和 404 等错误通常需要修改 Key、参数或模型配置，Provider 立即产生 http_状态码错误。</p>
-<p>2xx 响应缺少 body 时产生 <code>empty_response</code>。该错误标记 retryable=true，但当前函数会结束本次 stream，不在内部继续循环。Agent Core 将错误作为本 Turn 的模型错误处理。</p>
-
-<h2>网络字节为什么不能直接当作 JSON</h2>
-<p>HTTP body 是 ReadableStream。<code>reader.read()</code> 每次返回一块 Uint8Array 字节。网络块的边界由网络和运行时决定，与字符、SSE 行和 JSON 对象没有固定关系。</p>
-<p>例如服务端发送：</p>
-<pre class="code-block"><span class="code-label">服务端逻辑内容</span>data: {"choices":[{"delta":{"content":"正在搜索"}}]}
-
-</pre>
-<p>客户端可能分三次读到：</p>
-<pre class="code-block"><span class="code-label">可能的网络分片</span>第 1 块：data: {"choices":[{"del
-第 2 块：ta":{"content":"正在
-第 3 块：搜索"}}]}
-</pre>
-<p>如果每块立即执行 JSON.parse，三块都会失败。中文字符的 UTF-8 字节也可能跨块分开。解析器必须先恢复字符，再恢复完整行，最后解析 JSON。</p>
-
-<div class="diagram">
-  <div class="diagram-title">SSE 分层解析</div>
-  <div class="flow-row">
-    <div class="flow-node primary">Uint8Array<br/>网络字节</div><div class="flow-arrow">→</div>
-    <div class="flow-node">TextDecoder<br/>恢复字符</div><div class="flow-arrow">→</div>
-    <div class="flow-node">buffer<br/>拼接半行</div><div class="flow-arrow">→</div>
-    <div class="flow-node">按换行分割</div><div class="flow-arrow">→</div>
-    <div class="flow-node">data: 内容</div><div class="flow-arrow">→</div>
-    <div class="flow-node safe">JSON 对象</div>
-  </div>
-</div>
-
-<h2>TextDecoder 和 buffer 如何配合</h2>
-<p>Provider 创建一个 TextDecoder 和空字符串 buffer。每次 reader.read 后执行：</p>
-<pre class="code-block"><span class="code-label">字符与行缓冲</span>buffer += decoder.decode(bytes, { stream: !readerDone });
-const lines = buffer.split(/\r?\n/);
-buffer = lines.pop() ?? "";</pre>
-<p><code>stream: true</code> 告诉 TextDecoder 后面还有字节。如果当前块停在一个中文字符中间，Decoder 会保存未完成字节，等下一块再输出正确字符。readerDone 时 stream 变为 false，Decoder 刷出剩余内容。</p>
-<p>按换行分割后，最后一项可能是未完成的 SSE 行，所以放回 buffer。前面的 lines 已经完整，可以逐行处理。流结束后若 buffer 仍有非空内容，Provider 还会再尝试解析一次，兼容末尾没有换行的响应。</p>
-
-<h2>parseJsonLine 处理哪些行</h2>
-<p><code>parseJsonLine</code> 先 trim。空行、<code>[DONE]</code> 和没有以 <code>data:</code> 开头的行返回 null。合法 data 行移除前五个字符，再对余下内容 JSON.parse。解析结果必须是对象。</p>
-<p>当前实现对单行非法 JSON 返回 null 并跳过，不立即产生 ModelEvent error。这能够容忍空行、兼容服务的非数据行和偶发格式噪声。它也带来一个边界：如果关键 Tool Call 行损坏，最终可能只得到部分响应。后续 Core 的 arguments 解析、Zod 校验和完成条件会阻止非法动作，但 Provider 还可以继续增强损坏行诊断。</p>
-<p>循环遇到精确的 <code>data: [DONE]</code> 时设置 done=true 并停止读取。结束原因一般已经由之前 JSON 中的 finish_reason 产生 completed 事件。[DONE] 只表示 SSE 传输结束。</p>
-
-<h2>JSON 怎样转换成文本事件</h2>
-<p><code>emitChunk</code> 读取 json.choices 数组，并使用第一项 choices[0]。它取出 first.delta。delta.content 是非空字符串时产生 <code>{ type: "textDelta", text }</code>。</p>
-<p>Agent Core 收到 textDelta 后追加到当前 text，并发出 message.delta。Renderer 可以流式显示内容。空字符串不会生成事件，避免无意义 UI 更新。</p>
-
-<pre class="code-block"><span class="code-label">文本 SSE 示例</span>data: {
-  "choices": [
-    {
-      "delta": { "content": "我先定位提交函数。" },
-      "finish_reason": null
-    }
-  ]
-}</pre>
-
-<h2>Tool Call 为什么会分成很多片段</h2>
-<p>模型生成工具参数的过程也是逐 token 进行。第一段可能提供 callId 和工具名，后续段只提供 arguments 的一部分。一个正常调用可能按下面方式到达：</p>
-
-<pre class="code-block"><span class="code-label">同一个 Tool Call 的多个 Delta</span>片段 1：index=0, id="call_abc", name="search_text", arguments="{\"que"
-片段 2：index=0, arguments="ry\":\"add"
-片段 3：index=0, arguments="Todo\",\"path\":\".\"}"
-
-最终 arguments：{"query":"addTodo","path":"."}</pre>
-
-<p>片段 1 和片段 2 的 arguments 都不是完整 JSON，立即解析会产生错误。Provider 只提取 argsDelta，不调用 JSON.parse。Agent Core 在整个响应流结束后才把同一 callId 的 argsDelta 拼成完整字符串，再进行参数解析。</p>
-
-<h2>index 和 callId 如何识别同一工具</h2>
-<p>delta.tool_calls 是数组。每个工具片段通常包含 index，表示它在本轮工具数组中的位置。callId 可能只在第一段出现。Provider 维护 <code>Map&lt;number, string&gt;</code>，第一次看到 id 时记录 index→id；后续片段缺少 id 时根据 index 找回。</p>
-<p>兼容服务连第一段 id 都没有时，Provider 使用 <code>call-${index}</code> 作为稳定回退。工具名也可能只出现一次，所以 toolCallDelta 的 name 是可选字段。Agent Core 的 Map 会保留已经收到的 name，并持续追加 argsDelta。</p>
-
-<div class="diagram">
-  <div class="diagram-title">Tool Call 聚合过程</div>
-  <div class="layer-stack">
-    <div class="layer"><b>Provider 片段 1</b>index 0 → 保存 callId；产生 name=search_text、argsDelta={"que</div>
-    <div class="layer"><b>Provider 片段 2</b>index 0 → 复用 callId；产生 argsDelta=ry":"add</div>
-    <div class="layer"><b>Provider 片段 3</b>index 0 → 复用 callId；产生 argsDelta=Todo"}</div>
-    <div class="layer"><b>Agent Core</b>按 callId 保存 name，按到达顺序拼接全部 argsDelta</div>
-    <div class="layer"><b>流结束</b>得到完整 arguments；JSON.parse 后进入 ToolRegistry 的 Zod 校验</div>
-  </div>
-</div>
-
-<h2>多个 Tool Call 同时返回怎样处理</h2>
-<p>模型可以在一轮同时请求读取组件和测试。delta.tool_calls 中会出现 index 0 与 index 1，Provider 分别维护两个 callId。每个 SSE JSON 可以只包含其中一个，也可以同时包含多个。</p>
-<p>Provider 按每个 raw tool call 产生 toolCallDelta。Agent Core 使用 <code>Map&lt;callId, { name, args }&gt;</code> 聚合，所以两个工具的参数不会混在一起。响应结束后，Map 的插入顺序保留模型给出的工具顺序，主 Agent 随后按该顺序执行。</p>
-
-<h2>usage 和 finishReason 怎样解析</h2>
-<p>请求设置 <code>stream_options.include_usage=true</code>。兼容服务若在某个 JSON 中同时提供数字类型的 prompt_tokens 和 completion_tokens，Provider 产生 usage 事件。Core 用它更新 Trace 和界面 token。</p>
-<p>部分兼容服务不支持流式 usage，此时没有 usage 事件，任务仍然可以运行。token 指标显示缺失，不会推测一个伪造值。</p>
-<p>choices[0].finish_reason 是字符串时产生 completed。常见值包括 stop、tool_calls 和 length。Provider 只负责传递值，Core 决定行为：</p>
-<table class="data-table">
-  <thead><tr><th>finishReason</th><th>Provider 行为</th><th>Agent Core 行为</th></tr></thead>
-  <tbody>
-    <tr><td>stop</td><td>产生 completed</td><td>无 Tool Call 时把文本视为最终回答</td></tr>
-    <tr><td>tool_calls</td><td>产生 completed</td><td>保存 assistant Tool Calls 并执行工具</td></tr>
-    <tr><td>length</td><td>产生 completed</td><td>无工具时判定截断，压缩并重试；三次后失败</td></tr>
-    <tr><td>其他字符串</td><td>原样产生 completed</td><td>按是否存在 Tool Call 和文本决定后续</td></tr>
-  </tbody>
-</table>
-
-<h2>工具参数在哪一层校验</h2>
-<p>Provider 的职责是恢复供应商输出，arguments 保持字符串。Agent Core 在流结束后调用 <code>parseArgs</code>。合法 JSON得到对象；非法 JSON 被包装成 <code>{ __invalid: 原始片段 }</code>。</p>
-<p><code>executeCall</code> 随后找到 ToolDefinition，并运行该工具的 Zod Schema。未知工具返回 unknown_tool，参数不匹配返回 invalid_args。模型会在下一轮看到结构化失败结果，有机会修正名称或参数。</p>
-<p>将 JSON 语法恢复和业务参数校验分开有两个好处：流式半成品不会被误判；每个工具仍能使用自己的严格类型规则。例如 read_file 要求 path，run_command 要求 command，二者无法共用同一业务校验。</p>
-
-<h2>HTTP 错误如何重试</h2>
-<p>Provider 的 attempt 从 0 到 2，总共最多三次请求。429、502、503、504 在前两次失败时产生 retry 事件，并等待：</p>
-<pre class="code-block"><span class="code-label">退避时间</span>250 × 2^attempt + random(0..100) 毫秒
-
-第 1 次等待约 250–350 ms
-第 2 次等待约 500–600 ms</pre>
-<p>指数退避给临时故障恢复时间，随机抖动减少多个请求同时再次冲击服务。第三次仍失败时产生 http_状态码 error，并保留 retryable=true。</p>
-<p>网络异常进入 catch。AbortSignal 尚未取消时，前两次同样产生 retry 并退避；第三次产生 network_error。sleep 本身监听 AbortSignal，用户在等待重试时取消，计时器会清理。</p>
-
-<h2>取消怎样中断解析</h2>
-<p>Turn 的 AbortSignal传给 fetch。用户点击停止后，fetch 或 reader.read 会抛出异常。catch 先检查 <code>signal.aborted</code>，产生 cancelled error 并返回。</p>
-<p>Agent Core 在消费流结束后再次检查 signal。即使 Provider已经产生 cancelled 事件，Core 仍以 Turn 的 AbortController 为权威，把状态设为 cancelled，取消子 Agent、审批和命令进程。界面收到 turn.cancelled 后停止加载。</p>
-
-<h2>错误、重试、取消和截断的分工</h2>
-<div class="diagram">
-  <div class="diagram-title">异常分支</div>
-  <div class="layer-stack">
-    <div class="layer"><b>HTTP 429 / 502 / 503 / 504</b>Provider 最多三次总尝试；退避期间可取消</div>
-    <div class="layer"><b>网络中断</b>Provider 重试两次；最终产生 network_error</div>
-    <div class="layer"><b>认证与请求错误</b>401 / 400 等直接产生 http_* error，等待用户修正配置</div>
-    <div class="layer"><b>用户取消</b>AbortSignal 中断 fetch 和退避；Core 将 Turn 设为 cancelled</div>
-    <div class="layer"><b>finishReason=length</b>Provider正常传递；Core 压缩后重试，连续三次产生 output_limit</div>
-    <div class="layer"><b>Tool arguments 非法</b>流结束后 Core JSON.parse；Zod 返回 invalid_args Tool Result</div>
-  </div>
-</div>
-
-<h2>模型文本与工具请求怎样进入历史</h2>
-<p>Provider 结束后，Agent Core 已经取得完整 text 和按 callId 聚合的 Tool Calls。只要二者至少一个存在，Core 保存一条 assistant ModelMessage 和 AssistantMessageItem。</p>
-<p>有文本时发出 message.completed，只有工具时发出 assistant.tool_calls。工具尚未执行时，assistant 请求已经写入 Session。之后每个 Tool Result 以相同 callId 保存。这个顺序保证下一轮 ModelRequest 可以通过 normalizeToolProtocolMessages。</p>
-<p>流式 message.delta 只服务实时 UI，不逐条写入 JSONL。完整文本在 message.completed 时保存一次。长回复因此不会产生数千行磁盘事件。</p>
-
-<h2>用空标题任务走一遍真实解析</h2>
-<p>Agent Core 请求 DeepSeek。第一批 SSE 产生文本：“我先搜索提交入口和测试。”Renderer 立即显示。随后 index 0 的 Tool Call 分三批返回，Provider 记录 call_search，工具名 search_text，逐段输出 arguments。</p>
-<p>最后一段包含 finish_reason=tool_calls，usage 段包含 prompt_tokens 和 completion_tokens，[DONE] 结束传输。Core 得到完整文本和一个 Tool Call：</p>
-<pre class="code-block"><span class="code-label">Core 聚合后的结果</span>text = "我先搜索提交入口和测试。"
-
-calls = {
-  "call_search": {
-    name: "search_text",
-    args: "{\"query\":\"addTodo\",\"path\":\".\"}"
-  }
-}</pre>
-<p>Core 先保存 assistant，再将 args 解析为对象。search_text 的 Zod 校验通过，WorkspacePolicy 检查路径，工具执行并返回命中。Observation 加入 tool 消息。下一次 ModelRequest 会携带完整的 assistant/tool 组，模型继续读取文件。</p>
-
-<h2>FakeModelProvider 如何支持确定性测试</h2>
-<p>FakeModelProvider 也实现 <code>stream</code>。测试预先配置每轮 ModelEvent 数组，例如 textDelta、toolCallDelta 和 completed。每次 agent 请求推进 cursor，因此可以稳定模拟多轮工具循环。</p>
-<p>context_summary 使用独立 summaryTurns。摘要请求不会消耗主任务响应序列。没有配置摘要时返回一份合法的模拟 SemanticSummary。真实网络、SSE 与重试由 OpenAICompatibleProvider 测试；主循环状态由 Fake Provider 精确断言。</p>
-
-<h2>当前实现的边界</h2>
-<p>Provider 只读取 choices[0]，符合当前单候选请求。单行非法 SSE JSON会被忽略，尚未单独记录损坏行数量。流式 usage 取决于兼容服务支持。empty_response 标记为可重试，但当前请求内部不会自动再次尝试。</p>
-<p>主 Agent 模型请求使用 Turn AbortSignal，没有额外的整体超时；网络库自身故障和用户取消能够结束请求。上下文摘要单独设置 30 秒超时。Provider 当前面向 Chat Completions，没有实现 Anthropic 原生协议或 Responses API。</p>
-<p>这些边界都位于 ModelProvider，Agent Core 的 ModelEvent 协议保持稳定。未来增强损坏 SSE 诊断或增加供应商适配时，可以集中修改 Provider。</p>
-
-<h2>最后记住完整管线</h2>
-<p>Core 生成 ModelRequest。Provider 规范化工具消息，转换字段，带 Key 发起 fetch。ReadableStream 返回字节，TextDecoder 恢复字符，buffer 恢复完整行，parseJsonLine 得到 JSON，emitChunk 转成 ModelEvent。Core 聚合 text 和 Tool Calls，流结束后解析 arguments，再由 ToolDefinition 的 Zod 校验业务参数。</p>
-<p>解析过程分层以后，每一层只解决一个问题：网络层恢复字节，SSE 层恢复事件，Provider 层恢复模型语义，Core 层恢复完整调用，Tool Runtime 校验真实动作。</p>
-
-<div class="defense"><h2>怎样讲清楚</h2><p>“SeeCoder 直接使用 fetch 调 OpenAI 兼容接口。SSE 的网络块可能切断中文字符、JSON 行和 Tool arguments，所以 Provider先用 TextDecoder 恢复字符，再用 buffer 恢复完整 data 行，之后解析 JSON。文本、工具增量、usage 和 finishReason 转成统一 ModelEvent。Tool Call 按 index 找回 callId，Core 按 callId 拼接全部 arguments，流结束后才 JSON.parse 和 Zod 校验。429 与网关错误最多三次总尝试，取消通过 AbortSignal 中断 fetch 和退避。”</p></div>
+<h2>本章只需记住</h2>
+<div class="callout"><span class="callout-title">安全干预</span><p>运行中的变化先进入队列，到模型调用边界再消费；扩展只能在明确阶段观察、阻止或替换。</p></div>

@@ -145,6 +145,12 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; col
 .retry-button { margin-top: 4px; padding: 8px 14px; border: 1px solid var(--brand-line); border-radius: 8px; background: var(--surface); color: var(--brand); font: inherit; font-weight: 650; cursor: pointer; }
 .retry-button:hover { background: var(--brand-soft); }
 .term { border-bottom: 1px dashed var(--brand-line); cursor: help; }
+.visual { margin: 28px 0; }
+.visual img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 16px; background: #fbf9fd; box-shadow: var(--shadow); }
+.visual figcaption { margin-top: 9px; color: var(--muted); text-align: center; font-size: 13px; }
+.plain-list { margin: 18px 0; padding: 0; list-style: none; counter-reset: steps; }
+.plain-list li { position: relative; margin: 10px 0; padding: 12px 14px 12px 48px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.plain-list li::before { counter-increment: steps; content: counter(steps); position: absolute; left: 14px; top: 12px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-size: 12px; font-weight: 800; }
 
 .diagram { margin: 26px 0; padding: 22px; overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .diagram-title { margin-bottom: 18px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
