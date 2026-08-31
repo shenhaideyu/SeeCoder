@@ -25,6 +25,25 @@ const chapterNav = $("#chapterNav");
 const searchInput = $("#searchInput");
 const searchResults = $("#searchResults");
 
+const wait = (duration) => new Promise((resolve) => setTimeout(resolve, duration));
+
+async function fetchChapter(chapter) {
+  // 以当前脚本 URL 为基准，兼容本地根路径和 GitHub Pages 的 /SeeCoder/ 子路径。
+  const chapterUrl = new URL(`../chapters/${chapter.file}`, import.meta.url);
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(chapterUrl, { cache: attempt === 0 ? "default" : "reload" });
+      if (!response.ok) throw new Error(`服务器返回 ${response.status}`);
+      return await response.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await wait(350 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function renderNavigation() {
   let group = "";
   chapterNav.innerHTML = chapters.map((chapter, index) => {
@@ -47,9 +66,7 @@ function renderNavigation() {
 async function loadChapter(index) {
   const chapter = chapters[index];
   if (!state.contents.has(chapter.id)) {
-    const response = await fetch(`./chapters/${chapter.file}`);
-    if (!response.ok) throw new Error(`无法加载章节：${response.status}`);
-    state.contents.set(chapter.id, await response.text());
+    state.contents.set(chapter.id, await fetchChapter(chapter));
   }
   return state.contents.get(chapter.id);
 }
@@ -79,7 +96,12 @@ async function navigate(index, updateHash = true) {
     window.scrollTo({ top: 0, behavior: "instant" });
     if (updateHash) history.replaceState(null, "", `#chapter-${chapters[index].id}`);
   } catch (error) {
-    article.innerHTML = `<div class="callout danger"><span class="callout-title">章节加载失败</span><p>${error.message}</p><p>请使用 start.ps1 启动本地站点，不要直接双击 index.html。</p></div>`;
+    $("#pageOutline").replaceChildren();
+    const localHint = location.protocol === "file:"
+      ? "请使用 start.ps1 启动本地站点，不要直接双击 index.html。"
+      : "网络请求未完成，请稍后重新加载本章。";
+    article.innerHTML = `<div class="callout danger"><span class="callout-title">章节暂时无法加载</span><p>${localHint}</p><button class="retry-button" id="retryChapter" type="button">重新加载本章</button></div>`;
+    $("#retryChapter").addEventListener("click", () => navigate(index, false));
   }
 }
 

@@ -142,6 +142,8 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; col
 .callout.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
 .callout-title { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 750; }
 .callout p:last-child { margin-bottom: 0; }
+.retry-button { margin-top: 4px; padding: 8px 14px; border: 1px solid var(--brand-line); border-radius: 8px; background: var(--surface); color: var(--brand); font: inherit; font-weight: 650; cursor: pointer; }
+.retry-button:hover { background: var(--brand-soft); }
 .term { border-bottom: 1px dashed var(--brand-line); cursor: help; }
 
 .diagram { margin: 26px 0; padding: 22px; overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
