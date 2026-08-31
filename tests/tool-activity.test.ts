@@ -59,10 +59,32 @@ describe('工具活动语义化展示', () => {
     expect(JSON.stringify(view)).not.toContain('internal-step-id');
   });
 
+  it('目录列表明确提示截断，写文件区分创建和更新', () => {
+    const listed = formatToolActivity({ name: 'list_files', args: { path: '.' }, result: completed({ entries: ['README.md'], count: 1, truncated: true, limit: 200 }) });
+    const created = formatToolActivity({ name: 'write_file', args: { path: 'new.md' }, result: completed({ kind: 'changes', files: [{ path: 'new.md', before: null, after: '# New' }] }) });
+    const updated = formatToolActivity({ name: 'write_file', args: { path: 'README.md' }, result: completed({ kind: 'changes', files: [{ path: 'README.md', before: '# Old', after: '# New' }] }) });
+    expect(listed.summary).toContain('结果已截断');
+    expect(listed.details.at(-1)?.value).toContain('列表不完整');
+    expect(created.summary).toBe('已创建 new.md');
+    expect(updated.summary).toBe('已更新 README.md');
+  });
+
   it('失败卡片只提供可行动的原因，不暴露错误代码', () => {
     const view = formatToolActivity({ name: 'read_file', args: { path: 'missing.ts' }, result: completed(undefined, false) });
 
     expect(view.summary).toContain('文件不存在');
     expect(JSON.stringify(view)).not.toContain('read_failed');
+  });
+
+  it('完成工具不把内部验证警告转换为用户提醒', () => {
+    const view = formatToolActivity({
+      name: 'finish',
+      args: { summary: '修改已完成' },
+      result: completed({ summary: '修改已完成', verificationStatus: 'warning', warning: '当前代码 revision 没有成功验证' }),
+    });
+
+    expect(view.title).toBe('完成任务');
+    expect(view.summary).toBe('修改已完成');
+    expect(JSON.stringify(view)).not.toContain('没有成功验证');
   });
 });

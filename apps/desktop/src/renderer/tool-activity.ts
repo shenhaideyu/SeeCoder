@@ -41,6 +41,7 @@ const labels: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   pending: '待处理',
   running: '进行中',
+  in_progress: '进行中',
   completed: '已完成',
   failed: '失败',
 };
@@ -146,8 +147,10 @@ export function formatToolActivity(input: ToolActivityInput): ToolActivityView {
 
   if (name === 'list_files') {
     const path = text(args.path) ?? '工作区根目录';
-    const files = asArray(input.result?.output).filter((value): value is string => typeof value === 'string');
-    return { title: labelFor(name), summary: finished ? `已浏览 ${path} · ${files.length} 项` : `正在浏览 ${path}`, details: fileDetails(files) };
+    const value = outputRecord(input.result);
+    const files = (Array.isArray(input.result?.output) ? asArray(input.result?.output) : asArray(value.entries)).filter((entry): entry is string => typeof entry === 'string');
+    const truncated = value.truncated === true;
+    return { title: labelFor(name), summary: finished ? `已浏览 ${path} · ${files.length} 项${truncated ? ' · 结果已截断' : ''}` : `正在浏览 ${path}`, details: [...fileDetails(files), ...(truncated ? [{ value: '列表不完整，请缩小目录范围后继续浏览。' } satisfies ToolActivityDetail] : [])] };
   }
 
   if (name === 'read_file') {
@@ -188,7 +191,11 @@ export function formatToolActivity(input: ToolActivityInput): ToolActivityView {
     const paths = changedPaths(input.result);
     const fallback = name === 'write_file' ? [text(args.path)].filter((value): value is string => Boolean(value)) : pathsFromPatch(text(args.patch));
     const files = paths.length ? paths : fallback;
-    const action = name === 'write_file' ? '写入' : '修改';
+    const changed = asArray(output.files).map(asRecord);
+    const onlyFile = changed.length === 1 ? changed[0] : undefined;
+    const action = name === 'write_file' && onlyFile
+      ? onlyFile.before === null ? '创建' : '更新'
+      : name === 'write_file' ? '写入' : '修改';
     return {
       title: labelFor(name),
       summary: files.length === 1 ? `${verb}${action} ${files[0]}` : `${verb}${action} ${files.length} 个文件`,
@@ -261,11 +268,10 @@ export function formatToolActivity(input: ToolActivityInput): ToolActivityView {
 
   if (name === 'finish') {
     const summary = text(output.summary) ?? text(args.summary) ?? '任务已完成';
-    const warning = text(output.warning);
     return {
-      title: warning ? '完成，但缺少最新验证' : labelFor(name),
-      summary: warning ? shorten(warning, 160) : shorten(summary, 160),
-      details: [{ label: '结果', value: summary }, ...(warning ? [{ label: '验证', value: warning, kind: 'error' as const }] : [])],
+      title: labelFor(name),
+      summary: shorten(summary, 160),
+      details: [{ label: '结果', value: summary }],
     };
   }
 

@@ -624,9 +624,9 @@ describe('AgentCore', () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-stale-validation-'));
     try {
       const provider = new FakeModelProvider([
-        [{ type: 'toolCallDelta', callId: 'write-before-test', name: 'write_file', argsDelta: '{"path":"value.txt","content":"one"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'write-before-test', name: 'write_file', argsDelta: '{"path":"value.ts","content":"one"}' }, { type: 'completed', finishReason: 'tool_calls' }],
         [{ type: 'toolCallDelta', callId: 'test-revision-1', name: 'run_command', argsDelta: '{"command":"node --test"}' }, { type: 'completed', finishReason: 'tool_calls' }],
-        [{ type: 'toolCallDelta', callId: 'write-after-test', name: 'write_file', argsDelta: '{"path":"value.txt","content":"two"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'write-after-test', name: 'write_file', argsDelta: '{"path":"value.ts","content":"two"}' }, { type: 'completed', finishReason: 'tool_calls' }],
         [{ type: 'toolCallDelta', callId: 'finish-stale', name: 'finish', argsDelta: '{"summary":"完成","verification":["node --test"]}' }, { type: 'completed', finishReason: 'tool_calls' }],
       ]);
       const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
@@ -639,6 +639,27 @@ describe('AgentCore', () => {
       await core.startTurn(session.id, '修改、测试、再次修改后完成');
       await completed;
       expect(finishOutput).toMatchObject({ verificationStatus: 'warning', warning: expect.stringContaining('没有成功验证') });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not warn when the current revision only changes documentation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-documentation-validation-'));
+    try {
+      const provider = new FakeModelProvider([
+        [{ type: 'toolCallDelta', callId: 'write-doc', name: 'write_file', argsDelta: '{"path":"README.md","content":"# Updated"}' }, { type: 'completed', finishReason: 'tool_calls' }],
+        [{ type: 'toolCallDelta', callId: 'finish-doc', name: 'finish', argsDelta: '{"summary":"README 已更新","verification":[]}' }, { type: 'completed', finishReason: 'tool_calls' }],
+      ]);
+      const core = new AgentCore({ workspace: root, provider, model, store: new SessionStore(join(root, '.sessions')), mode: 'auto' });
+      let finishOutput: unknown;
+      const completed = new Promise<void>((resolve) => core.onEvent((event) => {
+        if (event.type === 'tool.completed' && event.callId === 'finish-doc') finishOutput = event.result.output;
+        if (event.type === 'turn.completed') resolve();
+      }));
+      const session = await core.createSession('文档更新');
+      await core.startTurn(session.id, '更新 README');
+      await completed;
+      expect(finishOutput).toMatchObject({ verificationStatus: 'verified' });
+      expect(finishOutput).not.toHaveProperty('warning');
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

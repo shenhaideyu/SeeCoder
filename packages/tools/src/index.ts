@@ -302,17 +302,27 @@ const ignoredTraversalDirectories = new Set([
   '.next', '.nuxt', 'target',
 ]);
 
-async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw new Error('操作已取消');
-  if (output.length >= max || depth < 0) return;
-  const entries = await readdir(current, { withFileTypes: true });
-  for (const entry of entries) {
+async function collectFiles(root: string, current: string, output: string[], depth: number, max: number, signal?: AbortSignal): Promise<boolean> {
+  const queue: Array<{ path: string; remainingDepth: number }> = [{ path: current, remainingDepth: depth }];
+  while (queue.length) {
     if (signal?.aborted) throw new Error('操作已取消');
-    if (output.length >= max || entry.isSymbolicLink() || (entry.isDirectory() && ignoredTraversalDirectories.has(entry.name)) || isSensitivePath(entry.name)) continue;
-    const full = join(current, entry.name);
-    if (entry.isDirectory()) await collectFiles(root, full, output, depth - 1, max, signal);
-    else output.push(relative(root, full));
+    const directory = queue.shift()!;
+    const entries = (await readdir(directory.path, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
+    const children: Array<{ path: string; remainingDepth: number }> = [];
+    for (const entry of entries) {
+      if (signal?.aborted) throw new Error('操作已取消');
+      if (entry.isSymbolicLink() || (entry.isDirectory() && ignoredTraversalDirectories.has(entry.name)) || isSensitivePath(entry.name)) continue;
+      const full = join(directory.path, entry.name);
+      if (entry.isDirectory()) {
+        if (directory.remainingDepth > 0) children.push({ path: full, remainingDepth: directory.remainingDepth - 1 });
+      } else {
+        if (output.length >= max) return true;
+        output.push(relative(root, full));
+      }
+    }
+    queue.push(...children);
   }
+  return false;
 }
 
 async function canonicalizeFuturePath(candidate: string): Promise<string> {
@@ -423,16 +433,16 @@ export function commandRunner(command: string, cwd: string, context: ToolContext
 export function createToolDefinitions(): ToolDefinition[] {
   return [
     {
-      name: 'list_files', description: '列出工作区内文件和目录', sideEffect: false, risk: 'low',
+      name: 'list_files', description: '广度优先列出工作区文件；truncated=true 时结果不完整，不能据此判断文件不存在', sideEffect: false, risk: 'low',
       parameters: z.object({ path: z.string().optional(), depth: z.number().int().min(0).max(5).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path?: string; depth?: number };
         try {
           const path = await new WorkspacePolicy(context.workspace).path(args.path);
-          if ((await stat(path)).isFile()) return result(true, [relative(context.workspace, path)], Date.now() - started);
+          if ((await stat(path)).isFile()) return result(true, { entries: [relative(context.workspace, path)], count: 1, truncated: false, limit: 200 }, Date.now() - started);
           const files: string[] = [];
-          await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal);
-          return result(true, files, Date.now() - started);
+          const truncated = await collectFiles(context.workspace, path, files, args.depth ?? 2, 200, context.signal);
+          return result(true, { entries: files, count: files.length, truncated, limit: 200 }, Date.now() - started);
         }
         catch (error) { return result(false, undefined, Date.now() - started, { code: 'path_denied', message: error instanceof Error ? error.message : '路径无效' }); }
       },
@@ -512,7 +522,7 @@ export function createToolDefinitions(): ToolDefinition[] {
     },
     {
       name: 'set_plan', description: '更新用户可见的执行计划', sideEffect: false, risk: 'low',
-      parameters: z.object({ steps: z.array(z.object({ id: z.string(), label: z.string(), status: z.enum(['pending', 'running', 'completed', 'failed']) })) }),
+      parameters: z.object({ steps: z.array(z.object({ id: z.string(), label: z.string(), status: z.preprocess((value) => value === 'in_progress' ? 'running' : value, z.enum(['pending', 'running', 'completed', 'failed'])) })) }),
       async execute(raw) { return result(true, raw, 0); },
     },
     {

@@ -36,6 +36,20 @@ export interface ModelProfileInput {
   clearApiKey?: boolean;
 }
 
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  headRefName: string;
+  isDraft: boolean;
+}
+
+export type PullRequestStatus =
+  | { status: 'ready'; pullRequests: PullRequestSummary[] }
+  | { status: 'setup_required'; reason: 'gh_not_installed' | 'gh_not_authenticated'; message: string; command: string }
+  | { status: 'error'; message: string };
+
 export interface HookCommand {
   id: string;
   command: string;

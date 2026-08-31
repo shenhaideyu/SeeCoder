@@ -28,7 +28,7 @@ describe('WorkspacePolicy', () => {
       await writeFile(join(root, '.env'), 'API_KEY=do-not-read', 'utf8');
       const registry = new ToolRegistry();
       const listed = await registry.get('list_files')!.execute({ path: '.', depth: 2 }, { workspace: root });
-      expect(listed.output).not.toContain('.env');
+      expect((listed.output as { entries: string[] }).entries).not.toContain('.env');
       const read = await registry.get('read_file')!.execute({ path: '.env' }, { workspace: root });
       expect(read.ok).toBe(false);
       expect(read.error?.message).toContain('凭据');
@@ -60,8 +60,27 @@ describe('file tools', () => {
       }
       const output = await new ToolRegistry().get('list_files')!.execute({ path: '.', depth: 3 }, { workspace: root });
       expect(output).toMatchObject({ ok: true });
-      expect((output.output as string[]).map((path) => path.replace(/\\/g, '/'))).toEqual(['src/main.ts']);
+      expect((output.output as { entries: string[] }).entries.map((path) => path.replace(/\\/g, '/'))).toEqual(['src/main.ts']);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('lists shallow files before noisy descendants and reports truncation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-list-breadth-'));
+    try {
+      await mkdir(join(root, 'logs'), { recursive: true });
+      await writeFile(join(root, 'README.md'), '# Project', 'utf8');
+      await Promise.all(Array.from({ length: 220 }, (_, index) => writeFile(join(root, 'logs', `${String(index).padStart(3, '0')}.log`), 'noise', 'utf8')));
+      const result = await new ToolRegistry().get('list_files')!.execute({ path: '.', depth: 2 }, { workspace: root });
+      const output = result.output as { entries: string[]; count: number; truncated: boolean; limit: number };
+      expect(output.entries[0]).toBe('README.md');
+      expect(output).toMatchObject({ count: 200, truncated: true, limit: 200 });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('normalizes the common in_progress plan status without accepting unknown states', () => {
+    const schema = new ToolRegistry().get('set_plan')!.parameters;
+    expect(schema.parse({ steps: [{ id: '1', label: '实施', status: 'in_progress' }] })).toEqual({ steps: [{ id: '1', label: '实施', status: 'running' }] });
+    expect(() => schema.parse({ steps: [{ id: '1', label: '实施', status: 'doing' }] })).toThrow();
   });
 
   it('labels read-only and test commands without presenting them as high risk', () => {
@@ -104,7 +123,7 @@ describe('file tools', () => {
       const listed = await registry.get('list_files')!.execute({ path: 'src/entry.ts' }, { workspace: root });
       const searched = await registry.get('search_text')!.execute({ query: 'needle', path: 'src/entry.ts' }, { workspace: root });
       expect(listed.ok).toBe(true);
-      expect((listed.output as string[])[0]?.replace(/\\/g, '/')).toBe('src/entry.ts');
+      expect((listed.output as { entries: string[] }).entries[0]?.replace(/\\/g, '/')).toBe('src/entry.ts');
       expect(searched).toMatchObject({ ok: true, output: [expect.objectContaining({ line: 1, text: expect.stringContaining('needle') })] });
       const missing = await registry.get('search_text')!.execute({ query: 'needle', path: 'missing.ts' }, { workspace: root });
       expect(missing).toMatchObject({ ok: false, error: { code: 'search_failed' } });

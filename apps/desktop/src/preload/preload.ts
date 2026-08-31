@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AgentEvent, AttachmentRef, ExecutionMode, ModelProfileInput, ScheduleDefinition } from '@seecoder/protocol';
+import type { AgentEvent, AttachmentRef, ExecutionMode, ModelProfileInput, PullRequestStatus, ScheduleDefinition } from '@seecoder/protocol';
 
 const api = {
   workspace: {
@@ -22,7 +22,7 @@ const api = {
   attachment: { select: (): Promise<AttachmentRef[]> => ipcRenderer.invoke('attachment:select') },
   git: {
     status: () => ipcRenderer.invoke('git:status'), diff: (scope?: 'unstaged' | 'staged' | 'branch' | 'last-turn') => ipcRenderer.invoke('git:diff', scope), branches: () => ipcRenderer.invoke('git:branches'), checkout: (branch: string) => ipcRenderer.invoke('git:checkout', branch),
-    stage: (path?: string) => ipcRenderer.invoke('git:stage', path), unstage: (path?: string) => ipcRenderer.invoke('git:unstage', path), revert: (path: string) => ipcRenderer.invoke('git:revert', path), commit: (message: string) => ipcRenderer.invoke('git:commit', message), push: () => ipcRenderer.invoke('git:push'), prStatus: () => ipcRenderer.invoke('git:prStatus'),
+    stage: (path?: string) => ipcRenderer.invoke('git:stage', path), unstage: (path?: string) => ipcRenderer.invoke('git:unstage', path), revert: (path: string) => ipcRenderer.invoke('git:revert', path), commit: (message: string) => ipcRenderer.invoke('git:commit', message), push: () => ipcRenderer.invoke('git:push'), prStatus: (): Promise<PullRequestStatus> => ipcRenderer.invoke('git:prStatus'),
   },
   terminal: { run: (command: string, cwd?: string) => ipcRenderer.invoke('terminal:run', command, cwd) },
   preview: { open: (url: string) => ipcRenderer.invoke('preview:open', url) },

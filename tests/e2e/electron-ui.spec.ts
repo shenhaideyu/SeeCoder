@@ -24,9 +24,33 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('[data-action="inspector-changes"]')).toBeVisible();
     await expect(page.locator('[data-action="inspector-changes"]')).toHaveText('变更');
     await expect(page.locator('[data-action="inspector-terminal"]')).toHaveText('终端');
+    await expect(page.locator('[data-action="inspector-files"]')).toHaveCount(0);
+    await expect(page.locator('[data-action="inspector-trace"]')).toHaveCount(0);
+    await expect(page.locator('.inspector-tabs button')).toHaveCount(3);
     await expect(page.locator('[aria-label="工作区 Git 变更"]')).toBeVisible();
     await expect(page.locator('[aria-label="当前任务改动"]')).toContainText('本任务没有修改文件');
     expect(await page.locator('.inspector-tabs').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    const realPrStatus = await page.evaluate(() => window.seecoder.git.prStatus());
+    expect(['ready', 'setup_required', 'error']).toContain(realPrStatus.status);
+    expect(JSON.stringify(realPrStatus)).not.toMatch(/stderr|exitCode|CommandNotFoundException|�/);
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('git:prStatus');
+      ipcMain.handle('git:prStatus', () => ({ status: 'setup_required', reason: 'gh_not_installed', message: '未检测到 GitHub CLI', command: 'winget install --id GitHub.cli' }));
+    });
+    await page.locator('[data-action="nav-pulls"]').click();
+    await expect(page.getByText('SeeCoder 不伪造远程数据')).toHaveCount(0);
+    await page.locator('[data-action="check-pr-status"]').click();
+    await expect(page.getByText('未检测到 GitHub CLI')).toBeVisible();
+    await expect(page.getByText('winget install --id GitHub.cli')).toBeVisible();
+    await expect(page.locator('.toast')).toHaveCount(0);
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.removeHandler('git:prStatus');
+      ipcMain.handle('git:prStatus', () => ({ status: 'ready', pullRequests: [{ number: 42, title: 'Improve agent loop', state: 'OPEN', url: 'https://github.com/example/repo/pull/42', headRefName: 'agent-loop', isDraft: false }] }));
+    });
+    await page.locator('[data-action="check-pr-status"]').click();
+    await expect(page.locator('.pr-row')).toContainText('#42');
+    await expect(page.locator('.pr-row')).toContainText('Improve agent loop');
+    await expect(page.locator('.pr-row')).toContainText('开放');
     const initialModel = await page.evaluate(() => window.seecoder.settings.read().then((value) => value.model as string));
     const testApiKey = 'e2e-api-key-1234';
     await page.locator('[data-action="settings"]').click();
@@ -115,6 +139,17 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(planActivity).not.toContainText('private-plan-call-id');
 
     await app.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0]?.webContents.send('seecoder:event', payload), {
+      type: 'tool.requested', sessionId: activeSession.id, timestamp: new Date().toISOString(), turnId: semanticToolTurn,
+      call: { id: 'finish-warning-call', name: 'finish', args: { summary: '修改已完成', verification: [] } },
+    });
+    await app.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0]?.webContents.send('seecoder:event', payload), {
+      type: 'tool.completed', sessionId: activeSession.id, timestamp: new Date().toISOString(), turnId: semanticToolTurn, callId: 'finish-warning-call',
+      result: { ok: true, durationMs: 1, output: { summary: '修改已完成', verificationStatus: 'warning', warning: '当前代码 revision 没有成功验证' } },
+    });
+    await expect(page.getByText('完成，但缺少最新验证')).toHaveCount(0);
+    await expect(page.getByText(/当前代码 revision 没有成功验证/)).toHaveCount(0);
+
+    await app.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0]?.webContents.send('seecoder:event', payload), {
       type: 'changes.created',
       sessionId: activeSession.id,
       timestamp: new Date().toISOString(),
@@ -159,10 +194,6 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await page.setViewportSize({ width: 1480, height: 900 });
 
-    await page.locator('[data-action="inspector-files"]').click();
-    await expect(page.locator('[data-action="open-file"]').filter({ hasText: '.env.example' })).toHaveCount(1);
-    await expect(page.locator('[data-action="open-file"]').filter({ hasText: /^\.env$/ })).toHaveCount(0);
-
     await page.locator('[data-action="inspector-terminal"]').click();
     const terminal = page.locator('[data-action="terminal-input"]');
     await terminal.fill('Get-ChildItem -Name');
@@ -171,6 +202,7 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('.terminal-output')).toContainText('package.json');
 
     await page.locator('[data-action="nav-plugins"]').click();
+    await expect(page.getByText('远程插件市场和 MCP 未启用')).toHaveCount(0);
     await expect(page.getByText('project-summary', { exact: true })).toBeVisible();
     const hookRow = page.locator('.extension-row').filter({ hasText: '项目 Hooks' });
     await expect(hookRow).toContainText('等待信任');
@@ -240,6 +272,7 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await reopened.locator('[data-action="model-settings"]').click();
     await reopened.locator('[data-action="settings"]').click();
     await expect(reopened.locator('[data-action="model-row"]').filter({ hasText: 'E2E DeepSeek Updated' }).locator('[data-action="api-key-status"]')).toContainText('1234');
+    await expect(reopened.locator('.diagnostics')).toHaveCount(0);
     const persistedSettings = await reopened.evaluate(() => window.seecoder.settings.read());
     expect(JSON.stringify(persistedSettings)).not.toContain(testApiKey);
     if (persistedSettings.logPath) expect(await readFile(persistedSettings.logPath, 'utf8')).not.toContain(testApiKey);

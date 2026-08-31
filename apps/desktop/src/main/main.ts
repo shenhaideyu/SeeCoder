@@ -7,7 +7,7 @@ import { AgentCore } from '@seecoder/agent-core';
 import { OpenAICompatibleProvider, type ModelConfig } from '@seecoder/model';
 import { SessionStore } from '@seecoder/storage';
 import { ToolRegistry, WorkspacePolicy, commandRunner, isHighRiskCommand, parseHookConfig, type HookConfig, type ToolContext } from '@seecoder/tools';
-import type { AgentEvent, AttachmentRef, ExecutionMode, HookCommand, HookExecutionContext, HookStage, LocalSkill, ModelProfile, ModelProfileInput, ScheduleDefinition, Session, ToolResult } from '@seecoder/protocol';
+import type { AgentEvent, AttachmentRef, ExecutionMode, HookCommand, HookExecutionContext, HookStage, LocalSkill, ModelProfile, ModelProfileInput, PullRequestStatus, ScheduleDefinition, Session, ToolResult } from '@seecoder/protocol';
 
 // 未打包运行时 Electron 默认使用应用名“Electron”，会把会话和日志写入
 // %APPDATA%\\Electron。显式固定产品名，确保 SeeCoder 的数据隔离和可审计路径稳定。
@@ -159,6 +159,46 @@ async function scopedGitRoot(): Promise<string> {
 
 async function runScopedGitCommand(command: string, timeoutMs = 30_000) {
   return runWorkspaceCommand(command, await scopedGitRoot(), timeoutMs);
+}
+
+function commandStdout(result: ToolResult): string {
+  const output = result.output as { stdout?: unknown } | undefined;
+  return typeof output?.stdout === 'string' ? output.stdout.trim() : '';
+}
+
+async function readPullRequestStatus(): Promise<PullRequestStatus> {
+  try {
+    const root = await scopedGitRoot();
+    const installed = await runWorkspaceCommand('gh --version', root, 10_000);
+    if (!installed.ok) {
+      return { status: 'setup_required', reason: 'gh_not_installed', message: '未检测到 GitHub CLI', command: 'winget install --id GitHub.cli' };
+    }
+    const authenticated = await runWorkspaceCommand('gh auth status', root, 15_000);
+    if (!authenticated.ok) {
+      return { status: 'setup_required', reason: 'gh_not_authenticated', message: 'GitHub CLI 尚未登录', command: 'gh auth login' };
+    }
+    const result = await runWorkspaceCommand('gh pr list --state open --limit 50 --json number,title,state,url,headRefName,isDraft', root, 30_000);
+    if (!result.ok) return { status: 'error', message: '无法读取拉取请求，请检查仓库远程地址和 GitHub 权限。' };
+    const parsed: unknown = JSON.parse(commandStdout(result) || '[]');
+    if (!Array.isArray(parsed)) return { status: 'error', message: 'GitHub CLI 返回了无法识别的数据。' };
+    const pullRequests = parsed.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const value = item as Record<string, unknown>;
+      if (typeof value.number !== 'number' || typeof value.title !== 'string' || typeof value.url !== 'string') return [];
+      return [{
+        number: value.number,
+        title: value.title,
+        state: typeof value.state === 'string' ? value.state : 'OPEN',
+        url: value.url,
+        headRefName: typeof value.headRefName === 'string' ? value.headRefName : '',
+        isDraft: value.isDraft === true,
+      }];
+    });
+    return { status: 'ready', pullRequests };
+  } catch (error) {
+    logger.write('WARN', 'git.pr-status.failed', { message: error instanceof Error ? error.message : 'unknown' });
+    return { status: 'error', message: error instanceof Error ? error.message : '无法读取拉取请求。' };
+  }
 }
 
 interface StoredModelProfile {
@@ -556,7 +596,7 @@ function registerIpc(): void {
   ipcMain.handle('git:revert', async (_event, path: string) => runScopedGitCommand(`git restore -- ${psQuote(relative(workspace, await new WorkspacePolicy(workspace).path(textArg(path, 'path', 1000))))}`));
   ipcMain.handle('git:commit', async (_event, message: string) => runScopedGitCommand(`git commit -m ${psQuote(textArg(message, 'message', 2000))}`, 60_000));
   ipcMain.handle('git:push', async () => runScopedGitCommand('git push', 120_000));
-  ipcMain.handle('git:prStatus', async () => { await scopedGitRoot(); return runWorkspaceCommand('gh pr status --json number,title,state,url', workspace, 30_000); });
+  ipcMain.handle('git:prStatus', async () => readPullRequestStatus());
   ipcMain.handle('terminal:run', async (_event, command: string, cwd?: string) => {
     const value = textArg(command, 'command', 20_000);
     if (isHighRiskCommand(value)) throw new Error('终端命令被 SeeCoder 安全策略拒绝：请使用受控 Git/依赖操作入口并确认风险。');

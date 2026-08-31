@@ -23,7 +23,7 @@ test('Electron workbench renders navigable pages and stable actions', async () =
     }
     await page.locator('[data-action="new-task"]').click();
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
-    for (const action of ['attach', 'permission-mode', 'model-settings', 'voice', 'send-turn', 'inspector-changes', 'inspector-files', 'inspector-terminal', 'inspector-preview', 'inspector-trace']) {
+    for (const action of ['attach', 'permission-mode', 'model-settings', 'voice', 'send-turn', 'inspector-changes', 'inspector-terminal', 'inspector-preview']) {
       await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(1);
     }
     await expect(page.locator('[data-action="plan-toggle"]')).toHaveCount(0);

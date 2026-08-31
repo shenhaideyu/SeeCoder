@@ -1,12 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { create } from 'zustand';
-import { Editor } from '@monaco-editor/react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {
-  Activity,
   AlertTriangle,
   Bell,
   Bot,
@@ -19,7 +17,6 @@ import {
   Copy,
   Download,
   ExternalLink,
-  FileCode2,
   FilePlus2,
   FolderOpen,
   GitBranch,
@@ -63,6 +60,7 @@ import type {
   ModelProfile,
   ModelProfileInput,
   PlanStep,
+  PullRequestStatus,
   ScheduleDefinition,
   SubagentState,
   Session,
@@ -148,7 +146,7 @@ const previewApi: SeeCoderApi = {
     revert: async () => previewResult({}),
     commit: async () => previewResult({}),
     push: async () => previewResult({}),
-    prStatus: async () => previewResult({}),
+    prStatus: async () => ({ status: 'ready', pullRequests: [] }),
   },
   terminal: { run: async () => previewResult({ stdout: '', stderr: '', exitCode: 0 }) },
   preview: { open: async (url) => url },
@@ -547,9 +545,7 @@ function App(): React.JSX.Element {
   const [page, setPage] = useState<
     'task' | 'history' | 'pulls' | 'sites' | 'scheduled' | 'plugins' | 'settings' | 'about'
   >('task');
-  const [inspector, setInspector] = useState<
-    'changes' | 'files' | 'terminal' | 'preview' | 'trace'
-  >('changes');
+  const [inspector, setInspector] = useState<'changes' | 'terminal' | 'preview'>('changes');
   const [composer, setComposer] = useState('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [activeSkill, setActiveSkill] = useState<LocalSkill>();
@@ -557,9 +553,7 @@ function App(): React.JSX.Element {
   const [collapsed, setCollapsed] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [files, setFiles] = useState<string[]>([]);
   const [gitText, setGitText] = useState('');
-  const [filePreview, setFilePreview] = useState<{ path: string; text: string } | undefined>();
   const [promptDialog, setPromptDialog] = useState<PromptRequest>();
   const promptResolver = useRef<((value: string | null) => void) | null>(null);
   const loadToken = useRef(0);
@@ -797,20 +791,6 @@ function App(): React.JSX.Element {
     const selected = await window.seecoder.attachment.select();
     setAttachments([...attachments, ...selected].slice(0, 4));
   }
-  async function loadFiles(): Promise<void> {
-    const value = (await window.seecoder.files.list('.', 3)) as { output?: unknown };
-    const output = resultOutput(value);
-    setFiles(
-      Array.isArray(output)
-        ? output.filter((item): item is string => typeof item === 'string')
-        : [],
-    );
-  }
-  async function openFile(path: string): Promise<void> {
-    const value = (await window.seecoder.files.read(path)) as { output?: unknown };
-    const output = resultOutput(value) as { text?: unknown } | undefined;
-    setFilePreview({ path, text: typeof output?.text === 'string' ? output.text : '无法读取文本内容' });
-  }
   async function loadGit(): Promise<void> {
     setGitText('正在读取 Git 状态…');
     try {
@@ -965,7 +945,8 @@ function App(): React.JSX.Element {
     if (command === '/plan') await togglePlan();
     else if (command === '/review') {
       setPage('task');
-      setInspector('trace');
+      setCollapsed(false);
+      setInspector('changes');
       if (selectedSession) {
         set({ running: true, phase: 'preparing' });
         const turnId = (await window.seecoder.turn.start(selectedSession.id, '请调用 review_changes 审查当前工作区变更，并按严重度输出发现。')) as string;
@@ -974,11 +955,11 @@ function App(): React.JSX.Element {
     } else if (command === '/diff') setInspector('changes');
     else if (command === '/status') {
       await loadGit();
-      setInspector('files');
+      setCollapsed(false);
+      setInspector('changes');
     } else if (command === '/skills') setPage('plugins');
     else if (command === '/compact') {
       setPage('task');
-      setInspector('trace');
       if (selectedSession) {
         set({ running: true, phase: 'preparing' });
         try {
@@ -1056,7 +1037,7 @@ function App(): React.JSX.Element {
             onBranch={showBranches}
             onRestoreCheckpoint={restoreCheckpoint}
             onRetry={retryLastTask}
-            onOpenInspector={() => { setCollapsed(false); setInspector('trace'); }}
+            onToggleInspector={() => setCollapsed((current) => !current)}
           />
         ) : (
           <WorkspacePage
@@ -1101,10 +1082,8 @@ function App(): React.JSX.Element {
               {(
                 [
                   ['changes', '变更', GitBranch],
-                  ['files', '文件', FolderOpen],
                   ['terminal', '终端', Terminal],
                   ['preview', '预览', ExternalLink],
-                  ['trace', '轨迹', Activity],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
@@ -1115,8 +1094,7 @@ function App(): React.JSX.Element {
                   aria-label={label}
                   onClick={() => {
                     setInspector(key);
-                    if (key === 'files') void loadFiles();
-                    if (key === 'files' || key === 'changes') void loadGit();
+                    if (key === 'changes') void loadGit();
                   }}
                 >
                   <Icon size={14} />
@@ -1138,15 +1116,9 @@ function App(): React.JSX.Element {
             type={inspector}
             changes={changes}
             terminal={terminal}
-            children={children}
-            workspace={workspace}
-            events={events}
-            files={files}
-            filePreview={filePreview}
             gitText={gitText}
             onRevert={(id) => void window.seecoder.changes.revert(id)}
             onStage={stageFile}
-            onOpenFile={openFile}
             onGitRefresh={loadGit}
             onToast={(value) => set({ toast: value })}
             onPrompt={(request) => requestPrompt(request)}
@@ -1356,7 +1328,7 @@ function TaskPage({
   onBranch,
   onRestoreCheckpoint,
   onRetry,
-  onOpenInspector,
+  onToggleInspector,
 }: {
   selectedSession: Session | undefined;
   mode: ExecutionMode;
@@ -1391,7 +1363,7 @@ function TaskPage({
   onBranch: () => void;
   onRestoreCheckpoint: (id: string) => void;
   onRetry: () => void;
-  onOpenInspector: () => void;
+  onToggleInspector: () => void;
 }): React.JSX.Element {
   const conversationRecords = useMemo(() => {
     const records: ConversationRecord[] = [];
@@ -1502,7 +1474,7 @@ function TaskPage({
             data-action="toggle-inspector"
             className="icon-button"
             title="切换检查器"
-            onClick={onOpenInspector}
+            onClick={onToggleInspector}
           >
             <PanelRight size={16} />
           </button>
@@ -1633,12 +1605,8 @@ function TaskPage({
             </div>
             <div>
               <strong>任务完成</strong>
-              <span>对话与执行轨迹已保存。</span>
+              <span>任务结果已保存。</span>
             </div>
-            <button data-action="view-result" onClick={onOpenInspector}>
-              <PanelRight size={14} />
-              查看轨迹
-            </button>
           </div>
         )}
         {latestTurnResult?.event.type === 'turn.failed' && failure && (
@@ -1653,10 +1621,6 @@ function TaskPage({
                 <RefreshCw size={14} />
                 重新尝试
               </button>
-              <button data-action="view-failure" onClick={onOpenInspector}>
-              <PanelRight size={14} />
-                查看详情
-              </button>
             </div>
           </div>
         )}
@@ -1667,10 +1631,6 @@ function TaskPage({
               <strong>任务已取消</strong>
               <span>模型请求、工具和子 Agent 已停止，不会在后台继续执行。</span>
             </div>
-            <button data-action="view-cancelled" onClick={onOpenInspector}>
-              <PanelRight size={14} />
-              查看轨迹
-            </button>
           </div>
         )}
       </section>
@@ -1791,11 +1751,7 @@ function ActivityCard({
   const isControlled = isToolControlSignal(record.completed?.result);
   const isError = Boolean(record.completed && !record.completed.result.ok && !isControlled);
   const toolName = record.requested?.call.name;
-  const finishOutput = toolName === 'finish' && record.completed?.result.output && typeof record.completed.result.output === 'object'
-    ? record.completed.result.output as { verificationStatus?: string; warning?: string }
-    : undefined;
-  const verificationWarning = finishOutput?.verificationStatus === 'warning' ? finishOutput.warning : undefined;
-  if (toolName === 'finish' && !verificationWarning) return <></>;
+  if (toolName === 'finish') return <></>;
   const compactedMetrics = record.auxiliary?.type === 'context.compacted' ? record.auxiliary.metrics : undefined;
   const view = formatToolActivity({
     name: toolName ?? (record.auxiliary?.type === 'context.compacted' && !compactedMetrics ? 'compact_context' : undefined),
@@ -1808,13 +1764,11 @@ function ActivityCard({
   const canExpand = view.details.length > 0 || Boolean(checkpoint);
   return (
     <div
-      className={`activity ${isError ? 'error' : verificationWarning ? 'warning' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
+      className={`activity ${isError ? 'error' : record.auxiliary?.type === 'checkpoint.created' ? 'checkpoint' : 'success'}`}
     >
       <button className="activity-head" data-action="toggle-activity" aria-expanded={expanded} onClick={onToggle}>
         <div className="activity-icon">
-          {verificationWarning ? (
-            <AlertTriangle size={14} />
-          ) : record.auxiliary?.type === 'checkpoint.created' ? (
+          {record.auxiliary?.type === 'checkpoint.created' ? (
             <RotateCcw size={14} />
           ) : isSuccess ? (
             <Check size={14} />
@@ -2209,32 +2163,20 @@ function InspectorContent({
   type,
   changes,
   terminal,
-  children,
-  workspace,
-  events,
-  files,
-  filePreview,
   gitText,
   onRevert,
   onStage,
-  onOpenFile,
   onGitRefresh,
   onToast,
   onPrompt,
   onConfirm,
 }: {
-  type: 'changes' | 'files' | 'terminal' | 'preview' | 'trace';
+  type: 'changes' | 'terminal' | 'preview';
   changes: ChangeSet[];
   terminal: string[];
-  children: SubagentState[];
-  workspace: string;
-  events: TimelineItem[];
-  files: string[];
-  filePreview: { path: string; text: string } | undefined;
   gitText: string;
   onRevert: (id: string) => void;
   onStage: (path: string) => void;
-  onOpenFile: (path: string) => Promise<void>;
   onGitRefresh: () => Promise<void>;
   onToast: (value: string) => void;
   onPrompt: (request: PromptRequest) => Promise<string | null>;
@@ -2246,47 +2188,8 @@ function InspectorContent({
   const gitBranch = gitReady ? gitLines[0]!.replace(/^##\s*/, '') : '';
   const gitChanges = gitReady ? gitLines.slice(1) : [];
   const hasStagedChanges = gitChanges.some((line) => line[0] !== ' ' && line[0] !== '?');
-  if (type === 'files')
-    return (
-      <div className="inspector-body">
-        <div className="panel-title">
-          工作区文件<span className="panel-sub">{files.length === 200 ? '200+ 个条目' : `${files.length} 个条目`}</span>
-        </div>
-        <div className="workspace-card">
-          <FolderOpen size={18} />
-          <div>
-            <strong>{workspace.split(/[\\/]/).pop()}</strong>
-            <span className="truncate">{workspace}</span>
-          </div>
-        </div>
-        <div className="file-tree">
-          {files.map((file) => (
-            <button
-              data-action="open-file"
-              key={file}
-              onClick={() => void onOpenFile(file)}
-            >
-              <FileCode2 size={13} />
-              {file}
-            </button>
-          ))}
-        </div>
-        {filePreview && <div className="file-preview"><div className="panel-title"><span>{filePreview.path}</span><button className="small-button" data-action="readonly-file" onClick={() => onToast('文件以只读方式打开')}>只读</button></div><Editor height="280px" language={languageFor(filePreview.path)} value={filePreview.text} theme="vs" options={{ readOnly: true, minimap: { enabled: false }, wordWrap: 'on', lineNumbers: 'on' }} /></div>}
-        {!files.length && (
-          <div className="empty-panel">
-            <div className="empty-icon">
-              <FolderOpen size={18} />
-            </div>
-            <strong>点击 Files 标签加载文件树</strong>
-            <span>读取操作始终限制在工作区内。</span>
-          </div>
-        )}
-      </div>
-    );
   if (type === 'terminal') return <TerminalPanel lines={terminal} onToast={onToast} />;
   if (type === 'preview') return <PreviewPanel onToast={onToast} />;
-  if (type === 'trace')
-    return <TracePanel events={events} children={children} />;
   if (type === 'changes')
     return (
       <div className="inspector-body">
@@ -2371,149 +2274,6 @@ function InspectorContent({
       </div>
     );
   return <div />;
-}
-
-function TracePanel({ events, children }: { events: TimelineItem[]; children: SubagentState[] }): React.JSX.Element {
-  const rows = useMemo(() => {
-    const result: Array<{ id: string; event: AgentEvent; count?: number }> = [];
-    for (const item of events.slice(-240)) {
-      const previous = result[result.length - 1];
-      if (item.event.type === 'message.delta' && previous?.event.type === 'message.delta' && previous.event.turnId === item.event.turnId) {
-        previous.count = (previous.count ?? 1) + 1;
-        previous.event = item.event;
-      } else {
-        result.push(item.event.type === 'message.delta'
-          ? { id: item.id, event: item.event, count: 1 }
-          : { id: item.id, event: item.event });
-      }
-    }
-    return result.slice(-160);
-  }, [events]);
-
-  function label(row: { event: AgentEvent; count?: number }): string {
-    const event = row.event;
-    if (event.type === 'message.delta') return `流式消息 ×${row.count ?? 1}`;
-    if (event.type === 'model.completed') return `模型完成 · 第 ${event.iteration} 轮 · ${event.durationMs}ms · 重试 ${event.retries}`;
-    if (event.type === 'model.requested') return `模型请求 · 第 ${event.iteration} 轮`;
-    if (event.type === 'tool.requested') return `调用工具 · ${event.call.name}`;
-    if (event.type === 'tool.completed') return `工具完成 · ${event.callId.slice(0, 8)} · ${event.result.ok ? '成功' : isToolControlSignal(event.result) ? '已限制' : '失败'}`;
-    if (event.type === 'usage.updated') return `Token · ${event.inputTokens} 输入 / ${event.outputTokens} 输出`;
-    if (event.type === 'context.summary.requested') return '上下文摘要 · 正在请求模型';
-    if (event.type === 'context.summary.completed') return `上下文摘要 · ${event.durationMs}ms · ${event.inputTokens ?? 0}/${event.outputTokens ?? 0} tokens`;
-    if (event.type === 'context.summary.failed') return `上下文摘要降级 · ${event.code}`;
-    if (event.type === 'context.retrieved') return `历史召回 · ${event.count} 条 · ${event.kinds.join('、')}`;
-    if (event.type === 'skill.activated') return `已激活 Skill · ${event.skill.name}`;
-    if (event.type === 'context.compacted') return event.metrics
-      ? `上下文压缩 · ${event.metrics.beforeTokens} → ${event.metrics.afterTokens} tokens`
-      : '上下文压缩完成';
-    if (event.type === 'turn.completed') return '任务完成';
-    if (event.type === 'turn.failed') return `任务失败 · ${event.error.code}`;
-    if (event.type === 'subagent.updated') return `子 Agent · ${event.child.role} · ${event.child.status}`;
-    return event.type;
-  }
-
-  const groups = useMemo(() => {
-    type TraceRow = { id: string; event: AgentEvent; count?: number };
-    type TraceGroup = {
-      id: string;
-      iteration?: number;
-      rows: TraceRow[];
-      tools: Map<string, number>;
-      failures: number;
-      durationMs?: number;
-      inputTokens?: number;
-      outputTokens?: number;
-      terminal?: 'completed' | 'failed' | 'cancelled';
-    };
-    const result: TraceGroup[] = [];
-    let current: TraceGroup | undefined;
-    for (const row of rows) {
-      const event = row.event;
-      if (event.type === 'model.requested') {
-        current = { id: row.id, iteration: event.iteration, rows: [], tools: new Map(), failures: 0 };
-        result.push(current);
-      }
-      if (!current) {
-        current = { id: `setup-${row.id}`, rows: [], tools: new Map(), failures: 0 };
-        result.push(current);
-      }
-      current.rows.push(row);
-      if (event.type === 'tool.requested') {
-        current.tools.set(event.call.name, (current.tools.get(event.call.name) ?? 0) + 1);
-      } else if (event.type === 'tool.completed' && !event.result.ok && !isToolControlSignal(event.result)) {
-        current.failures += 1;
-      } else if (event.type === 'usage.updated') {
-        current.inputTokens = event.inputTokens;
-        current.outputTokens = event.outputTokens;
-      } else if (event.type === 'model.completed') {
-        current.durationMs = event.durationMs;
-        if (typeof event.inputTokens === 'number') current.inputTokens = event.inputTokens;
-        if (typeof event.outputTokens === 'number') current.outputTokens = event.outputTokens;
-      } else if (event.type === 'turn.completed') current.terminal = 'completed';
-      else if (event.type === 'turn.failed') current.terminal = 'failed';
-      else if (event.type === 'turn.cancelled') current.terminal = 'cancelled';
-    }
-    return result.slice(-16);
-  }, [rows]);
-
-  function groupSummary(group: (typeof groups)[number]): string {
-    const tools = [...group.tools.entries()]
-      .map(([name, count]) => `${toolPresentation[name]?.label ?? name}${count > 1 ? ` ×${count}` : ''}`)
-      .join(' · ');
-    if (tools) return tools;
-    if (group.terminal === 'completed') return '任务已完成并保存轨迹';
-    if (group.terminal === 'failed') return '任务以失败状态结束';
-    if (group.terminal === 'cancelled') return '任务已取消';
-    return group.iteration ? '模型分析与生成' : '准备任务与上下文';
-  }
-
-  return (
-    <div className="inspector-body">
-      <div className="panel-title">
-        执行轨迹
-        <span className="panel-sub">{groups.length} 个阶段 · {events.length} 个原始事件</span>
-      </div>
-      <div className="trace-list">
-        {groups.map((group) => {
-          const details = group.rows.filter(({ event }) => event.type !== 'tool.output' && event.type !== 'message.delta');
-          const hidden = group.rows.length - details.length;
-          return (
-            <details className={`trace-group ${group.failures ? 'error' : ''}`} key={group.id}>
-              <summary>
-                <span className={`trace-dot ${group.terminal === 'completed' ? 'success' : group.terminal === 'failed' ? 'danger' : ''}`} />
-                <span className="trace-group-copy">
-                  <strong>{group.iteration ? `第 ${group.iteration} 轮` : '任务准备'}</strong>
-                  <small>{groupSummary(group)}</small>
-                </span>
-                <span className="trace-metrics">
-                  {group.failures > 0 && <b>{group.failures} 失败</b>}
-                  {typeof group.inputTokens === 'number' && <span>{Math.round(group.inputTokens / 100) / 10}k token</span>}
-                  {typeof group.durationMs === 'number' && <span>{Math.round(group.durationMs / 100) / 10}s</span>}
-                </span>
-              </summary>
-              <div className="trace-group-detail">
-                {details.map((row) => (
-                  <div className="trace-row" key={row.id}>
-                    <span className={`trace-dot ${row.event.type.includes('failed') ? 'danger' : row.event.type.includes('completed') ? 'success' : ''}`} />
-                    <span className="truncate">{label(row)}</span>
-                    <time>{timeLabel(row.event.timestamp)}</time>
-                  </div>
-                ))}
-                {hidden > 0 && <div className="trace-hidden">已收起 {hidden} 条流式输出；完整内容仍保留在会话记录中。</div>}
-              </div>
-            </details>
-          );
-        })}
-        {children.map((child) => (
-          <div className="trace-child" key={child.id}>
-            <Users size={13} />
-            <span>{child.role} · {child.status} · {child.iteration ?? 0} 轮 · {Math.round((child.durationMs ?? 0) / 100) / 10}s</span>
-          </div>
-        ))}
-        {!groups.length && <div className="empty-panel"><strong>暂无轨迹</strong><span>启动任务后会显示模型、工具和验证节点。</span></div>}
-      </div>
-    </div>
-  );
 }
 
 function TerminalPanel({
@@ -2652,6 +2412,14 @@ function WorkspacePage({
   >([]);
   const [url, setUrl] = useState('http://localhost:3000');
   const [settings, setSettings] = useState<SettingsView>();
+  const [pullRequestStatus, setPullRequestStatus] = useState<PullRequestStatus>();
+  const [pullRequestsLoading, setPullRequestsLoading] = useState(false);
+  const loadPullRequests = async (): Promise<void> => {
+    setPullRequestsLoading(true);
+    try { setPullRequestStatus(await window.seecoder.git.prStatus()); }
+    catch { setPullRequestStatus({ status: 'error', message: '无法读取拉取请求。' }); }
+    finally { setPullRequestsLoading(false); }
+  };
   const reloadExtensions = async (): Promise<void> => setExtensions(await window.seecoder.extension.list());
   useEffect(() => {
     if (page === 'scheduled') void window.seecoder.schedule.list().then(setSchedules);
@@ -2686,30 +2454,36 @@ function WorkspacePage({
         <PageHeader
           icon={GitBranch}
           title="拉取请求"
-          subtitle="连接本机 gh CLI，查看真实 PR 状态"
+          subtitle="查看当前仓库的开放拉取请求"
         />
-        <div className="feature-card">
-          <GitBranch size={24} />
-          <h2>Pull Request 工作区</h2>
-          <p>SeeCoder 不伪造远程数据。点击检查会调用本机 gh；未安装或未登录时会显示配置指引。</p>
+        <div className="feature-card pr-card">
+          <div className="pr-toolbar">
+            <div className="pr-repository"><GitBranch size={18} /><div><strong>{workspace.split(/[\\/]/).pop() || '当前仓库'}</strong><span>开放 Pull Request</span></div></div>
           <button
-            className="primary-button"
+            className="small-button"
             data-action="check-pr-status"
-            onClick={async () => {
-              try {
-                const result = await window.seecoder.git.prStatus();
-                onToast(
-                  resultOutput(result)
-                    ? JSON.stringify(resultOutput(result))
-                    : '请安装 gh 并执行 gh auth login',
-                );
-              } catch (error) {
-                onToast(error instanceof Error ? error.message : '无法读取 PR 状态，请检查 gh 配置');
-              }
-            }}
+            disabled={pullRequestsLoading}
+            onClick={() => void loadPullRequests()}
           >
-            检查 PR 状态
+            {pullRequestsLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+            {pullRequestStatus ? '刷新' : '检查'}
           </button>
+          </div>
+          {!pullRequestStatus && !pullRequestsLoading && <div className="pr-empty"><span>尚未检查当前仓库</span></div>}
+          {pullRequestsLoading && <div className="pr-empty"><span>正在读取拉取请求…</span></div>}
+          {pullRequestStatus?.status === 'setup_required' && (
+            <div className="pr-setup" role="status">
+              <AlertTriangle size={18} />
+              <div><strong>{pullRequestStatus.message}</strong><span>在终端运行 <code>{pullRequestStatus.command}</code>，完成后点击刷新。</span></div>
+            </div>
+          )}
+          {pullRequestStatus?.status === 'error' && <div className="pr-setup error" role="alert"><AlertTriangle size={18} /><div><strong>读取失败</strong><span>{pullRequestStatus.message}</span></div></div>}
+          {pullRequestStatus?.status === 'ready' && pullRequestStatus.pullRequests.length === 0 && <div className="pr-empty"><Check size={18} /><span>当前仓库没有开放的拉取请求</span></div>}
+          {pullRequestStatus?.status === 'ready' && pullRequestStatus.pullRequests.length > 0 && (
+            <div className="pr-list" aria-label="开放拉取请求">
+              {pullRequestStatus.pullRequests.map((item) => <div className="pr-row" key={item.number}><span className="pr-number">#{item.number}</span><div><strong>{item.title}</strong><span>{item.headRefName || '远程分支'}{item.isDraft ? ' · 草稿' : ''}</span></div><span className="pr-state">{item.state === 'OPEN' ? '开放' : item.state}</span></div>)}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2885,10 +2659,6 @@ function WorkspacePage({
               <span>点击“导入本地 Skill”并选择 SKILL.md，SeeCoder 会安全复制并管理它。</span>
             </div>
           )}
-          <div className="notice-box">
-            <ShieldCheck size={15} />
-            远程插件市场和 MCP 未启用，避免突破考核规定的最小权限边界。
-          </div>
         </div>
       </div>
     );
@@ -2983,7 +2753,6 @@ function SettingsPage({
             </div>;
           })}
         </div>
-        {settings?.logPath && <details className="diagnostics"><summary>本地数据与诊断</summary><div><strong>后台日志</strong><code title={settings.logPath}>{settings.logPath}</code><span>日志不记录 API Key 或完整文件内容。</span></div></details>}
       </section>
       {editing && <ModelEditorDialog profile={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} onSave={async (value) => { await onUpdate({ upsertModel: value }); setEditing(undefined); onToast(editing === 'new' ? '模型已添加' : '模型已更新'); }} />}
     </div>

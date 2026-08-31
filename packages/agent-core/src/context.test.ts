@@ -15,6 +15,12 @@ describe('hybrid context', () => {
     expect(ledger.hasFreshValidation()).toBe(true);
     ledger.recordChanges([{ path: 'a.ts', after: 'two' }]);
     expect(ledger.hasFreshValidation()).toBe(false);
+    expect(ledger.requiresFreshValidation()).toBe(true);
+    const documentation = new ContextLedger();
+    documentation.recordChanges([{ path: 'README.md', after: '# Updated' }]);
+    expect(documentation.requiresFreshValidation()).toBe(false);
+    documentation.recordChanges([{ path: 'config.json', after: '{}' }]);
+    expect(documentation.requiresFreshValidation()).toBe(true);
   });
 
   it('deduplicates evidence by content and invalidates it after changes', () => {
@@ -37,6 +43,12 @@ describe('hybrid context', () => {
     const compacted = JSON.parse(serializeObservation('run_command', { command: 'pnpm test' }, command, ledger, evidence));
     expect(compacted.output.truncated).toBe(true);
     expect(compacted.output.diagnostics).toContain('src/a.ts:12 error broken');
+    const listed = JSON.parse(serializeObservation('list_files', {}, { ok: true, output: { entries: ['README.md'], count: 1, truncated: true, limit: 200 }, durationMs: 1 }, ledger, evidence));
+    expect(listed.output).toEqual({ entries: ['README.md'], count: 1, truncated: true, limit: 200 });
+    const created = JSON.parse(serializeObservation('write_file', {}, { ok: true, output: { kind: 'changes', files: [{ path: 'new.md', before: null, after: '# New' }] }, durationMs: 1 }, ledger, evidence));
+    const updated = JSON.parse(serializeObservation('write_file', {}, { ok: true, output: { kind: 'changes', files: [{ path: 'README.md', before: '# Old', after: '# New' }] }, durationMs: 1 }, ledger, evidence));
+    expect(created.output.files[0].operation).toBe('created');
+    expect(updated.output.files[0].operation).toBe('updated');
   });
 
   it('retrieves Chinese terms and paths while excluding stale validations', () => {

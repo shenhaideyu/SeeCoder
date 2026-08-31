@@ -122,6 +122,10 @@ export class ContextLedger {
   }
 
   hasChanges(): boolean { return this.state.changeRevision > 0; }
+  requiresFreshValidation(): boolean {
+    const documentation = /\.(?:md|mdx|txt|rst|adoc)$/i;
+    return this.state.files.some((file) => file.lastChangedRevision === this.state.changeRevision && !documentation.test(file.path));
+  }
   hasFreshValidation(): boolean { return this.state.validations.some((item) => item.revision === this.state.changeRevision && item.status === 'passed'); }
   snapshot(): ContextLedgerStateV2 { return structuredClone(this.state); }
   summary(): string { return JSON.stringify(this.snapshot(), null, 2); }
@@ -262,6 +266,13 @@ function diagnosticLines(value: string): string[] {
 
 export function serializeObservation(toolName: string, args: unknown, result: ToolResult, ledger: ContextLedger, evidence: FileEvidenceStore): string {
   const base = { ok: result.ok, ...(result.error ? { error: result.error } : {}), durationMs: result.durationMs };
+  if (toolName === 'list_files' && result.ok) {
+    const value = result.output && typeof result.output === 'object' && !Array.isArray(result.output)
+      ? result.output as { entries?: unknown; count?: unknown; truncated?: unknown; limit?: unknown }
+      : { entries: result.output };
+    const entries = Array.isArray(value.entries) ? value.entries.filter((entry): entry is string => typeof entry === 'string') : [];
+    return JSON.stringify({ ...base, output: { entries, count: typeof value.count === 'number' ? value.count : entries.length, truncated: value.truncated === true, limit: typeof value.limit === 'number' ? value.limit : 200 } });
+  }
   if (toolName === 'read_file' && result.ok && result.output && typeof result.output === 'object') {
     const value = result.output as { path?: unknown; startLine?: unknown; endLine?: unknown; text?: unknown };
     if (typeof value.path === 'string' && typeof value.text === 'string') {
@@ -286,7 +297,7 @@ export function serializeObservation(toolName: string, args: unknown, result: To
   }
   if (toolName === 'write_file' || toolName === 'apply_patch') {
     const changes = result.output as { kind?: unknown; files?: Array<{ path: string; before: string | null; after: string | null }> } | undefined;
-    if (changes?.kind === 'changes' && Array.isArray(changes.files)) return JSON.stringify({ ...base, output: { kind: 'changes', files: changes.files.map((file) => ({ path: file.path, beforeChars: file.before?.length ?? 0, afterChars: file.after?.length ?? 0 })) } });
+    if (changes?.kind === 'changes' && Array.isArray(changes.files)) return JSON.stringify({ ...base, output: { kind: 'changes', files: changes.files.map((file) => ({ path: file.path, operation: file.after === null ? 'deleted' : file.before === null ? 'created' : 'updated', beforeChars: file.before?.length ?? 0, afterChars: file.after?.length ?? 0 })) } });
   }
   if (toolName === 'search_text' && Array.isArray(result.output)) {
     const unique = [...new Map(result.output.map((entry) => [JSON.stringify(entry), entry])).values()].slice(0, 50);
