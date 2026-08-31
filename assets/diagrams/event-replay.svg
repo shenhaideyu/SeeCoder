@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="520" viewBox="0 0 1080 520" role="img" aria-labelledby="title">
+  <title id="title">Session 事件写入与重启恢复</title><style>.bg{fill:#fbf9fd}.n{fill:#fff;stroke:#d8c0ef;stroke-width:2}.p{fill:#f1e8fb;stroke:#8247d6;stroke-width:3}.ok{fill:#eefaf6;stroke:#31a77c;stroke-width:2}.t{font:600 18px 'Microsoft YaHei',sans-serif;fill:#252127}.s{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.a{stroke:#8247d6;stroke-width:3;fill:none;marker-end:url(#m)}</style><defs><marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#8247d6"/></marker></defs><rect class="bg" width="1080" height="520" rx="24"/>
+  <rect class="p" x="60" y="70" width="210" height="90" rx="16"/><text class="t" x="165" y="108" text-anchor="middle">运行中的事实</text><text class="s" x="165" y="136" text-anchor="middle">消息、工具、状态、修改</text>
+  <rect class="n" x="355" y="45" width="250" height="140" rx="16"/><text class="t" x="480" y="83" text-anchor="middle">events.jsonl</text><text class="s" x="480" y="114" text-anchor="middle">只追加，不覆盖旧事件</text><text class="s" x="480" y="142" text-anchor="middle">每条事件都有递增顺序</text>
+  <rect class="ok" x="710" y="70" width="300" height="90" rx="16"/><text class="t" x="860" y="108" text-anchor="middle">界面实时更新</text><text class="s" x="860" y="136" text-anchor="middle">同一事件用于展示与追踪</text>
+  <path class="a" d="M270 115H355"/><path class="a" d="M605 115H710"/>
+  <rect class="p" x="60" y="330" width="210" height="90" rx="16"/><text class="t" x="165" y="368" text-anchor="middle">应用重新启动</text><text class="s" x="165" y="396" text-anchor="middle">不重新执行历史工具</text>
+  <rect class="n" x="355" y="305" width="250" height="140" rx="16"/><text class="t" x="480" y="343" text-anchor="middle">按顺序回放事件</text><text class="s" x="480" y="374" text-anchor="middle">重建消息、账本与修改记录</text><text class="s" x="480" y="402" text-anchor="middle">检查分支关系与压缩位置</text>
+  <rect class="ok" x="710" y="330" width="300" height="90" rx="16"/><text class="t" x="860" y="368" text-anchor="middle">恢复可继续的 Session</text><text class="s" x="860" y="396" text-anchor="middle">下一次 Turn 从已有事实继续</text>
+  <path class="a" d="M270 375H355"/><path class="a" d="M605 375H710"/>
+</svg>

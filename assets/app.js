@@ -79,12 +79,25 @@ function buildOutline() {
   ).join("");
 }
 
+function resolveChapterAssets() {
+  article.querySelectorAll("img").forEach((image) => {
+    const declaredPath = image.dataset.docAsset || image.getAttribute("src") || "";
+    const assetPath = declaredPath.includes("assets/")
+      ? declaredPath.split("assets/").pop()
+      : declaredPath.replace(/^\.\//, "");
+    if (!assetPath) return;
+    // 以 app.js 所在的 assets 目录为根，而不是以浏览器地址栏或章节文件为根。
+    image.src = new URL(`./${assetPath}`, import.meta.url).href;
+  });
+}
+
 async function navigate(index, updateHash = true) {
   if (index < 0 || index >= chapters.length) return;
   state.current = index;
   article.innerHTML = '<div class="loading">正在加载章节…</div>';
   try {
     article.innerHTML = await loadChapter(index);
+    resolveChapterAssets();
     state.completed.add(chapters[index].id);
     localStorage.setItem("seecoder-docs-completed", JSON.stringify([...state.completed]));
     $("#chapterCrumb").textContent = chapters[index].title;

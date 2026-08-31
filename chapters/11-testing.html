@@ -3,6 +3,7 @@
 <p class="lead">Agent 的正确性不能只看最终回答，还要验证执行顺序、文件结果、事件轨迹和异常路径。</p>
 
 <h2>四类验证</h2>
+<figure class="visual"><img data-doc-asset="diagrams/test-layers.svg" alt="从静态检查、模块测试、Turn 状态机测试到桌面端到端测试的四层验证" /><figcaption>越靠上越接近真实用户流程，越靠下越容易快速定位问题。</figcaption></figure>
 <table class="data-table"><thead><tr><th>层级</th><th>验证重点</th></tr></thead><tbody><tr><td>Lint</td><td>代码风格、未使用变量和常见错误。</td></tr><tr><td>Typecheck</td><td>Protocol、IPC 和模块接口是否一致。</td></tr><tr><td>Vitest</td><td>Core、Storage、Tools、Model 和界面状态的行为。</td></tr><tr><td>Electron E2E</td><td>真实窗口、输入、事件和页面交互。</td></tr></tbody></table>
 
 <h2>当前核心测试覆盖什么</h2>
@@ -20,5 +21,96 @@ pnpm test</pre>
 <h2>什么叫“验证证据”</h2>
 <p>“应该没问题”不是证据。证据至少包含运行了什么命令、退出状态和测试数量。涉及文件行为时，还要断言磁盘内容；涉及状态机时，还要断言事件和终态。</p>
 
-<h2>本章只需记住</h2>
+<p># SeeCoder 测试计划与测试用例</p>
+<h2>测试目标</h2>
+<p>Coding Agent 的模型输出不完全确定，但 Harness 的安全和状态规则必须确定。测试需要同时回答两个问题：无论模型返回什么，系统是否保持协议、权限和终态正确；在真实自然任务中，模型与 Harness 组合后是否有效完成工作。</p>
+<p>只检查最后回答不够。模型说“测试通过”时，还要核对是否真实运行命令、退出码是否为 0、验证是否属于当前 revision、文件是否按要求改变，以及 Turn 是否产生唯一终态。</p>
+<h2>测试分层</h2>
+<table class="data-table"><thead><tr><th>层次</th><th>环境</th><th>证明什么</th></tr></thead><tbody><tr><td>单元测试</td><td>纯函数、Fake Provider、临时目录</td><td>解析、预算、状态、权限和算法确定性</td></tr><tr><td>集成测试</td><td>临时 Workspace/Git + Fake Provider</td><td>多轮循环和真实文件副作用</td></tr><tr><td>Electron E2E</td><td>启动桌面应用</td><td>IPC、按钮、布局、审批、取消和恢复</td></tr><tr><td>真实 Prompt Eval</td><td>独立项目 + DeepSeek</td><td>自然任务成功率、效率和长流程退化</td></tr></tbody></table>
+<p>Fake Provider 按脚本产生文本、Tool Call、错误和 usage，可以稳定复现边界。真实模型 Eval 不替代确定性测试，它用于发现重复读取、过早完成和计划质量等行为问题。</p>
+<h2>核心单元测试</h2>
+<p>Model 层要覆盖任意碎片化 SSE、UTF-8 边界、多 Tool Call 参数聚合、非法 JSON、usage、finish reason、429/502/503 重试和 AbortSignal。测试必须证明半段参数不会执行。</p>
+<p>Context 层要覆盖 75% 触发、60% 目标、安全余量、完整工具协议组、语义摘要成功与回退、中文二元组检索、FileEvidence 去重与失效、旧 revision 验证过滤。摘要失败不能让主 Turn 失败。</p>
+<p>Tools 层要覆盖 <code>..</code>、绝对路径、符号链接逃逸、敏感文件、补丁冲突、写入回滚、命令超时、stdout/stderr、进程树取消和风险矩阵。副作用测试在临时目录运行，不能污染源码仓库。</p>
+<p>Storage 层要覆盖原子元数据写入、事件 seq、损坏尾行、乱序与重复事件、跨 Session 事件、孤立 Tool Result、未完成 Turn 和精确目录删除。</p>
+<h2>Agent Core 集成场景</h2>
+<table class="data-table"><thead><tr><th>场景</th><th>关键断言</th></tr></thead><tbody><tr><td>读取→修改→测试→完成</td><td>消息配对合法，当前 revision 有验证</td></tr><tr><td>Guided 写入</td><td>状态进入 waitingApproval，允许后继续</td></tr><tr><td>拒绝命令</td><td>产生 approval_denied，模型可选替代方案</td></tr><tr><td>Plan 请求写入</td><td>返回 plan_read_only，文件不改变</td></tr><tr><td>重复 callId</td><td>只执行一次副作用</td></tr><tr><td>测试失败后修复</td><td>失败作为 Observation，Turn 不被提前终止</td></tr><tr><td>取消模型请求</td><td>fetch 中止并产生 cancelled</td></tr><tr><td>取消长命令</td><td>子进程树退出，无活动 Turn</td></tr><tr><td>重启恢复</td><td>消息、ChangeSet、Checkpoint 和终态恢复</td></tr><tr><td>摘要失败</td><td>使用 deterministic-fallback 并继续</td></tr><tr><td>revision 变化</td><td>旧验证显示过期</td></tr><tr><td>Explore/Review</td><td>独立只读、最多并发 2 个、不可嵌套</td></tr></tbody></table>
+<h2>Electron E2E</h2>
+<p>E2E 要真实启动 Electron，而不是读取源码字符串。主流程包括选择 Workspace、新建 Session、发送、切换模式、审批、Follow-up、取消、重新加载、重命名、置顶、归档和删除。右侧 Changes、Terminal、Preview 需要实际点击。工具卡片要覆盖读取、搜索、写入、命令、计划、错误和上下文压缩；折叠和展开后都只能出现语义化摘要，不能出现事件 JSON 或 callId、turnId 等内部标识。</p>
+<p>终态回归要构造“Turn A 失败 → Turn B 开始并等待审批”的同 Session 场景，确认失败横幅在 Turn B 开始后立即隐藏，历史事实仍保留在 Session 事件中。审批卡需检查与工具活动的左右边界、补丁默认折叠、长路径换行、风险标识和两个决策按钮的键盘可达性。补丁展开后应显示按文件组织的增删行，而不是原始补丁协议；长代码可以横向滚动，并能打开大窗口后使用 Escape 关闭。</p>
+<p>模型协议回归必须覆盖孤立 Tool Result、不完整多工具组、重复 Tool Result 和合法多工具组。发送层只允许完整组进入请求。DeepSeek 官方地址还要检查工具任务显式关闭思考模式，避免系统为了满足供应商回传要求而保存私有思维链；普通兼容地址不得附加该供应商字段。</p>
+<p>界面至少在 1280×800 和 1920×1080 检查。重点观察输入栏是否被遮挡、侧栏是否溢出、长中文 Prompt、长路径、ANSI 输出、大 Diff、错误卡片和空状态。所有 <code>data-action</code> 按钮应产生真实 IPC、页面变化或明确说明。Composer 只保留一个执行模式入口，用户通过同一菜单选择 Plan、Guided 或 Auto，不重复展示独立的“计划”按钮。助手消息操作区必须能直接 Fork 当前 Session；运行中的 Session 禁止 Fork，避免复制正在追加的事件流。</p>
+<h2>真实 Prompt Eval</h2>
+<p>真实测试只能在独立 Workspace 运行，不能让 SeeCoder 与修改 SeeCoder 的开发智能体同时操作同一目录。Prompt 要接近用户表达，不直接给出补丁和全部文件名。</p>
+<p>简单任务验证只读理解和语言一致性。中等任务涉及多个文件、API 与调用方同步或测试失败修复。复杂任务要求自主定位根因、修改、验证、Review，并处理一次可恢复失败。</p>
+<p>每次 Eval 记录初始 Git 提交、Prompt、模式、模型配置、终态、模型轮数、Tool Call 数、失败工具、峰值输入 token、压缩次数、Diff 和验证命令。成功必须同时满足结果正确、无越权副作用、验证可信和轨迹可解释。</p>
+<h2>回归与通过标准</h2>
+<pre class="code-block"><span class="code-label">概念代码</span>pnpm lint
+pnpm typecheck
+pnpm test:unit
+pnpm test:integration
+pnpm test:e2e
+pnpm test:eval:unit
+pnpm build
+node --test examples/task-board/tests/task-board.test.mjs</pre>
+<p>核心协议、工具安全和状态机测试必须全部通过。真实模型存在随机性，不以单次成功代替回归；演示主流程应从全新启动连续成功三次。发现真实失败后，要保存最小事件与 Workspace fixture，用 Fake Provider 或固定输入转成自动测试。</p>
+<p>当前未使用 SWE-bench 作为唯一指标。SWE-bench 适合衡量补丁能力，但不能单独证明本地审批、Session 恢复、UI 状态和路径安全。</p>
+<h2>测试限制</h2>
+<p>Fake Provider 不能评价模型的代码理解，真实 Eval 也不能穷尽所有模型输出。Windows 进程树终止仍可能遇到外部程序主动脱离。视觉测试能发现布局变化，但不能替代键盘和可访问性人工检查。测试报告必须区分“自动通过”“真实运行通过”和“尚未验证”。</p>
+<h2>怎样编写一个有效的 Fake Provider 用例</h2>
+<p>先定义模型每轮应该返回什么，而不是模拟整个 HTTP 服务。例如第一轮请求 <code>read_file</code>，第二轮请求 <code>apply_patch</code>，第三轮请求 <code>run_command</code>，第四轮调用 <code>finish</code>。测试监听 AgentEvent，并在审批点主动 resolve。</p>
+<p>断言不只看 completed。需要检查 Assistant Tool Calls 在 Tool Result 之前、callId 相同、目标文件内容正确、ChangeSet 存在、命令结果进入 Ledger、活动 Turn 已清理。若要测试失败恢复，可让第一次补丁返回冲突，第二轮模型改为重新读取。</p>
+<p>摘要请求使用 <code>purpose=context_summary</code>，Fake Provider 要把摘要脚本与主 Agent 响应分开。否则一次自动压缩会消耗预设主响应，测试得到错误结论。</p>
+<h2>怎样验证取消</h2>
+<p>模型取消用一个直到 AbortSignal 触发才结束的 Provider。启动 Turn 后等待 <code>model.requested</code>，调用 cancel，断言 Provider 收到 abort、只出现 <code>turn.cancelled</code>、Session 不再有活动 Turn。</p>
+<p>命令取消在临时 Workspace 启动长时间子进程，等到首段输出后取消。除了检查 UI 状态，还要检查进程树、命令 Promise、审批 Promise 和 Core Map。取消延迟应有上限，不能依赖测试自然结束。</p>
+<h2>真实 Eval 怎样判定结果</h2>
+<p>先定义任务级验收条件，例如“空标题无法添加、状态筛选存在、相关测试通过”。运行结束后由脚本或人工检查文件和命令证据，再读取事件计算轮数、失败工具、重复签名和 token。</p>
+<p>任务可分为成功、部分成功和失败。成功要求全部验收条件满足；部分成功表示修改正确但缺少验证或存在明确残余；模型口头声称完成但文件错误属于失败。评价标准在执行前确定，不能根据模型结果临时降低要求。</p>
+<h2>测试中的专有概念</h2>
+<p>Fixture 是测试开始前准备的固定输入，例如临时 Git 仓库、示例源码、损坏 JSONL 或模型响应脚本。Fixture 必须尽量小，只包含触发行为所需内容，这样失败时容易判断根因。</p>
+<p>Mock 是替换某个依赖的对象。Fake Provider 不是简单返回固定字符串的 Mock，它实现完整 ModelProvider 接口，可以按轮次流式产生 Tool Call、usage 和错误。它保留 Core 真实控制流，只替换不可确定的远程模型。</p>
+<p>断言是测试必须成立的结果。Agent 测试通常需要多层断言：事件顺序、状态终态、文件内容、进程资源和模型消息。只断言函数“没有抛异常”无法证明系统正确。</p>
+<p>回归测试是在缺陷修复后永久保留的用例。它应先在旧代码上失败，再在修复后通过。真实任务失败若无法缩小成稳定回归，之后模型或代码变化时很容易再次出现。</p>
+<p>E2E 表示端到端测试，从 Renderer 的用户动作经过 IPC、Main 和 Core，再回到界面。它覆盖真实装配，但定位失败比单元测试慢，所以不能把全部逻辑都放进 E2E。</p>
+<p>Eval 是对 Agent 整体效果的评价。它可以包含不确定模型，关注任务成功率、步骤效率和证据质量。Eval 不是传统单元测试，不要求每次文本完全一致，而要求验收条件和安全约束一致。</p>
+<h2>上下文测试为什么特殊</h2>
+<p>上下文算法的输出不是简单字符串，而是一组必须符合模型协议的消息。测试需要构造 Assistant 消息携带多个 Tool Calls，再构造对应 Tool Results，触发压缩后确认整组仍然完整。若只检查 token 变少，可能得到无法发送的消息链。</p>
+<h2>动态干预与工具批调度测试</h2>
+<p>动态干预必须覆盖三个安全点：模型请求前收到 steering、工具执行期间收到 steering、最终文本流期间收到 steering。前两种应在下一次模型请求前进入当前 Turn；最后一种不能被终止判断吞掉。follow-up 应在当前 Turn 正常完成后创建新 Turn，而不是追加到已经完成的消息组。</p>
+<p>工具批调度分别构造“全部 parallelSafe”和“混合副作用”两组调用。前者验证实际并发且结果仍按原 callId 顺序写回；后者验证整批串行。每个工具还要覆盖同步抛错、Promise rejection、超时和取消，确认它们都形成结构化 ToolResult，且同一 callId 不会重复副作用。</p>
+<p>Interceptor 测试覆盖 replace、block、超时和抛错。<code>beforeModelCall</code> 的临时替换不得出现在下一次 Session 回放中；<code>beforeToolCall</code> 改写后的参数必须重新经过 Schema、权限和审批判断；<code>afterToolCall</code> 的结果替换必须在持久化和模型 Observation 之前完成。</p>
+<h2>Usage 校准、Artifact 与 ContextSnapshot 测试</h2>
+<p>Usage 校准使用相同模型的连续请求验证指数移动平均，并验证不同 model key 互不污染。模型未返回 usage 时保持默认系数；异常的零值或极端值不得破坏预算。</p>
+<p>构造超过阈值的 ToolResult，确认完整 JSON 写入 Session Artifact、Observation 只保留受限头尾和 <code>artifactRef</code>，<code>read_artifact</code> 能按 offset/limit 取回且拒绝跨 Session ref。删除 Session 时 Artifact 必须一并删除。</p>
+<p>上下文测试分别触发廉价折叠即可达标和必须语义摘要两种路径，确认只有后一种消耗 context_summary 请求。ContextSnapshot 必须记录覆盖事件 seq、Ledger revision、保留组标识和校准系数；重启回放后消息协议仍合法。</p>
+<h2>Workspace 写入协调与 Session 分支测试</h2>
+<ul class="plain-list"><li>用两个 AgentCore 指向同一 workspace，同时请求修改同一文件，断言第二次修改必须等待第一次释放锁；修改不同文件时允许并发。</li><li><code>apply_patch</code> 必须一次锁住补丁内全部路径；<code>run_command</code>、未知副作用工具、ChangeSet 撤销和 Checkpoint 恢复必须使用同一协调器。</li><li>工具失败、超时和取消后再次获取相同锁必须成功，证明没有遗留死锁。</li><li>从中间事件序号 <code>forkFrom</code> 后，子分支应看到父分支截止该序号的历史和自己的增量，父分支后续事件对子分支不可见，且父 JSONL 不被复制。</li><li><code>rewind</code> 必须保留原分支并返回新分支；<code>switchBranch</code> 必须恢复目标分支；低于 <code>compactionFloor</code> 的操作必须拒绝。</li><li>有子分支的父 Session 删除必须拒绝；非法分支循环必须在读取时失败，不能无限递归。</li></ul>
+<p>语义摘要也不能直接相信。测试让摘要模型故意把“测试失败”总结成“测试通过”，然后确认 Ledger 中权威验证仍然失败。另一个用例让摘要返回非法 JSON，确认系统记录 <code>context.summary.failed</code>、使用 fallback，并且主 Turn 继续。</p>
+<p>FileEvidence 测试先读取同一文件两次，确认第二次减少正文；随后修改文件并再次读取，确认旧 evidenceRef 不再使用。Workspace 切换后也不能复用 Evidence。</p>
+<p>finish 验证新鲜度需要覆盖两类变更：只修改 README.md 等纯文档时内部状态为 verified；修改 TypeScript、Python、JSON 或 YAML 后若没有当前 revision 的成功测试，内部状态仍记录为 warning。测试通过后再次修改代码，旧验证必须继续判定为过期。Renderer 不渲染 finish 工具活动，因此两种状态都不能产生独立的“缺少最新验证”提醒。</p>
+<p>Pull Request 页面需要覆盖 <code>gh</code> 未安装、未登录、没有开放 PR 和存在开放 PR 四种状态。界面只能显示可理解的状态与操作指引，不能出现 ToolResult JSON、PowerShell 错误对象、乱码 stderr 或内部命令字段。</p>
+<p>目录工具回归测试需要构造一个包含大量深层日志文件、同时在根目录放置 README.md 的 Workspace。断言 list_files 优先返回根目录文件，并在超过 200 项时返回 <code>truncated=true</code>，防止 Agent 把截断误判为不存在。文件写入 Observation 分别验证 <code>created</code> 与 <code>updated</code>；计划参数测试验证模型输出常见的 <code>in_progress</code> 时会规范化为内部 <code>running</code>，而其他未知状态仍被拒绝。</p>
+<h2>测试数据隔离</h2>
+<p>工具测试使用系统临时目录或专门示例项目。每个用例建立自己的 Workspace，结束后清理。测试中的 SessionStore 也放在临时位置，避免读取用户真实 <code>%APPDATA%/SeeCoder</code>。</p>
+<p>真实 DeepSeek Eval 使用“软工三大作业”等独立目录时，必须先记录 Git 状态，并确保开发 SeeCoder 的智能体不在该目录同时写入。API Key 从系统配置读取，测试输出不能打印明文。</p>
+<p>并发测试要避免共享同一文件，除非目标就是验证冲突。否则一次用例的异步命令可能让另一用例随机失败，形成难以定位的非确定性测试。</p>
+<h2>UI 测试应观察什么</h2>
+<p>Electron E2E 不应只检查元素存在。新建 Session 后要确认任务进入当前 Workspace、输入框获得焦点、首次 Prompt 能自动生成标题。切换 Session 时，要确认上一条任务的消息、Diff、终端和 running 状态不会短暂串入新页面。</p>
+<p>审批测试需要让 Fake Provider 实际请求副作用。卡片出现后检查工具名、路径或命令和风险说明，再分别执行允许与拒绝。允许后工具只能执行一次；拒绝后 Agent 应收到结构化结果。取消测试要在模型、审批等待和命令运行三个阶段分别覆盖。</p>
+<p>响应式测试关注可操作性而不是像素完全相同。1280×800 时右侧检查器可以折叠，但 Composer 和停止按钮必须可见；长路径和大错误不能撑破三栏；键盘焦点、Enter/Ctrl+Enter 和 Esc 行为要明确。</p>
+<h2>测试失败怎样定位</h2>
+<p>先判断失败属于断言、Fixture、环境还是产品代码。若 Fake Provider 响应序列错位，检查是否发生了独立摘要请求；若 Windows 命令测试偶发超时，确认测试是否等待了明确事件而不是固定 sleep；若 E2E 找不到按钮，先检查页面状态和 data-action，而不是直接延长超时。</p>
+<p>测试日志只保留定位所需输出。模型事件可记录类型、callId 和耗时，不打印 API Key 和完整敏感文件。一个好的失败信息应能指出预期状态、实际状态和关联 ID。</p>
+<h2>测试完成的判断</h2>
+<p>测试命令退出码为 0 只是第一层结果。还要确认没有被跳过的重要用例、没有未处理 Promise rejection、临时目录没有残留活动进程，并且测试运行的确是当前构建产物。</p>
+<p>报告中应写明命令、通过数量、失败数量和未运行项目。真实模型测试还要记录模型名、Workspace 初始状态和终态。这样下一次结果才能比较，也能避免把开发环境中的偶然成功当成稳定能力。</p>
+
+<h2>文档站本身怎样验证</h2>
+<p>技术文档也需要可重复检查。构建前先统计每章去除 HTML 后的实际正文长度，再扫描图片引用是否都指向存在的资源。启动本地静态服务器后，分别用桌面和手机宽度打开章节，检查导航、目录、表格、代码块和图片；最后在 GitHub Pages 的子路径上请求首页、脚本、章节和图片，确认状态码都是 200。</p>
+<p>内容检查还要对照当前源码：公开方法名、状态集合、并行规则和分支字段不能沿用旧实现。文档中的测试数量只描述本次实际运行结果，后续测试增加时应同步更新，不能把过去的数字当成长期事实。</p>
+<p>发现回归后，应把真实失败缩小成最小临时工作区和固定模型事件，再加入自动测试。这样下一次修改能稳定复现，而不依赖模型恰好再次生成相同行为。</p>
+<p>测试环境必须与源码工作区分开。涉及写文件、补丁、Git 和命令的用例只操作临时目录，并在结束后检查目标内容和活动资源是否清理。真实模型评估用于观察代码理解和工具效率，不能替代权限、取消、回放和状态机的确定性测试。</p>
+<p>并发测试还要控制时序：用可等待的假工具证明两个只读调用确实重叠，用同文件写入证明第二个调用会排队，用不同文件写入证明互不冲突，用抛错和取消证明锁最终释放。分支测试要同时检查事件视图、账本、Artifact 和删除保护。只有断言外部结果与内部事件一致，才能证明实现不是偶然跑通。</p>
+<p>最后还要检查验证命令的退出码，并保存本次通过数量。若某项因为环境缺失没有运行，报告应明确写成“未验证”，不能用静态阅读结果代替真实执行。</p>
 <div class="callout"><span class="callout-title">测试目标</span><p>不仅验证成功路径，还要验证取消、超时、失败、重启、冲突和并发。Agent 的可靠性主要体现在这些边界上。</p></div>

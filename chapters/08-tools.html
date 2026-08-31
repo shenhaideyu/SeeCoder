@@ -1,27 +1,287 @@
-<span class="chapter-kicker">第二部分 · 理解核心</span>
-<h1>工具执行与并发控制</h1>
-<p class="lead">ToolCallExecutor 是模型请求进入本地能力的唯一执行入口。它保证每次工具调用都有合法参数、明确权限、有限时间和结构化结果。</p>
-<figure class="visual"><img src="../assets/diagrams/tool-locks.svg" alt="工具调用先经过校验、审批和超时控制，再由工作区写入协调器决定并发方式" /><figcaption>并行提升只读效率，写入锁保护工作区一致性。</figcaption></figure>
+<span class="chapter-kicker">第二部分 · 理解核心机制</span>
+<h1>工具与本地执行</h1>
+<p class="lead">模型只能生成文字和结构化请求，真正读取代码、修改文件、运行测试的是 SeeCoder 自己实现的工具系统。本章从一次真实 Tool Call 出发，解释工具怎样定义、怎样通过权限与路径检查、怎样进入本地运行环境，以及执行结果怎样回到下一轮模型上下文。</p>
 
-<h2>一次工具调用经过哪些检查</h2>
-<ol class="plain-list"><li>按调用标识去重，避免重复执行副作用。</li><li>从 ToolRegistry 查找工具并用 Zod 校验参数。</li><li>检查 Plan、Guided 或 Auto 模式。</li><li>必要时等待审批，再运行 preToolUse Hook。</li><li>执行工具，处理取消、超时和异常。</li><li>运行结果拦截器，保存 ToolResult 和任务账本。</li></ol>
+<h2>先理解工具解决的问题</h2>
+<p>大语言模型收到项目任务后，可以判断“应该搜索提交函数”“应该修改校验逻辑”“应该运行测试”，但模型运行在远程服务中，无法直接访问用户电脑。SeeCoder 在 Electron Main 中提供一组受控的本地能力，并把这些能力的名称和参数格式告诉模型。模型选择能力并填写参数，Main 再决定是否允许执行。</p>
+<p>例如用户要求修复“空标题也能添加待办”。模型先请求 <code>search_text</code>，参数是查询词和搜索目录。工具返回文件名与行号。模型随后请求 <code>read_files</code> 读取组件和测试，再使用 <code>apply_patch</code> 修改代码，最后用 <code>run_command</code> 运行测试。每一步的观察结果都会进入下一轮模型请求，所以 Agent 可以根据事实继续决策。</p>
 
-<h2>什么时候并行</h2>
-<p><code>executeBatch()</code> 只有在工具数量大于一，并且整组工具都声明 <code>parallelSafe=true</code> 时才使用 <code>Promise.all</code>。读取文件、搜索和查看 Diff 可以并行；混入写入、命令、提问或计划工具后，整组改为串行。返回结果仍保持模型请求顺序。</p>
+<div class="diagram">
+  <div class="diagram-title">模型与本地环境之间的受控通道</div>
+  <div class="flow-row">
+    <div class="flow-node primary">DeepSeek<br/>提出 Tool Call</div><div class="flow-arrow">→</div>
+    <div class="flow-node">Agent Core<br/>解析与调度</div><div class="flow-arrow">→</div>
+    <div class="flow-node">权限与路径策略</div><div class="flow-arrow">→</div>
+    <div class="flow-node">Tool Runtime<br/>本地执行</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">Tool Result<br/>返回观察</div>
+  </div>
+</div>
 
-<h2>为什么还需要 Workspace 写入锁</h2>
-<p>“同一 Session 只有一个 Turn”不能阻止两个 Session 同时修改同一个项目。<code>WorkspaceMutationCoordinator</code> 按规范化工作区路径在不同 AgentCore 实例之间共享锁。</p>
-<ul><li><code>write_file</code> 锁目标文件。</li><li><code>apply_patch</code> 一次锁补丁涉及的全部文件。</li><li><code>run_command</code> 无法预知修改范围，因此锁整个工作区。</li><li>撤销和检查点恢复使用同一套锁。</li></ul>
-<p>冲突请求排队，不冲突的文件仍可同时写入。锁在 <code>finally</code> 中释放，失败、超时和取消都不会留下永久锁。</p>
+<p>Renderer 只展示过程和接收用户操作。它没有 Node.js 权限，也不能自行调用文件系统或启动进程。preload 暴露有限的类型化 IPC；Electron Main 接收 IPC 后调用 Agent Core 和工具运行时。这样可以把界面代码与本地执行权限分开。</p>
 
-<h2>超时和异常怎样处理</h2>
-<p>每个 ToolDefinition 可以声明超时时间。超时会触发子 AbortController，并返回 <code>timeout</code> ToolResult。工具直接抛出的异常会转成 <code>tool_exception</code>。异常不会越过执行器破坏 assistant/tool 配对。</p>
+<h2>一个工具由哪些部分组成</h2>
+<p>SeeCoder 使用 <code>ToolDefinition</code> 描述工具。name 是模型调用时使用的稳定名称；description 帮助模型判断使用场景；parameters 是 Zod 参数规则；sideEffect 表示工具是否可能改变外部状态；risk 用于审批卡的风险提示；execute 是真正运行的 TypeScript 函数。</p>
 
-<h2>大型结果怎样处理</h2>
-<p>工具结果超过上下文阈值时，ToolArtifactStore 把完整 JSON 写入 Session 的 Artifact 目录，模型只收到摘要和引用。后续可用 <code>read_artifact</code> 分段读取。分支也能读取分叉前已经存在的 Artifact。</p>
+<pre class="code-block"><span class="code-label">packages/tools 中的核心接口</span>interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: ZodTypeAny;
+  sideEffect: boolean;
+  risk: "low" | "medium" | "high";
+  execute(args: unknown, context: ToolContext): Promise&lt;ToolResult&gt;;
+}
 
-<h2>文件修改怎样回滚</h2>
-<p>成功修改后，ChangeManager 保存修改前后内容，建立 ChangeSet 和 Checkpoint。撤销会恢复修改前内容；恢复检查点前先比较当前文件哈希，若用户后来手动修改过文件，则拒绝覆盖。</p>
+interface ToolContext {
+  workspace: string;
+  onOutput?: (stream: "stdout" | "stderr", text: string) =&gt; void;
+  signal?: AbortSignal;
+  env?: Record&lt;string, string&gt;;
+}</pre>
 
-<h2>本章只需记住</h2>
-<div class="callout"><span class="callout-title">执行原则</span><p>能安全并行的只读工具并行；已知文件按路径加锁；未知写入范围锁整个工作区；所有失败都转成模型能理解的 ToolResult。</p></div>
+<p><code>ToolContext</code> 由 Core 创建。workspace 指定本次任务唯一可访问的项目根目录；onOutput 把命令输出实时送到界面；AbortSignal 负责取消；env 只补充受控环境变量。模型无法自行更换这些值。</p>
+<p>所有定义放入 <code>ToolRegistry</code>。它内部是一张 name 到 ToolDefinition 的 Map。收到 <code>read_file</code> 时，Core 可以用常数时间找到执行器；名称不存在时返回稳定的 <code>unknown_tool</code>，不会把任意字符串当作系统函数执行。</p>
+
+<h2>模型看到的 Schema 与运行时 Schema</h2>
+<p>模型需要一份 JSON Schema，才能知道 <code>read_file</code> 必须提供 path，<code>run_command</code> 可以提供 cwd 和 timeoutMs。模型生成的参数仍然属于不可信输入。Core 会在完整参数字符串接收完毕后执行 JSON.parse，再用 ToolDefinition 中的 Zod Schema校验类型、必填项、枚举和范围。</p>
+<p>这形成两道职责不同的约束。JSON Schema用于指导模型生成；Zod 用于本地运行前的强制校验。参数缺失或类型错误时，工具不会运行，Core 返回 <code>invalid_args</code> Tool Result。模型下一轮能读到错误并重新调用。</p>
+<p>当前项目的模型 JSON Schema 位于 Agent Core，Zod Schema 位于 tools 包。两份描述需要通过测试保持一致。这是现有实现的维护成本，后续可以从统一元数据生成 JSON Schema；本章按当前代码说明，不把尚未完成的生成机制当成已有能力。</p>
+
+<h2>一次 Tool Call 的完整生命周期</h2>
+<p>模型输出解析器把流式参数片段按调用标识拼接。模型响应结束后，TurnRunner 先保存包含 Tool Calls 的 assistant 消息，再把整批请求交给 ToolCallExecutor。保存顺序很重要：下一轮发给兼容 API 时，每条 tool 消息都能找到声明它的 assistant 消息。</p>
+
+<div class="diagram">
+  <div class="diagram-title">从请求到结果的十个步骤</div>
+  <div class="layer-stack">
+    <div class="layer"><b>1　聚合</b>按 callId 拼接工具名和 arguments 字符串</div>
+    <div class="layer"><b>2　去重</b>同一 Turn 已执行过该 callId 时直接复用原结果</div>
+    <div class="layer"><b>3　识别</b>从 ToolRegistry 查找 ToolDefinition</div>
+    <div class="layer"><b>4　校验</b>JSON.parse 后运行 Zod Schema</div>
+    <div class="layer"><b>5　授权</b>检查 Plan / Guided / Auto、风险与工作区</div>
+    <div class="layer"><b>6　暂停</b>需要审批时把 Turn 设为 waitingApproval</div>
+    <div class="layer"><b>7　Hook</b>运行 preToolUse，项目规则可以阻止调用</div>
+    <div class="layer"><b>8　执行</b>向工具传入 workspace、输出回调和 AbortSignal</div>
+    <div class="layer"><b>9　记录</b>保存完整 ToolResult、变更、验证和错误</div>
+    <div class="layer"><b>10　反馈</b>生成精简 Observation，写入下一轮模型上下文</div>
+  </div>
+</div>
+
+<p>Core 在执行前发出 <code>tool.requested</code>，命令运行时发出 <code>tool.output</code>，结束后发出 <code>tool.completed</code>。Renderer 只消费这些事件，所以工具卡、Terminal 和 Trace 显示的是 Main 中真实发生的状态。</p>
+
+<h2>callId 为什么必须稳定</h2>
+<p>callId 是一次工具请求的唯一标识。它连接 assistant Tool Call、审批、实时输出、Tool Result 和 Trace。Core 在每个 Turn 内维护 <code>executedCalls</code> Map。如果恢复历史、事件重复投递或模型请求重放导致相同 callId 再次出现，Core 返回已保存结果，不再次写文件或运行命令。</p>
+<p>这种幂等处理主要保护有副作用的调用。读取文件重复执行通常只浪费资源，补丁重复执行可能冲突，提交或命令重复执行可能改变数据。callId 去重使事件恢复和网络异常更可控。</p>
+
+<h2>三种执行模式怎样约束工具</h2>
+<table class="data-table">
+  <thead><tr><th>模式</th><th>自动执行</th><th>需要用户决策</th></tr></thead>
+  <tbody>
+    <tr><td>Plan</td><td>列目录、读取、搜索、Diff、计划、提问和只读子 Agent</td><td>所有带 sideEffect 的工具被返回 plan_read_only</td></tr>
+    <tr><td>Guided</td><td>只读工具</td><td>写入、补丁和命令逐次审批</td></tr>
+    <tr><td>Auto</td><td>工作区内写入；不匹配高风险规则的命令</td><td>网络、安装、删除、推送、重置等高风险命令</td></tr>
+  </tbody>
+</table>
+
+<p>Plan 模式在 Core 层检查 <code>definition.sideEffect</code>，因此模型即使生成 write_file 也不能产生写入。Guided 模式把 Turn 设为 <code>waitingApproval</code>，保存 Approval 并等待用户允许或拒绝；等待使用 Promise 挂起，不需要轮询。拒绝结果以 <code>approval_denied</code> 回给模型，模型可以改用只读方案或向用户解释。</p>
+<p>Auto 模式会识别 <code>Remove-Item</code>、<code>rm -rf</code>、格式化、关机、注册表、<code>git reset</code>、<code>git clean</code>、<code>git push</code>、curl、wget 和依赖安装等模式。这些调用不会自动执行，而会出现审批。测试、lint、typecheck、build、pytest、<code>node --test</code> 和只读 Git 命令会被归为低风险。其他未命中的命令通常是中风险。</p>
+
+<h2>工作区是本地执行的第一条边界</h2>
+<p>每个 Session 保存一个 workspacePath。Core 创建 ToolContext 时把该路径传给工具。所有文件工具先调用 <code>WorkspacePolicy.path</code>，把模型提供的相对路径解析为候选绝对路径，再确认它位于工作区内。</p>
+<p>例如工作区是 <code>D:\project</code>，参数 <code>src/app.ts</code> 会解析为 <code>D:\project\src\app.ts</code>。参数 <code>..\secret.txt</code> 的相对结果以 <code>..</code> 开头，会被拒绝。绝对路径指向其他目录也会被拒绝。</p>
+
+<pre class="code-block"><span class="code-label">路径检查的核心思路</span>root = resolve(workspace)
+candidate = resolve(root, modelInput)
+
+if relative(root, candidate) startsWith "..":
+  reject("路径越出工作区")
+
+canonicalRoot = realpath(root)
+canonicalCandidate = canonicalizeFuturePath(candidate)
+
+if relative(canonicalRoot, canonicalCandidate) startsWith "..":
+  reject("解析符号链接后越出工作区")</pre>
+
+<h2>为什么还要解析符号链接</h2>
+<p>只检查字符串路径不够。工作区内可能存在一个链接 <code>logs</code>，实际指向工作区外目录。模型访问 <code>logs/secret.txt</code> 时，字符串看起来在根目录下，操作系统解析链接后却到了外部。</p>
+<p>WorkspacePolicy 使用 <code>realpath</code> 获取真实路径。对于尚未创建的新文件，完整路径无法 realpath，所以 <code>canonicalizeFuturePath</code> 从目标向父目录逐级查找最近存在的目录，解析该目录的真实位置，再拼回缺失的文件名。这样 write_file 创建新文件时仍能检查父目录中的符号链接。</p>
+
+<div class="diagram">
+  <div class="diagram-title">WorkspacePolicy 的两阶段检查</div>
+  <div class="flow-row">
+    <div class="flow-node primary">模型路径</div><div class="flow-arrow">→</div>
+    <div class="flow-node">resolve<br/>词法路径</div><div class="flow-arrow">→</div>
+    <div class="flow-node">相对路径检查</div><div class="flow-arrow">→</div>
+    <div class="flow-node">realpath<br/>解析链接</div><div class="flow-arrow">→</div>
+    <div class="flow-node">真实边界检查</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">允许访问</div>
+  </div>
+</div>
+
+<h2>敏感文件为什么需要单独过滤</h2>
+<p>某个文件位于工作区内，也可能不适合进入模型上下文。WorkspacePolicy 屏蔽 <code>.env</code>、私钥、证书、Token、Credential、API Key 和常见密钥文件名；<code>.env.example</code>、<code>.env.sample</code>、<code>.env.template</code> 等不含真实凭据的模板允许读取。</p>
+<p>目录遍历还跳过 <code>.git</code>、<code>node_modules</code>、虚拟环境、构建输出、缓存和符号链接。这样既减少噪声和 token，也降低误读凭据与巨大依赖目录的风险。list_files、search_text 和 read_file 都经过策略，FileEvidence 缓存也不能绕过首次真实读取的路径校验。</p>
+
+<h2>只读工具怎样获取代码上下文</h2>
+<p><code>list_files</code> 用来了解目录结构，depth 限制为 0 到 5，默认 2，最多返回 200 个文件。它适合任务刚开始时定位模块，不适合递归枚举整个磁盘。</p>
+<p><code>read_file</code> 读取一个 UTF-8 文本文件，可指定 startLine 和 endLine，单次最多 400 行。<code>read_files</code> 一次读取 1 到 30 个已知文件，每个最多 400 行。批量工具可以减少模型往返次数；某个文件失败时，它在对应条目记录 error，其他文件仍可返回。</p>
+<p>读取成功后，ContextManager 会为内容建立 FileEvidence，记录 path、行范围、contentHash 和 revision。相同文件、相同 hash、相同行范围再次读取时，模型收到 evidenceRef 与简短说明，ContextBuilder 在需要时注入已有证据。文件被修改、撤销或恢复 Checkpoint 后，该路径证据失效。</p>
+
+<h2>搜索工具为什么优先使用 rg</h2>
+<p><code>search_text</code> 接收 query、可选 path、glob 和 maxResults，默认最多 50 条。目录搜索优先启动 ripgrep，也就是 <code>rg</code>。rg 对大型代码仓库速度快，并能按行输出文件、行号和命中内容。SeeCoder 给 rg 添加敏感文件排除规则。</p>
+<p>本机没有 rg 时，工具使用 Node.js 回退：最多收集 1000 个文件、深度 8，跳过二进制文件，逐行匹配正则。query 不是合法正则时会按普通字符串转义。每条命中内容最多保留 300 字符。回退保证基本可用，性能低于 rg，因此 README 推荐安装 rg。</p>
+
+<h2>write_file 怎样避免半写入</h2>
+<p><code>write_file</code> 先经过 WorkspacePolicy，再读取旧内容作为 before。它不会直接覆盖目标文件，而是在同一目录创建临时文件，完整写入 UTF-8 内容后执行 rename。目标目录不存在时先创建目录。</p>
+<p>临时文件与目标文件位于同一文件系统，rename 的可见切换比逐字节覆盖更接近原子操作。写入失败时，原目标通常保持完整。工具返回的 data 包含 <code>kind: changes</code>、path、before 和 after，Core 随后创建 ChangeSet 与 Checkpoint。</p>
+
+<h2>apply_patch 怎样理解补丁</h2>
+<p><code>apply_patch</code> 接受 unified diff，也兼容 <code>*** Begin Patch / *** Update File</code> 格式。解析器先得到所有目标文件和 hunk。每个 hunk 记录旧行范围、上下文行、删除行和新增行。</p>
+<p>应用前，工具读取每个目标文件并验证旧内容。预期行位置不匹配时，会在附近正负 80 行内寻找相同上下文；纯上下文块可以搜索整个文件。只有唯一匹配才能继续。找不到或存在多个匹配时返回 <code>patch_failed</code>，避免把修改落到错误函数。</p>
+<p>当前自定义 <code>*** Begin Patch</code> 解析只支持 Update File；创建新文件应使用 write_file。这个限制会直接反映在工具错误中。</p>
+
+<h2>多文件补丁怎样保证一致性</h2>
+<p>apply_patch 先在内存中计算所有文件的 after，并确认所有旧内容都能匹配。随后 <code>transactionalWriteFiles</code> 为每个文件准备临时文件。提交阶段把原文件移动为备份，再把临时文件移动到目标位置。</p>
+<p>任一文件提交失败时，函数按相反顺序删除已经安装的新文件并恢复备份。回滚也发生错误时会抛出 AggregateError，并保留备份供人工恢复。全部成功后再清理临时文件与备份。</p>
+
+<div class="diagram">
+  <div class="diagram-title">多文件补丁的准备、提交与补偿</div>
+  <div class="layer-stack">
+    <div class="layer"><b>准备</b>解析全部 hunk → 校验全部旧内容 → 在内存计算全部 after</div>
+    <div class="layer"><b>暂存</b>为每个目标创建同目录临时文件；此时原文件未改变</div>
+    <div class="layer"><b>提交</b>原文件改名为 backup → 临时文件改名为正式文件</div>
+    <div class="layer"><b>成功</b>删除 backup，返回一份包含全部 before / after 的 ChangeSet 数据</div>
+    <div class="layer"><b>失败</b>反向移除已安装文件 → 恢复 backup → 返回 patch_failed</div>
+  </div>
+</div>
+
+<p>这是一种应用层事务：通过“先准备、再切换、失败补偿”让多个文件尽量保持全成或全不成。它不依赖数据库，也不修改 Git 历史，适合桌面端本地文件工具。</p>
+
+<h2>run_command 怎样启动本地进程</h2>
+<p><code>run_command</code> 接收 command、可选 cwd 和 timeoutMs。cwd 先经过 WorkspacePolicy，超时范围是 1 到 120 秒，默认 60 秒。Windows 使用：</p>
+
+<pre class="code-block"><span class="code-label">Windows 实际启动方式</span>powershell.exe -NoProfile -NonInteractive -Command &lt;command&gt;</pre>
+
+<p>其他平台使用 <code>sh -lc</code>。子进程设置 <code>windowsHide: true</code> 和 <code>CI=1</code>，减少额外窗口及交互提示。当前运行时没有原生 PTY，因此适合构建、测试和脚本，不支持 Vim 等需要完整终端控制的交互式 TUI。</p>
+
+<h2>stdout、stderr、超时和取消怎样处理</h2>
+<p>子进程的 stdout 与 stderr 分开监听。每个数据块立即通过 onOutput 产生 <code>tool.output</code>，Terminal 可以边运行边显示；ToolResult 同时保留两个通道，便于模型区分正常输出与诊断。</p>
+<p>每个通道只保留最近约 1 MiB，防止无限输出占满主进程内存。命令超时后，Windows 调用 <code>taskkill /pid /t /f</code> 终止进程树，其他平台发送 SIGKILL，并返回 <code>timeout</code>。用户取消 Turn 时 AbortSignal 触发，Windows 同样终止进程树，其他平台发送 SIGTERM，结果代码为 <code>cancelled</code>。</p>
+<p>退出码 0 返回 ok=true；非零退出码返回 <code>command_failed</code>，data 仍包含 exitCode、stdout 和 stderr。模型能看到测试失败的具体诊断，再决定读取代码、修复或重新运行。进程无法启动时返回 <code>spawn_error</code>。</p>
+
+<h2>Git 能力分成哪两条路径</h2>
+<p>提供给模型的专用 Git 工具是 <code>git_diff</code>，它只运行 <code>git diff -- .</code> 或指定路径的 Diff，30 秒超时。模型若通过 run_command 请求其他 Git 命令，仍要经过命令风险与审批策略。</p>
+<p>界面中的 Stage、Unstage、Commit 和 Push 属于 Main 的专用 IPC 操作，面向用户直接操作，并非模型 ToolRegistry 中的四个工具。它们同样限制在当前工作区。文档区分这两条路径，可以避免把 UI 按钮误认为模型随时拥有的能力。</p>
+
+<h2>哪些工具由 Agent Core 直接处理</h2>
+<p>文件和命令工具可以直接调用 execute。另一些工具需要修改 Agent 状态，Core 会按名称拦截并调度：</p>
+<table class="data-table">
+  <thead><tr><th>工具</th><th>Core 中的实际行为</th></tr></thead>
+  <tbody>
+    <tr><td>set_plan</td><td>更新 ContextLedger 和 plan.updated 事件</td></tr>
+    <tr><td>delegate</td><td>启动只读 Explore 或 Review 子 Agent，受并发与不可嵌套限制</td></tr>
+    <tr><td>ask_user</td><td>保存问题，把 Turn 设为 waitingUser，等待结构化回答</td></tr>
+    <tr><td>checkpoint</td><td>记录当前 revision 与文件 hash，形成可恢复点</td></tr>
+    <tr><td>review_changes</td><td>启动只读 Review 子 Agent检查当前变更</td></tr>
+    <tr><td>compact_context</td><td>等本组 Tool Results 保存完整后启动上下文压缩</td></tr>
+    <tr><td>finish</td><td>检查当前 revision 的验证状态，形成完成摘要或过期警告</td></tr>
+  </tbody>
+</table>
+<p>这些 ToolDefinition 的 execute 只是保护性占位。若有人绕过 Core 直接调用 delegate，会得到 <code>delegate_unhandled</code>。真正实现位于 Agent Core，因为它需要访问 Session、Turn、Ledger、子 Agent 调度器和事件存储。</p>
+
+<h2>ToolResult 为什么必须结构化</h2>
+<p>所有工具返回统一 ToolResult。ok 表示调用是否成功；data 保存业务结果；durationMs 记录耗时；error 包含稳定 code 和可读 message。Core、UI、日志和模型都能依据相同字段判断结果。</p>
+
+<pre class="code-block"><span class="code-label">命令失败结果示例</span>{
+  "ok": false,
+  "data": {
+    "exitCode": 1,
+    "stdout": "...",
+    "stderr": "AssertionError: empty title was accepted"
+  },
+  "durationMs": 842,
+  "error": {
+    "code": "command_failed",
+    "message": "命令退出码 1"
+  }
+}</pre>
+
+<p>完整 ToolResult 写入追加式事件，支持审计与恢复。送入模型的内容还要经过 Observation Compressor。两者用途不同：事件保存完整事实，Observation 控制上下文体积。</p>
+
+<h2>Observation 怎样减少无效上下文</h2>
+<p>统一截断会丢失不同工具最重要的字段，因此 SeeCoder 按工具类型压缩。read_file 保留路径、hash、行范围和当前需要的代码，重复读取使用 evidenceRef；search_text 保留数量、去重后的高相关命中、文件和行号；run_command 保留命令、退出码、stdout 头部、stderr 尾部、诊断行、截断标记和耗时。</p>
+<p>git_diff 保留文件统计和预算内关键 hunk。write_file 与 apply_patch 保留修改文件、revision 和行数统计，不再次注入完整 before/after。未知工具使用通用首尾裁剪，最多约 16,000 字符。每种 Observation 都保留 ok、错误码、耗时和恢复所需信息。</p>
+
+<div class="diagram">
+  <div class="diagram-title">同一次执行的两种视图</div>
+  <div class="flow-row">
+    <div class="flow-node primary">Tool Runtime</div><div class="flow-arrow">→</div>
+    <div class="flow-node">完整 ToolResult</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">events.jsonl<br/>审计与恢复</div>
+  </div>
+  <div class="flow-row">
+    <div class="flow-node primary">Tool Runtime</div><div class="flow-arrow">→</div>
+    <div class="flow-node">Observation Compressor</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">下一轮 ModelRequest<br/>决策所需信息</div>
+  </div>
+</div>
+
+<h2>文件修改后 Core 还会做什么</h2>
+<p>write_file 或 apply_patch 成功只表示磁盘操作完成。Core 发现 <code>data.kind=changes</code> 后调用 <code>recordChanges</code>：创建 ChangeSet；把 ContextLedger 的 changeRevision 加一；更新文件 hash；使相关 FileEvidence 失效；写入 before/after 快照；发出 <code>changes.created</code>；再创建带 revision 和 hash 的 Checkpoint。</p>
+<p>因此 Changes 面板、撤销、上下文新鲜度和验证状态使用同一份变更事实。恢复 ChangeSet 时，<code>restoreChangeSet</code> 仍先经过 WorkspacePolicy，再使用多文件事务把每个文件写回 before。</p>
+<p>run_command 成功或失败后，Core 只把 test、lint、typecheck、build、pytest、<code>node --test</code> 等命令记为 ValidationRecord。记录带当前 revision。代码再次修改后 revision 增加，旧测试仍保留在历史中，但 finish 会提示“验证已过期”。</p>
+
+<h2>Hooks 在工具执行前后做什么</h2>
+<p>项目可以配置 <code>preToolUse</code> 和 <code>postFileEdit</code> Hook。Core 在本地工具开始前运行 preToolUse。Hook 失败时返回 <code>hook_blocked</code>，工具不会执行。这可用于项目自定义策略，例如禁止改动生成文件。</p>
+<p>文件变更已经提交后运行 postFileEdit，例如自动格式化或检查。Hook 失败会作为自动化错误报告，不能把已经成功产生的 ChangeSet伪装成未发生。用户仍能看到变更并选择撤销。项目 Hook 首次启用需要建立信任，因为 Hook 本身会在用户权限下运行。</p>
+
+<h2>用一个真实任务走完整条链</h2>
+<p>用户在 Guided 模式输入：“待办标题只有空格时也会被添加，请修复并运行测试。”TurnRunner 建立 Turn，上下文中包含工具 Schema。模型先调用 search_text 查找 addTodo。ToolCallExecutor 验证参数，WorkspacePolicy 确认路径，rg 返回组件和测试行号。完整结果写入事件，精简命中进入下一轮。</p>
+<p>模型随后用 read_files 一次读取两个文件。工具创建 FileEvidence。模型生成 apply_patch，Core 发现它有副作用，把 Turn 设为 waitingApproval。Renderer 显示目标文件和风险。用户允许后，preToolUse 通过；补丁解析器在内存校验上下文；事务写入成功。</p>
+<p>Core 创建 ChangeSet、revision 1、Checkpoint，并使旧证据失效。模型调用 run_command 执行测试，Guided 模式再次审批。Terminal 实时显示 stdout/stderr。第一次测试失败时 ToolResult 为 command_failed，但包含断言信息。模型根据 Observation 重新读取相关片段，修正后再次测试。</p>
+<p>测试通过后 ValidationRecord 记录 revision 2、passed。模型调用 finish。Core确认当前 revision 有新鲜验证，把摘要、修改文件和测试证据发给界面，Turn 进入 completed。整个过程中 Renderer 从未直接读取项目文件；所有副作用都经过 Main、Policy、审批和审计事件。</p>
+
+<h2>错误怎样反馈给模型与用户</h2>
+<table class="data-table">
+  <thead><tr><th>阶段</th><th>错误码示例</th><th>系统行为</th></tr></thead>
+  <tbody>
+    <tr><td>工具识别</td><td>unknown_tool</td><td>不执行，提示模型选择已注册工具</td></tr>
+    <tr><td>参数校验</td><td>invalid_args</td><td>返回字段问题，允许下一轮修正</td></tr>
+    <tr><td>权限</td><td>plan_read_only / approval_denied</td><td>保持文件不变，允许改换方案</td></tr>
+    <tr><td>路径</td><td>path_denied / command_denied</td><td>拒绝工作区外或敏感目标</td></tr>
+    <tr><td>文件</td><td>read_failed / patch_failed</td><td>保留原文件；补丁冲突不会部分写入</td></tr>
+    <tr><td>进程</td><td>spawn_error / timeout / cancelled</td><td>结束进程或进程树，保存已有输出</td></tr>
+    <tr><td>命令结果</td><td>command_failed</td><td>保留退出码和诊断，交给 Agent恢复</td></tr>
+  </tbody>
+</table>
+<p>工具失败通常是一次可观察结果，不会立刻破坏整个 Turn。模型能根据稳定错误码和恢复信息重新规划。连续失败累计达到三次且当前批次没有成功结果时，主循环判定无进展并终止；当前实现统计失败次数，不比较调用签名。</p>
+
+<h2>一批工具什么时候可以并行</h2>
+<p><code>ToolCallExecutor.executeBatch()</code> 先查看整批工具定义。只有调用数大于一个，并且每个工具都明确声明 <code>parallelSafe=true</code>，才使用 <code>Promise.all</code> 并行。只要有一个工具不满足，整批就串行。未知工具也不会被默认当作并行安全。</p>
+<p>并行完成的先后时间可能不同，但结果数组保持模型原始调用顺序。TurnRunner 仍按该顺序生成 Tool Result 和 Observation，因此消息配对、事件因果和下一轮上下文保持稳定。并行只减少互不影响的等待时间，不改变协议顺序。</p>
+
+<h2>写入为什么还需要工作区协调器</h2>
+<p>工具自己的 <code>parallelSafe</code> 只描述单批调度。不同 Session 可能同时操作同一个项目，撤销和恢复也可能与工具写入交叉。WorkspaceMutationCoordinator 以标准化工作区路径共享一套锁，保护所有这些入口。</p>
+<ul><li><code>write_file</code> 按目标文件加锁。</li><li><code>apply_patch</code> 提取全部目标路径，排序去重后一次获取，避免死锁。</li><li>不同文件的确定性写入可以并行。</li><li><code>run_command</code> 无法预先知道修改范围，因此获取工作区级独占锁。</li><li>撤销和 Checkpoint 恢复使用同一个协调器。</li></ul>
+<p>锁在 <code>finally</code> 中释放，所以成功、失败、超时和取消都不会留下永久占用。当前锁只协调同一 SeeCoder 进程，不能阻止外部编辑器或另一个进程同时修改文件；文件哈希和恢复冲突检查负责发现这类变化。</p>
+<figure class="visual"><img data-doc-asset="diagrams/tool-locks.svg" alt="ToolCallExecutor 经过校验后，由 WorkspaceMutationCoordinator 协调只读工具、文件写入和命令" /><figcaption>只读批次可安全并行；确定目标的写入按文件加锁；范围未知的命令锁整个工作区。</figcaption></figure>
+
+<h2>当前安全边界必须怎样表述</h2>
+<p>SeeCoder 当前实现了应用层隔离：Renderer 无 Node 权限；工具面有限；参数使用 Zod；路径经过词法与真实路径检查；敏感文件被过滤；副作用受执行模式和审批控制；命令有超时、取消和输出上限；文件写入可回滚；过程写入审计轨迹。</p>
+<p>它尚未提供操作系统级沙箱。被允许的 PowerShell 和 Hook 仍以当前 Windows 用户权限运行。命令文本的高风险识别使用规则匹配，无法等价于容器、低权限账户或内核级隔离。因此答辩时应准确说明“最小工具面与应用层安全策略”，不宣称进程完全无法访问工作区外资源。</p>
+
+<h2>为什么采用这套技术选型</h2>
+<p>工具运行时使用 Node.js 原生 fs、child_process、path 和 AbortSignal，与 Electron Main 共用 TypeScript 类型，无需维护远程后端。Zod 在本地执行边界进行可靠校验；追加式事件保留事实；ChangeSet 与 Checkpoint提供恢复；按工具压缩 Observation 控制 token；WorkspacePolicy集中处理路径，避免每个工具各写一套规则。</p>
+<p>如果直接把 shell 作为唯一工具，模型需要自己拼接读取、搜索和修改命令，权限范围过大，结果也难以结构化。如果为每次文件操作调用远程服务，代码与密钥会跨越更多信任边界，离线能力和演示稳定性下降。当前分层符合桌面 Coding Agent 的目标：模型负责决策，Agent Core 负责控制，本地工具负责有限执行。</p>
+
+<h2>最后记住一条执行链</h2>
+<pre class="code-block"><span class="code-label">完整执行链</span>模型只提出 Tool Call
+→ TurnRunner 按调用标识聚合并先保存 assistant 消息
+→ ToolCallExecutor 按 callId 去重并决定整批并行或串行
+→ ToolRegistry 找到定义，Zod 校验参数
+→ ExecutionMode、风险规则和 WorkspacePolicy 决定是否允许
+→ 需要时暂停等待审批，并运行 preToolUse Hook
+→ WorkspaceMutationCoordinator 协调所有写入、撤销与恢复
+→ 本地工具在 Electron Main 中执行，支持流式输出、超时和取消
+→ 完整 ToolResult 写入事件，变更进入 ChangeSet / Checkpoint / Ledger
+→ Observation Compressor 只把下一轮决策需要的信息交给模型
+→ 模型根据真实结果继续、修复、验证或结束</pre>
+<p>这条链同时解释了 SeeCoder 的能力来源和控制边界：远程模型做决策，本地主进程掌握权限，工具提供可校验的动作，事件与上下文把结果送回下一轮。</p>

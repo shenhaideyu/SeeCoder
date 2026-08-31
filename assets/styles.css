@@ -47,6 +47,8 @@ body {
   font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+html, body { overflow-x: hidden; }
 button, input { font: inherit; }
 button { color: inherit; }
 

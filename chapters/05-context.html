@@ -1,31 +1,255 @@
-<span class="chapter-kicker">第二部分 · 理解核心</span>
-<h1>上下文怎样保持清醒</h1>
-<p class="lead">完整历史用于恢复和审计，模型上下文只保留当前决策真正需要的信息。两者不能混为一谈。</p>
-<figure class="visual"><img src="../assets/diagrams/context-pipeline.svg" alt="Session 历史、任务账本、文件证据和记忆经过混合上下文构建后形成模型视图" /><figcaption>上下文构建是选择事实，不是删除历史。</figcaption></figure>
+<span class="chapter-kicker">第二部分 · 理解核心机制</span>
+<h1>上下文管理与混合压缩</h1>
+<p class="lead">上下文管理决定模型这一轮知道什么。SeeCoder 保存完整 Session 历史，同时为每次模型请求构造一份有限、当前、协议合法的工作视图。长任务达到预算阈值后，权威状态、文件证据、工具 Observation、历史检索、模型摘要和最近原文共同组成混合上下文。</p>
 
-<h2>四类信息分别负责什么</h2>
-<table class="data-table"><thead><tr><th>信息</th><th>作用</th></tr></thead><tbody>
-<tr><td>ContextLedger</td><td>当前目标、计划、文件变更版本、验证和错误。它是权威状态。</td></tr><tr><td>FileEvidence</td><td>模型最近读取过的代码片段和内容哈希。文件变化后旧证据失效。</td></tr><tr><td>MemoryIndex</td><td>从旧事件中找回与当前目标、路径或错误相关的事实。</td></tr><tr><td>最近消息</td><td>保留用户原话和最新的完整工具请求/结果。</td></tr>
-</tbody></table>
+<h2>先理解“上下文”是什么</h2>
+<p>大语言模型每次调用都接收一组消息。消息中包含系统规则、用户任务、历史对话、代码、工具说明和工具执行结果。这组实际发送给模型的内容叫 <strong>模型上下文</strong>。模型只能依据当前请求中的内容作出判断。</p>
+<p>模型不会自动记住上一次 HTTP 请求。SeeCoder 若想让 DeepSeek 知道上一轮读取过哪些文件，就要把相关消息再次放入下一轮请求。随着任务继续，消息会越来越多：用户目标、模型解释、搜索结果、代码正文、补丁、测试日志和多次失败都会进入历史。</p>
+<p><strong>context window</strong> 是模型一次请求最多能够处理的 token 数量。token 是模型切分文本后的基本单位。一个中文字符、英文单词或标点可能对应一个或多个 token。模型配置中的 128000 表示输入与输出合计受到这个窗口约束。</p>
 
-<h2>为什么工具结果需要单独处理</h2>
-<p>命令可能输出几万字符，搜索也可能返回大量命中。完整结果会保存到事件或 Artifact 文件中；发送给模型的 Observation 只保留路径、退出码、错误尾部和关键诊断。模型仍能读取 Artifact 的指定片段。</p>
+<div class="callout"><span class="callout-title">需要记住的核心关系</span><p>Session 历史负责保存完整过程；模型上下文负责支持当前一轮决策。历史可以持续增长，单次上下文必须控制在模型窗口以内。</p></div>
 
-<h2>先做免费压缩</h2>
-<p><code>buildHybridContext()</code> 先使用不调用模型的方式减小输入：删除重复证据、压缩旧工具输出、只保留相关记忆，并按完整消息组整理历史。只有这些处理仍无法满足预算时，才请求模型生成语义摘要。</p>
+<h2>Session 历史和模型上下文如何配合</h2>
+<p>SeeCoder 将信息分成三个层次。第一层是 <strong>完整历史</strong>，以 JSONL 事件保存在磁盘，服务恢复、审计和界面展示。第二层是 <strong>当前任务状态</strong>，由 ContextLedger 和文件证据等结构维护，服务长任务中的事实一致性。第三层是 <strong>本轮模型视图</strong>，由 ContextBuilder 根据 token 预算临时生成。</p>
 
-<h2>什么时候生成摘要</h2>
-<p>系统先从模型上下文窗口中扣除最大输出和安全余量，得到可用输入预算。当内容超过预算的 75% 时开始压缩，目标降到 60%。这样能为下一轮新增工具结果预留空间。</p>
-<p>摘要请求失败、超时或被取消时，系统使用确定性摘要继续运行，不会让主 Turn 因辅助功能失败而失败。</p>
+<div class="diagram">
+  <div class="diagram-title">三个信息层次</div>
+  <div class="layer-stack">
+    <div class="layer"><b>完整 Session 历史</b>用户消息、assistant Tool Calls、Tool Results、计划、审批、变更、错误和终态；追加写入 JSONL</div>
+    <div class="layer"><b>结构化工作状态</b>ContextLedger V2、FileEvidence、MemoryEntry；记录当前目标、revision、文件、验证和未解决问题</div>
+    <div class="layer"><b>本轮 ModelRequest</b>系统规则、工具 Schema、权威状态、相关证据、检索记忆、摘要和最近消息；受到 token 预算约束</div>
+  </div>
+</div>
 
-<h2>ContextSnapshot 保存什么</h2>
-<p>真正发生语义压缩时会生成 ContextSnapshot。它记录摘要覆盖到哪个事件、保留了哪些消息组、当时的账本版本、模型和 token 校准系数。恢复 Session 时可以准确重建压缩后的模型视图。</p>
+<p>压缩只改变第三层。JSONL 中的原始 Tool Result、代码读取和对话不会被删除。Renderer 仍然能够显示旧轨迹，应用重启也能读取已经发生的事实。下一轮模型收到的是压缩后的工作视图。</p>
 
-<h2>TokenCalibrator 为什么存在</h2>
-<p>字符估算不可能完全等于模型返回的 token 数。系统用真实 usage 计算校准比例，并按模型保存。后续预算会更接近真实消耗。比例同时写入 ContextSnapshot，重启后继续使用。</p>
+<h2>为什么简单截断容易出错</h2>
+<p>假设系统永远只保留最近八条消息。一次模型响应可能请求读取四个文件，随后产生四条 Tool Result。最近八条很快就会被工具协议占满，最初的用户目标和关键设计决定被挤出去。模型依然看到代码，却不知道要解决什么问题。</p>
+<p>按照字符数从开头删除也会破坏 Tool Calling 协议。一条 assistant 消息可能包含多个 Tool Call，后面必须跟随相同 callId 的 Tool Result。保留请求并删除部分结果，或只保留结果，都会让 OpenAI 兼容 API 拒绝消息链。</p>
+<p>统一截取每个工具输出的前后若干字符同样缺少语义。命令是否成功取决于 exitCode；测试异常通常位于 stderr 尾部；搜索结果需要路径和行号；写文件只需告诉模型修改范围与 revision。不同工具应当保留不同信息。</p>
+<p>SeeCoder 因此采用混合结构。关键事实使用确定性数据结构，旧对话使用模型摘要，代码使用带哈希的证据，历史问题使用轻量检索，最近交互保留原文。各层承担不同职责。</p>
 
-<h2>文件变化后为什么要让证据失效</h2>
-<p>模型读取文件后，Evidence 代表当时的内容。写入、撤销或恢复都会改变文件，因此 ChangeManager 会按路径清除旧 Evidence。下一次需要代码时必须重新读取，避免模型依据旧版本继续修改。</p>
+<div class="diagram">
+  <div class="diagram-title">混合上下文总览</div>
+  <div class="layer-stack">
+    <div class="layer"><b>最高优先级</b>系统安全规则、工具 Schema、当前用户目标和未解决审批</div>
+    <div class="layer"><b>权威事实</b>ContextLedger V2 与最近完整 Tool Call 协议组</div>
+    <div class="layer"><b>当前代码与结果</b>FileEvidence、未解决错误、最新 revision 的 Validation</div>
+    <div class="layer"><b>短期连续性</b>最近自然语言消息和用户 Follow-up 原文</div>
+    <div class="layer"><b>按需回忆</b>MemoryIndex 召回的路径、决定、错误和变更</div>
+    <div class="layer"><b>长期叙事</b>SemanticSummary；失败时使用 deterministic fallback</div>
+  </div>
+</div>
 
-<h2>本章只需记住</h2>
-<div class="callout"><span class="callout-title">上下文优先级</span><p>先保权威账本和最近完整工具组，再保相关证据，最后才保旧对话原文。摘要只解释过去，不能覆盖当前事实。</p></div>
+<h2>贯穿本章的任务</h2>
+<p>继续使用上一章的任务：“修复待办事项允许空标题提交的问题，纯空格也要拒绝，并补充测试。”第一次模型请求只有用户目标和规则。随后模型搜索代码、读取表单与测试、修改两个文件、运行测试、根据失败再次修改、重新测试。若任务继续追问和 Review，累计消息可能达到几十组。</p>
+<p>下面观察同一任务中的上下文如何变化。理解这个时间顺序后，再看每个数据结构会更容易。</p>
+
+<h2>任务刚开始时：上下文很短</h2>
+<p>TurnRunner 创建 Turn 后，把当前 Session 消息交给上下文构建器。构建器先运行 <code>sanitizeModelMessages()</code>，删除无法形成完整协议组的孤立 tool 消息。新任务尚未产生工具调用，因此消息主要是用户输入。</p>
+<p>TurnRunner 还会计算固定开销。固定开销包含系统提示、Workspace 规则、Skill 内容、附件描述和工具 JSON Schema。这些内容虽然没有位于普通会话数组中，也会占用模型窗口，所以必须计入预算。</p>
+<p>ContextBuilder 创建一条权威 Ledger 消息，加入用户目标、当前计划、changeRevision、文件、验证和错误。此时 revision 为 0，文件与验证为空。MemoryIndex 尚无相关旧事实，FileEvidence 也为空。最终请求由固定规则、Ledger 和用户原文组成。</p>
+
+<h2>读取代码后：文件正文成为 Evidence</h2>
+<p>模型调用 <code>read_files</code> 读取 TodoForm.tsx 和 todo.test.ts。完整 Tool Result 写入事件历史。随后 <code>serializeObservation</code> 为每个文件创建 FileEvidence，内容包括 evidenceId、path、contentHash、起止行、正文、revision 和创建时间。</p>
+<p><strong>contentHash</strong> 是根据本次读取文本计算的内容摘要。相同路径、相同行范围和相同哈希表示这段证据没有变化。模型再次读取相同内容时，Observation 可以返回 evidenceRef、哈希和 <code>cached=true</code>，省去重复正文。ContextBuilder发现引用仍有效时，会单独注入对应 FileEvidence，所以模型能够解析引用。</p>
+
+<div class="diagram">
+  <div class="diagram-title">文件证据的生命周期</div>
+  <div class="flow-row">
+    <div class="flow-node primary">首次 read_file</div><div class="flow-arrow">→</div>
+    <div class="flow-node">正文 + contentHash</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">FileEvidence</div><div class="flow-arrow">→</div>
+    <div class="flow-node">重复读取返回 evidenceRef</div><div class="flow-arrow">→</div>
+    <div class="flow-node">写入或恢复</div><div class="flow-arrow">→</div>
+    <div class="flow-node">旧 Evidence 失效</div>
+  </div>
+</div>
+
+<p>模型修改 TodoForm.tsx 后，Core 增加 changeRevision，并按文件路径使旧 Evidence 失效。下一轮若需要查看新代码，工具会重新读取并创建 revision 1 的证据。Checkpoint 恢复和 ChangeSet 撤销也会触发失效。这样模型不会继续使用修改前代码作为当前事实。</p>
+
+<h2>工具执行后：完整结果与 Observation 分开</h2>
+<p><strong>Tool Result</strong> 保存工具真实输出，适合审计和 UI 展开查看。<strong>Observation</strong> 是放入模型历史的精简结果，保留下一轮决策所需信息。两者分开后，用户可以查看完整日志，模型请求也不会被大量低价值文本占满。</p>
+
+<table class="data-table">
+  <thead><tr><th>工具</th><th>Observation 保留什么</th><th>压缩什么</th></tr></thead>
+  <tbody>
+    <tr><td>read_file / read_files</td><td>路径、行范围、contentHash、evidenceRef；首次保留正文</td><td>相同内容重复读取时移除正文</td></tr>
+    <tr><td>search_text</td><td>去重后的命中、路径、行号、总数量</td><td>最多保留 50 条，标记是否截断</td></tr>
+    <tr><td>run_command</td><td>command、exitCode、stdout、stderr、诊断行、耗时</td><td>stdout 保留首尾，stderr 重点保留尾部</td></tr>
+    <tr><td>git_diff</td><td>exitCode、关键 Diff、stderr、截断标记</td><td>Diff 按首尾控制长度</td></tr>
+    <tr><td>write_file / apply_patch</td><td>修改文件、修改前后字符数、成功状态</td><td>不重复发送完整 before/after</td></tr>
+    <tr><td>其他工具</td><td>ok、错误、duration 和安全裁剪结果</td><td>超过 16000 字符时使用通用首尾回退</td></tr>
+  </tbody>
+</table>
+
+<p>例如测试输出有 30000 字符。Observation 会保留命令、exitCode、stdout 首尾、stderr 末尾以及最多 30 条含 error、failed、exception、warning 或源码位置的诊断行。模型能够看见失败原因，也知道输出已经截断。完整文本仍保留在工具轨迹。</p>
+
+<h2>ContextLedger V2：保存不能丢失的事实</h2>
+<p>自然语言对话会留下多个时期的说法。模型早期可能计划修改三个文件，后来确认只需两个。旧消息依然存在。ContextLedger V2 保存当前有效状态，为模型提供权威来源。</p>
+<pre class="code-block"><span class="code-label">当前核心结构</span>interface ContextLedgerStateV2 {
+  version: 2;
+  goal: string;
+  acceptanceCriteria: string[];
+  constraints: string[];
+  plan: PlanStep[];
+  changeRevision: number;
+  decisions: DecisionRecord[];
+  files: FileStateRecord[];
+  validations: ValidationRecord[];
+  errors: ErrorRecord[];
+}</pre>
+<p>Ledger 中的 goal 保存用户目标，plan 保存当前步骤，files 记录读取与修改状态，errors 保存未解决错误。ValidationRecord 带有 command、revision、status、summary 和 timestamp。文件每次变化都会增加 changeRevision，所以测试结果能够与具体代码版本对应。</p>
+<p>ContextBuilder始终把 Ledger 放在最终请求开头，并标记为“权威任务状态，不得被历史摘要覆盖”。语义摘要只能帮助模型理解旧过程，无法把 revision 2 的失败测试改写成通过，也无法复活已经解决的错误。</p>
+
+<h2>MemoryIndex：从旧历史中找回相关事实</h2>
+<p>摘要把旧过程压成一段叙事，某些细节仍可能在后续追问中重新变得重要。例如用户问“之前为什么放弃在后端校验”，相关决定可能距离当前消息很远。MemoryIndex 将事件与 Ledger 转换成轻量 MemoryEntry。</p>
+<p>MemoryEntry 的 kind 可以是 decision、error、validation、change、user 或 assistant。每条记录保存 text、paths、keywords、sessionId、可选 turnId、revision、timestamp 和状态。索引可以从已有 Event 与 Ledger 重建，不依赖额外数据库。</p>
+<p>每轮检索查询来自最新用户输入、Follow-up、当前 goal、未解决错误和相关文件路径。评分使用英文规范词、中文二元组、路径精确匹配、错误码匹配、状态、revision 和时间衰减。active、当前 revision 和路径精确命中的记录优先。superseded 决策、resolved 错误和旧 revision 的成功验证被过滤。</p>
+<p>检索最多返回六条，总计不超过 4000 字符。与最近自然语言原文完全相同的记录也会去重。系统只把命中数量和类型写入 <code>context.retrieved</code> 事件，避免再保存一份检索全文。</p>
+
+<h2>语义摘要：压缩旧叙事</h2>
+<p>达到压缩条件后，SeeCoder 复用当前配置的 ModelProvider 和当前模型，发起独立摘要请求。请求的 <code>purpose</code> 为 <code>context_summary</code>，temperature 为 0，tools 为空，maxOutputTokens 取当前配置与 2048 的较小值，超时为 30 秒。</p>
+<p>摘要 Prompt 明确说明历史、文件和命令输出属于不可信数据。模型需要返回结构化 JSON，字段包括 userIntent、requirements、activeDecisions、supersededDecisions、completedWork、unresolvedQuestions 和 narrative。Zod 校验成功后，摘要作为“仅作叙事参考”的消息进入上下文。</p>
+<p>摘要请求可能遇到网络错误、取消、超时或非法 JSON。系统会记录 <code>context.summary.failed</code>，随后使用确定性摘要。确定性回退由 ContextLedger JSON 和旧消息片段组成，长度最多 12000 字符。主 Turn 继续执行，不会因为辅助摘要失败而失败。</p>
+<p>SeeCoder不会再请求模型“修复摘要 JSON”。第二次请求会增加延迟和故障面，确定性回退已经能够保护目标与状态。Fake Provider 通过 purpose 区分主循环脚本和摘要脚本，因此测试摘要不会消耗主任务预设响应。</p>
+
+<h2>预算从哪里来</h2>
+<p>模型窗口需要同时容纳输入和将要生成的输出。SeeCoder 先扣除最大输出 token，再扣除安全余量：</p>
+<pre class="code-block"><span class="code-label">实际预算公式</span>availableInput = max(
+  1000,
+  contextWindow
+    - maxOutputTokens
+    - max(2048, floor(contextWindow × 5%))
+)</pre>
+<p>以 contextWindow=128000、maxOutputTokens=8192 为例，5% 安全余量为 6400，最终 availableInput 为 113408 token。安全余量覆盖估算误差和供应商协议差异。固定系统提示与工具 Schema 也计入 beforeTokens。</p>
+<p>系统使用保守的 Unicode token 估算器。它无法达到厂商 tokenizer 的逐 token 精度，但计算速度快，无需为每个兼容模型引入不同依赖。安全余量用于吸收误差。</p>
+
+<h2>什么时候触发混合压缩</h2>
+<figure class="visual"><img data-doc-asset="diagrams/context-pipeline.svg" alt="完整 Session 历史经过账本、文件证据、工具观察、检索、摘要和最近消息组成模型上下文" /><figcaption>完整历史用于恢复；模型每轮只接收经过预算选择的工作视图。</figcaption></figure>
+<p>ContextBuilder先计算 Ledger、检索、Evidence、固定开销与安全消息的总估算量 <code>beforeTokens</code>。满足下面任一条件时进入压缩：</p>
+<pre class="code-block"><span class="code-label">触发条件</span>beforeTokens &gt; availableInput × 75%
+
+或
+
+用户/模型调用 compact_context，且当前安全历史超过 4 条消息</pre>
+<p>75% 触发使系统在接近硬上限前开始整理，为随后新增的工具输出和 Follow-up 留空间。压缩目标是 <code>availableInput × 60%</code>。15 个百分点的间隔可以减少连续每一轮都触发摘要的抖动。</p>
+<p>未达到触发条件时，ContextBuilder仍会加入 Ledger、相关检索和当前 Evidence，但不会生成新摘要，也不会裁剪最近消息。混合上下文构建每轮都发生，昂贵的语义摘要只在实际压缩时发生。</p>
+
+<h2>真正压缩时按什么顺序处理</h2>
+<p>第一步是建立合法消息组。普通 user 或 assistant 消息各自形成一组；带 Tool Calls 的 assistant 消息与其全部 Tool Results 形成一个整体。缺少结果的组不会进入安全历史。这样后续选择和删除只能以组为单位。</p>
+<p>第二步是确定强制保护组。系统保护最新消息组和最近一个完整工具组，同时暂时保留最近最多六组。最新组保住当前用户意图，最近工具组保住最新动作与 Observation。模型摘要覆盖强制保护组之外的旧历史。</p>
+<p>第三步是请求语义摘要。摘要成功时得到 SemanticSummary，失败时使用确定性回退。随后构造候选请求：</p>
+<pre class="code-block"><span class="code-label">压缩后的候选顺序</span>1. ContextLedger V2 权威状态
+2. 按需召回的历史事实
+3. 当前 revision 的 FileEvidence
+4. 历史压缩摘要
+5. 保留的最近消息组与最新工具组</pre>
+<p>第四步是把估算量降到 availableInput 的 60%。如果仍超出目标，当前实现依次移除检索结果、移除 Evidence 注入、把摘要截到 4000 字符，再从最早的非保护“最近消息组”开始删除。Ledger、最新消息组和最近工具组保持到最后。每次删除都以完整组为单位。</p>
+
+<div class="diagram">
+  <div class="diagram-title">一次混合压缩的完整流程</div>
+  <div class="layer-stack">
+    <div class="layer"><b>1 · 计算预算</b>扣除最大输出、5% 安全余量、系统提示和工具 Schema</div>
+    <div class="layer"><b>2 · 判断触发</b>超过 availableInput 的 75%，或 compact_context 主动请求</div>
+    <div class="layer"><b>3 · 保护协议</b>按消息组整理，保护最新组和最近完整工具组</div>
+    <div class="layer"><b>4 · 总结旧历史</b>当前模型生成 SemanticSummary；失败则确定性回退</div>
+    <div class="layer"><b>5 · 组装分层视图</b>Ledger、检索、Evidence、摘要、最近原文</div>
+    <div class="layer"><b>6 · 降到目标</b>移除检索 → Evidence → 缩短摘要 → 删除最早非保护组</div>
+    <div class="layer"><b>7 · 最终校验</b>sanitizeModelMessages 再次保证 Tool Call 协议完整</div>
+  </div>
+</div>
+
+<p>Evidence 在极端预算下可能从本轮注入中移除，原始文件读取仍保存在 JSONL，Ledger 仍记录相关路径和哈希。模型若再次需要代码，可以重新调用读取工具。这个取舍优先保证任务状态和协议合法性。</p>
+
+<h2>压缩完成后保存什么</h2>
+<p>压缩结果写入 CompactionItem，其中可以包含 summary、压缩后的 historyMessages、semanticSummary、ledgerVersion=2 和 metrics。事件流同时产生 <code>context.summary.requested</code>、<code>context.summary.completed</code> 或 <code>context.summary.failed</code>，以及 <code>context.compacted</code>。</p>
+<p>metrics 记录 beforeTokens、afterTokens、availableInput、summarySource、retrievedEntries 和 droppedEvidence。Trace 因而能够说明压缩何时发生、减少了多少输入、摘要来自模型还是回退、检索与证据是否被裁剪。摘要请求的 token 和耗时独立记录，不增加主 Agent iteration。</p>
+
+<h2>把它放回真实任务中</h2>
+<p>任务开始时，revision 0，Ledger 只有目标。模型读取两个文件后，FileEvidence 保存代码，下一轮上下文包含 Evidence 和搜索 Observation。模型修改文件后，revision 变为 1，旧 Evidence 失效。第一次测试失败，Ledger 增加 revision 1 的失败 ValidationRecord，命令 Observation 保留 exitCode 和异常。</p>
+<p>模型继续修改，revision 变为 2，再次测试通过。Ledger 保存 revision 2 的成功验证。用户随后追问多轮设计原因，消息逐渐超过 75% 阈值。ContextBuilder保护最新追问和最近测试工具组，把更旧对话交给当前 DeepSeek 生成摘要，同时从 MemoryIndex 召回与 TodoForm.tsx 和空标题决定相关的记录。</p>
+<p>压缩后的模型请求仍能回答六个关键问题：用户目标是什么；当前计划进行到哪里；代码现在是 revision 几；修改了哪些文件；最近测试是否通过；用户刚刚追问什么。早期逐字解释和冗长测试日志已经被摘要或 Observation 代替。</p>
+<p>如果摘要请求此时超时，确定性回退仍包含 Ledger 和旧消息片段。Turn 继续运行，界面 Trace 标记 summarySource 为 deterministic-fallback。任务状态不会回退，测试也不会被重新执行。</p>
+
+<h2>重启后如何恢复上下文</h2>
+<p>应用启动时，Agent Core 读取 Session 事件和 state。旧版 Ledger 会迁移到 V2，缺失 revision 设为 0。消息历史根据 UserMessage、AssistantMessage、Tool Call、Tool Result 和 CompactionItem 重建。每个 Tool Result 再经过 serializeObservation 转换为当前模型视图，最后运行 sanitizeModelMessages。</p>
+<p>MemoryIndex 可以从事件与 Ledger 重新建立。FileEvidence 属于运行中的证据缓存，重启后通过恢复记录和后续读取逐步重建。已经完成的副作用只作为历史事实恢复，系统不会因为构造上下文再次写文件或运行命令。</p>
+
+<h2>混合上下文为什么适合 SeeCoder</h2>
+<p>纯截断速度快，但会丢目标和协议。纯模型摘要表达自然，但模型可能遗漏 revision、错误码和验证状态。纯向量检索适合大知识库，却需要 Embedding 服务和索引存储，也难以稳定保住最新工具组。完整状态机记忆准确，若将所有代码和叙事都结构化，维护成本会迅速增加。</p>
+<p>混合方案把不同信息交给最合适的机制。Ledger 管事实，Evidence 管当前代码，Observation 管工具输出，关键词检索管历史召回，模型摘要管自然语言叙事，最近消息保留用户原话。各层都可以独立测试，摘要失败还有确定性路径。</p>
+
+<h2>当前实现的边界</h2>
+<p>token 数是估算值，依赖安全余量控制风险。FileEvidence 的 contentHash 根据读取文本计算；读取局部行范围时，它代表该证据片段。MemoryIndex 使用词项、中文二元组、路径和错误码，能够解释召回原因，但对含义相近且用词完全不同的旧讨论召回较弱。</p>
+<p>ContextLedger 已支持 acceptanceCriteria、constraints 和 decisions，当前自动抽取仍有完善空间。语义摘要复用主模型，模型服务较慢时会增加一次压缩延迟。Evidence 注入目前总计最多 20000 字符，在极端预算下会整体移除，后续可以继续优化为按相关度选择证据片段。</p>
+<p>这些边界不会改变核心正确性：完整历史保留，权威 Ledger 优先，工具协议保持配对，摘要失败不使 Turn 失败，文件变化使旧证据失效。</p>
+
+<h2>Context Window、Token 与预算</h2>
+<p>Context Window 是一次模型请求可接收的输入与输出总容量。模型不是把整个硬盘装进记忆，而是只能看到本次请求中的 system、user、assistant、tool 消息和工具 Schema。Token 是模型处理文本的单位，不等于字符。英文短词可能接近一个 token，中文字符通常消耗更多；不同模型 tokenizer 不同。</p>
+<p>SeeCoder 没有绑定供应商 tokenizer，而使用保守 Unicode 估算：ASCII 字符约计 0.25 token，非 ASCII 字符约计 1 token，每条消息再加固定开销。首次请求使用该估算；模型返回真实 prompt usage 后，TokenCalibrator 按 Provider 与 Model 记录“实际值/估算值”的指数移动平均，后续上下文预算使用校准系数。真实 usage 仍是计费与审计依据，校准只用于更准确地决定何时压缩。</p>
+<p>可用输入预算按下式计算：</p>
+<p>~~~text availableInput = contextWindow</p>
+<p>~~~</p>
+<ul class="plain-list"><li>maxOutputTokens</li><li>max(2048, contextWindow × 5%)</li></ul>
+<p>maxOutputTokens 为模型回答预留空间；安全余量吸收估算误差、消息序列化开销和工具 Schema 变化。总估算超过 availableInput 的 75% 时自动压缩，压缩目标是 60% 以下。75% 与 60% 之间的间隔避免每轮都压缩。用户调用 compact_context 时可以主动触发，但若历史太短，构建器不会为了形式制造无意义摘要。</p>
+<p>固定成本必须先计算。系统 Prompt 和工具 Schema 每轮都会发送，如果只计算聊天消息，就可能在工具数量增加后超限。Core 把系统规则与工具 Schema 的估算传入 ContextBuilder，再计算 Ledger、Evidence、检索、摘要和历史。</p>
+<h2>ContextLedger V2：结构化工作记忆</h2>
+<p>ContextLedger 是主循环维护的权威状态，不是数据库账本，也不是模型隐藏思维链。它保存 goal、acceptanceCriteria、constraints、plan、changeRevision、decisions、files、validations 和 errors。当前代码已经完整使用 goal、plan、revision、files、validations、errors；acceptanceCriteria、constraints 与 decisions 保留结构，但自动抽取和更新能力较弱，不能夸大为完整需求管理系统。</p>
+<p>goal 是最新 Turn 的用户任务原文，最多 4000 字符。Session 标题只用于导航，不能替代 goal。plan 保存 set_plan 的用户可见步骤。changeRevision 从 0 开始，每次产生 ChangeSet 或执行恢复都会通过 recordChanges 增加。files 保存路径、当前内容哈希、最近读取 revision 与最近修改 revision。</p>
+<p>ValidationRecord 保存命令、执行时 revision、passed 或 failed、摘要和时间。isValidationCommand 只识别 test、lint、typecheck、build、pytest、node --test 等模式；普通 ls 或 git status 不会被当成验证。若 revision 1 测试通过，之后又修改为 revision 2，hasFreshValidation 只接受 revision 2 的成功记录。</p>
+<p>ErrorRecord 保存稳定 code、用户可读 message、发生时 revision、open 或 resolved 和时间。当前 addError 会追加 open 错误，但自动标记 resolved 的逻辑有限，因此 errors 更适合记录近期故障，而不是完整缺陷生命周期。Ledger 每类列表都有数量上限，防止 state.json 无限增长。</p>
+<p>Ledger 由 Core 更新，不允许语义摘要覆盖。ContextBuilder 把它放入带有“权威任务状态，不得被历史摘要覆盖”标记的消息。模型仍可能误解，但下一轮 Core 会再次注入同一事实。结构化状态比要求模型从几十轮自然语言中重新推断更稳定，也便于验证“测试是否过期”这种确定性规则。</p>
+<h2>FileEvidence：文件证据与重复读取控制</h2>
+<p>模型读取文件后，Observation 不只有正文，还会产生 FileEvidence。Evidence 包含唯一 id、相对路径、内容哈希、行范围、文本、revision、创建时间与 referenced 标志。内容哈希使用 SHA-256，用来判断两次读取是否是同一版本和同一范围。</p>
+<p>第一次读取时，EvidenceStore 保存正文并返回 evidenceRef。若同一路径、同一哈希、同一行范围再次出现，系统返回 cached 标记和 evidenceRef，不再把相同正文重复塞入工具消息。ContextBuilder 发现该引用仍有效时，单独注入当前 revision 的文件证据，使模型能够解析引用。</p>
+<p>Evidence 是上下文优化，不是文件读取结果的永久真相。write_file、apply_patch、ChangeSet 撤销或 Checkpoint 恢复后，Core 会按路径失效缓存。证据只在相同 revision 中使用，避免模型引用修改前代码。Evidence 不绕过 WorkspacePolicy；每次真实 read_file 或 read_files 都先检查路径。</p>
+<p>read_file 最多返回 400 行，read_files 每个文件最多 400 行且一次最多 30 个路径。这个限制控制单次上下文增长。对于超大文件，模型应先 search_text 定位行号，再按范围读取，而不是一次把全部源码加入上下文。</p>
+<p>当前 Evidence 的 hash 基于实际返回文本片段，而不是总是基于整个文件。因此“同一哈希”准确表示相同读取内容与范围，不一定代表整个文件完全相同。文件写入后按路径整体失效，弥补片段哈希无法感知其他区域变化的问题。</p>
+<h2>Observation：把工具结果变成模型可用证据</h2>
+<p>ToolResult 是完整的程序结果，Observation 是发送给模型的压缩表达。两者分离的原因是命令可能输出 1 MiB，Diff 可能很大，模型只需要退出码、关键错误和相关片段。完整结果用于事件、UI 或调试，Observation 用于下一轮决策。</p>
+<p>当完整 ToolResult 超过通用阈值时，Core 还会把它原子写入 Session 的 Artifact 目录，记录 hash、大小、Tool Call 和媒体类型。Observation 保留头尾、诊断与 <code>artifactRef</code>；模型需要更多内容时通过只读 <code>read_artifact</code> 按 offset/limit 分段取回。Artifact id 和 Session 必须同时匹配，不能跨 Session 读取，也不能把任意文件路径当作 ref。</p>
+<p>serializeObservation 按工具类型处理。read_file 和 read_files 记录 Evidence；重复读取改为 evidenceRef。search_text 对完全相同条目去重，最多保留 50 条，并记录 total 与 truncated。run_command 保留 command、exitCode、stdout 头尾、stderr 尾部、诊断行以及是否裁剪。诊断行通过 error、failed、exception、warning 和常见源码后缀筛选。git_diff 保留受预算限制的 Diff 头尾与 stderr。</p>
+<p>write_file 与 apply_patch 不把 before 和 after 全文再次发给模型，只返回文件路径和修改前后字符数。完整变更已经保存在 ChangeSet。未知工具先 JSON 序列化；小于 16000 字符原样返回，过长则保留前 10000 和后 4000 字符，并明确说明完整结果在轨迹中。</p>
+<p>所有 Observation 都保留 ok、error 和 durationMs。ok 表示工具执行是否成功，不代表任务完成。error.code 是程序可判断的稳定分类，message 是用户和模型可读说明。模型可以根据 command_failed、patch_failed 或 approval_denied 选择下一步，而不是从一段自由文本猜测。</p>
+<p>Observation 压缩不能只保留“失败”二字。测试失败的退出码和最后诊断通常决定能否修复；读取结果必须保留路径和行范围；补丁结果必须保留修改文件。SeeCoder 的压缩策略是按工具语义保留决策信息，而不是统一按字符截断。</p>
+<h2>MemoryIndex：轻量历史检索</h2>
+<p>长期 Session 中，某个早期决定可能在最近消息之外仍然相关。MemoryIndex 从 user、assistant、change、error、validation 和 decision 记录建立最多 500 条内存项。每条包含文本、路径、关键词、Session、可选 Turn、revision、时间和状态。</p>
+<p>关键词提取对英文、数字、下划线、路径字符保留连续词，对中文去掉非汉字后生成二元组。例如“上下文压缩”会产生“上下”“下文”“文压”“压缩”。路径通过简单模式提取。检索查询由 Ledger goal 与最新 user 消息组成，按关键词匹配、路径命中、当前 revision、active 状态和时间衰减打分。</p>
+<p>检索最多返回 6 条，总文本不超过 4000 字符，并排除当前 Turn、resolved 错误、superseded 决策和旧 revision 的验证。ContextBuilder 还会去掉与最近自然语言完全相同的结果，避免同一消息重复出现。</p>
+<p>当前不使用 Embedding 与向量数据库。原因不是向量检索无价值，而是此项目的高价值线索通常是文件路径、符号名、命令和错误码，词法检索可解释、可从 JSONL 重建、没有索引服务和模型费用。缺点是无法很好召回语义相近但词面不同的描述，这属于后续可选优化，不影响当前考核要求。</p>
+<h2>混合上下文构建算法</h2>
+<p>buildHybridContext 先调用 sanitizeModelMessages 清除不完整工具组，再将重复 Evidence 正文折叠为引用。随后构造三类临时消息：权威 Ledger、按需历史检索、当前 revision 的 referenced Evidence。它们只存在于模型请求，不会作为新的用户对话永久追加。</p>
+<p>若估算未超过 75% 且用户没有强制压缩，最终上下文为临时消息加当前安全历史。若需要压缩，构建器先把消息按协议组划分。普通 user 或 assistant 文本各自成组；带 Tool Calls 的 assistant 与随后引用其 callId 的全部 tool 消息组成一个不可拆分组。孤立 tool 消息会被丢弃。</p>
+<p>压缩采用廉价操作优先。第一层由 Observation 外置大 ToolResult；第二层折叠已在 Evidence 区重新注入的正文和旧 Tool Result；第三层按完整协议组移除较旧低价值原文；只有仍超过预算时才调用 summarizeContext。压缩始终保护最后一个消息组、最近一个完整工具组和最近六组。语义摘要只覆盖旧的 user 与 assistant 叙事，不拥有 Ledger、验证和错误的写权限。</p>
+<p>每次真正压缩都会生成 ContextSnapshot，记录 snapshot id、覆盖到的事件 seq、保留消息组标识、Ledger revision、校准系数和创建时间。它与压缩后的合法 ModelMessage 一起进入 Compaction Item；原始 JSONL 不删除。回放使用 snapshot 的消息视图，审计时仍可根据 coveredEventSeq 定位摘要覆盖边界。</p>
+<h3>5 Workspace 级写入协调</h3>
+<p>同一进程中的所有 AgentCore 按规范化 workspace 路径共享一个 <code>WorkspaceMutationCoordinator</code>。文件写入按目标相对路径加锁；<code>apply_patch</code> 同时锁定补丁涉及的全部文件；无法预先确定写入范围的 <code>run_command</code> 和未知副作用工具使用 workspace 独占锁。锁请求先排序、去重后进入公平队列，冲突请求等待，互不冲突的文件写入仍可并行。工具抛错、超时或取消时必须在 <code>finally</code> 中释放锁。ChangeSet 撤销与 Checkpoint 恢复也经过同一个协调器，避免它们和正在执行的工具互相覆盖。</p>
+<h3>6 Session 分支与事件边界</h3>
+<p>Session 元数据通过 <code>lineage</code> 记录 <code>rootSessionId</code>、<code>parentSessionId</code>、<code>forkedFromSeq</code> 和 <code>compactionFloor</code>。分支只保存父分支引用和自己的增量事件，不再复制父 Session 的整段 JSONL。读取分支时，存储层递归读取父分支在 <code>forkedFromSeq</code> 之前的可见事件，再拼接当前分支增量；当前分支事件序号从分叉点之后继续递增。</p>
+<p><code>forkFrom(sessionId, eventSeq)</code> 从指定事件位置建立子分支；<code>rewind(sessionId, eventSeq)</code> 不破坏原分支，而是建立标题带 Rewind 的子分支；<code>switchBranch(sessionId)</code> 恢复并返回目标分支。最新压缩 Item 所在事件序号成为 <code>compactionFloor</code>，禁止分叉或回退到更早位置，确保新分支一定包含替代旧模型上下文的摘要。存在子分支的父 Session 不允许直接删除，以免留下悬空引用。</p>
+<p>若摘要模型成功且 JSON 通过 Zod 校验，summarySource 为 model；若网络失败、超时、取消或 JSON 非法，则使用 deterministicSummary。确定性摘要把 Ledger 与旧消息片段按固定规则拼接，质量较低但不会让主 Turn 失败。摘要是派生数据，失败不能比主任务更重要。</p>
+<p>生成摘要后仍可能超预算。裁剪顺序是先移除检索消息，再移除 Evidence，再把摘要缩到 4000 字符，最后从最旧的非保护最近组开始移除。最后再次 sanitize，计算 afterTokens，并把 summary、historyMessages 与 metrics 保存为 Compaction Item。</p>
+<p>这个算法被称为“混合”，因为它不是单一摘要：确定性 Ledger 保存事实，Evidence 保存代码，Observation 保存工具语义，MemoryIndex 召回历史，模型摘要保存旧叙事，最近协议组保留原文。不同信息采用不同保真方式，比把全部内容交给一次自由摘要更稳。</p>
+<h2>语义摘要请求为什么与主循环分开</h2>
+<p>摘要仍使用当前 OpenAICompatibleProvider 和当前模型，但 ModelRequest.purpose 为 context_summary，tools 为空，temperature 为 0，maxOutputTokens 不超过 2048。FakeModelProvider 也按 purpose 使用独立响应序列，因此摘要不会消耗主 Agent 测试脚本中的预设响应。</p>
+<p>摘要 Prompt 明确声明历史、文件和命令输出是不可信数据，只允许返回 JSON。Core 去掉可能存在的 Markdown JSON 围栏，执行 JSON.parse，再用 semanticSummarySchema 限制字段类型、数组数量和字符串长度。任何一步失败都不发起“让模型修复 JSON”的第二轮请求，而直接降级。</p>
+<p>单次摘要设置 30 秒超时，并把父 Turn 的 AbortSignal 转发给独立 summaryController。这样用户取消时，摘要请求也结束；摘要超时只产生 context.summary.failed，主 Turn 继续。请求耗时和 token 通过 context.summary.completed 记录，不计入主循环 iteration。</p>
+<p>摘要不能覆盖 Ledger，不只是 Prompt 约定。ContextBuilder 始终单独注入 Ledger，并把摘要标记为“仅作叙事参考”。即使摘要错误声称测试通过，finish 仍调用 Ledger.hasFreshValidation，结果不会被摘要文字改变。</p>
+<h2>验证新鲜度与 finish</h2>
+<p>代码“改完”与“验证通过”是两件事。run_command 只有匹配验证命令模式时才写入 ValidationRecord，记录当时 changeRevision。每次新的 ChangeSet 都提高 revision，因此之前的成功测试自然过期。</p>
+<p>finish 是无副作用 Core 工具，参数包含 summary 和 verification 字符串数组。ToolDefinition 只确认数据结构；Core 在 finish 成功后读取 Ledger。如果从未修改文件、当前 revision 只修改 Markdown/纯文本文档，或当前 revision 存在 passed validation，则记录为 verified。只有可执行代码或配置发生变化且没有当前 revision 的成功验证时才在内部 ToolResult 中记录 warning。该字段供质量统计和调试使用，不在普通对话界面显示独立提醒。</p>
+<p>SeeCoder 没有强制所有任务必须测试，因为有些请求只是解释代码、修改文档或项目没有测试环境。文档豁免只覆盖 <code>.md</code>、<code>.mdx</code>、<code>.txt</code>、<code>.rst</code> 和 <code>.adoc</code>；JSON、YAML、脚本和源码仍可能改变运行行为，不能豁免。内部状态必须区分 verified 与 warning，不能把模型在 verification 字段里写的一条命令当成真实执行证据；Renderer 对 finish 工具统一隐藏，避免在完成消息后重复显示验证提醒。</p>
+<p>finish 不是唯一完成路径。模型返回正常文本且没有 Tool Call 时，Core 也会结束 Turn。这支持纯问答与 Plan 模式。对于产生代码变更的任务，系统 Prompt 鼓励调用 finish，因为它能进行 revision 检查；当前 Core 尚未硬性要求“有变更必须调用 finish”，这是可进一步强化的规则。</p>
+
+<h2>如何判断上下文构建是否正确</h2>
+<p>可以用四项证据检查：当前用户目标必须存在；最近一次文件修改后的 Evidence 必须使用新哈希；Tool Call 与 Tool Result 必须成组保留；当前 changeRevision 的验证和未解决错误必须进入 Ledger。只要其中一项缺失，模型就可能引用旧代码、误认测试通过或重复执行动作。</p>
+<p>ContextSnapshot 记录本次选择了哪些来源、压缩前后的估算 token 和摘要位置。TokenCalibrator 再用模型返回的真实 usage 修正本地估算误差。这样预算策略既可在没有额外网络请求时快速运行，也会随真实模型逐步校准。</p>
+<p>大型工具输出由 ToolArtifactStore 保存原文，模型上下文只接收 Observation 摘要和引用。模型确实需要细节时再按引用读取，避免每轮重复携带全部日志。摘要请求失败时使用确定性回退，主 Turn 不会因为一次压缩服务错误而丢失已有事实。</p>
+<p>因此混合上下文不是“把历史总结一下”，而是账本、当前代码证据、工具观察、相关旧记忆、语义摘要和最近完整协议组按预算共同组成的工作视图。</p>
+<p>上下文触发阈值是可用输入预算的 75%，压缩目标是 60%。前者留出继续生成和工具回填的空间，后者避免每一轮刚超过边界就重复压缩。数字来自当前实现配置，不代表所有模型都必须使用同一比例；更换模型窗口时，本地估算和真实 usage 会共同决定可用预算。</p>
+<p>压缩后还要再次运行消息清理和预算估算。若仍超限，系统依次缩减召回内容、文件证据和旧摘要，再从最旧的非保护协议组开始裁剪。当前目标、Ledger、最近用户要求以及完整的 assistant/tool 配对属于保护内容，不能为了满足长度随意拆开。最终快照同时记录压缩前后 token、保留来源和事件边界，方便应用重启后继续，也方便自动测试定位哪一层占用了预算。</p>
+<p>SessionStore 保存完整经历。ContextLedger 保存当前任务事实。FileEvidence 保存当前代码证据。Observation 把工具结果变成模型需要的信息。MemoryIndex 找回相关旧事实。SemanticSummary 压缩旧叙事。ContextBudgetAllocator 按 75% 触发、60% 目标把这些层组合成合法 ModelRequest。</p>
+<p>因此，上下文压缩可以理解为“重新编排模型下一轮需要的信息”。原始历史仍然存在，当前事实始终由结构化状态保护。</p>
+
+<div class="callout"><span class="callout-title">本章结论</span><p>SeeCoder 将完整 Session 历史和单轮模型上下文分开。输入超过 75% 时触发压缩，目标降到 60%。Ledger 保存目标、代码版本、验证和错误；FileEvidence 保存当前代码；Observation 压缩工具输出；MemoryIndex 召回相关历史；语义摘要失败时使用确定性回退。最近消息始终按完整工具协议组保留。</p></div>

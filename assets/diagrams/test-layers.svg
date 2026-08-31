@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="540" viewBox="0 0 1080 540" role="img" aria-labelledby="title">
+  <title id="title">SeeCoder 的四层验证</title><style>.bg{fill:#fbf9fd}.p1{fill:#f1e8fb;stroke:#8247d6;stroke-width:2}.p2{fill:#f7f0fc;stroke:#a16cdd;stroke-width:2}.p3{fill:#fff;stroke:#d8c0ef;stroke-width:2}.ok{fill:#eefaf6;stroke:#31a77c;stroke-width:2}.t{font:600 18px 'Microsoft YaHei',sans-serif;fill:#252127}.s{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}</style><rect class="bg" width="1080" height="540" rx="24"/>
+  <rect class="ok" x="110" y="390" width="860" height="90" rx="16"/><text class="t" x="540" y="425" text-anchor="middle">静态检查：Lint + Typecheck</text><text class="s" x="540" y="453" text-anchor="middle">先发现语法、风格、类型和模块接口问题</text>
+  <rect class="p3" x="190" y="280" width="700" height="90" rx="16"/><text class="t" x="540" y="315" text-anchor="middle">模块测试：Model、Tools、Storage、Context</text><text class="s" x="540" y="343" text-anchor="middle">验证一个模块的输入、输出和边界</text>
+  <rect class="p2" x="270" y="170" width="540" height="90" rx="16"/><text class="t" x="540" y="205" text-anchor="middle">状态机测试：完整 Turn</text><text class="s" x="540" y="233" text-anchor="middle">验证工具顺序、事件、终态、取消与恢复</text>
+  <rect class="p1" x="350" y="60" width="380" height="90" rx="16"/><text class="t" x="540" y="95" text-anchor="middle">桌面端到端测试</text><text class="s" x="540" y="123" text-anchor="middle">验证真实窗口、IPC 和用户操作</text>
+</svg>

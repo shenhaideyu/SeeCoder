@@ -6,7 +6,7 @@
 <h2>为什么使用事件日志</h2>
 <p>事件是一条已经发生的事实，例如“用户发送消息”“工具执行完成”“文件产生修改”“Turn 已结束”。每条事件有递增序号。应用重启后，<code>SessionLifecycle.hydrate()</code> 回放事件，重新建立模型消息、修改记录和检索索引，但不会重新执行历史工具。</p>
 <h2>分支不再复制整份历史</h2>
-<figure class="visual"><img src="../assets/diagrams/session-branch.svg" alt="父 Session 在第二个事件处分叉，子 Session 继承前两条事件并保存自己的增量" /><figcaption>子分支只记录父分支位置和自己的新增事件。</figcaption></figure>
+<figure class="visual"><img data-doc-asset="diagrams/session-branch.svg" alt="父 Session 在第二个事件处分叉，子 Session 继承前两条事件并保存自己的增量" /><figcaption>子分支只记录父分支位置和自己的新增事件。</figcaption></figure>
 <p>旧实现会把父 Session 的全部事件复制到新目录。现在分支元数据记录四个值：</p>
 <table class="data-table"><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td>rootSessionId</td><td>整棵分支树最早的根 Session。</td></tr><tr><td>parentSessionId</td><td>当前分支直接来自哪个 Session。</td></tr><tr><td>forkedFromSeq</td><td>继承父分支到第几个事件。</td></tr><tr><td>compactionFloor</td><td>允许回退的最早位置。</td></tr></tbody></table>
 <h2>读取分支时发生什么</h2>
@@ -18,5 +18,189 @@
 <p>上下文压缩会用摘要替代早期模型消息。最新压缩事件的位置就是回退下界。低于这个位置创建分支会缺少有效摘要，因此系统直接拒绝。原始 JSONL 仍保留用于审计，但新分支的模型视图必须从合法摘要点开始。</p>
 <h2>删除规则</h2>
 <p>运行中的 Session 不能删除。存在子分支的父 Session 也不能删除，否则子分支会失去历史来源。必须先处理子分支，再删除父分支。</p>
+<h2>核心数据模型：Session、Turn、Item 与 Event</h2>
+<p>Session 是长期对话容器，对应左侧栏中的一个任务。它包含 id、标题、Workspace 路径、创建时间、更新时间以及置顶、归档、未读等展示字段。Session 可以包含多个 Turn，因此用户完成一次修改后继续追问，不需要丢弃之前的任务背景。Session 与 Workspace 绑定，Core 列表查询会按规范化路径过滤，避免切换项目后看到或恢复其他项目的任务。</p>
+<p>Turn 是一次用户请求的运行周期。用户发送 Prompt 时创建 Turn；模型可能在这个 Turn 内被调用多次。Turn 保存 id、sessionId、状态、开始和完成时间、当前迭代数。Session 解决“这段长期对话属于谁”，Turn 解决“这一次执行是否仍在运行”。</p>
+<p>Item 是需要参与恢复或模型历史重建的业务记录。user_message 保存用户原文；assistant_message 保存完整回答及 Tool Calls；tool_result 保存调用结果；plan、changes、approval、subagent、compaction 和 error 保存相应事实。Item 比 Event 更接近可恢复业务内容。</p>
+<p>Event 表示系统在某个时间发生了什么。message.delta 用于 UI 流式显示；model.requested、model.completed 描述模型请求；tool.requested、tool.output、tool.completed 描述工具生命周期；turn.completed、turn.failed、turn.cancelled 描述终态。Event 使用 V3 信封持久化，信封包含 version、唯一 id、递增 seq、type、sessionId、可选 turnId、timestamp 和 payload。</p>
+<p>Item 与 Event 并不重复。一次 tool.completed Event 告诉 UI “工具结束了”，同一条记录中的 tool_result Item 让重启后的 Context 恢复工具观察。message.delta 不逐片写入 JSONL，因为一次长回复可能产生数千次磁盘写入；流结束后，完整 Assistant 消息才持久化。这是在实时体验和存储规模之间的取舍。</p>
+<h2>Session 管理与恢复语义</h2>
+<p>创建 Session 时，Core 生成 UUID，写入当前 Workspace、标题和时间，同时初始化空消息数组、ContextLedger、FileEvidenceStore 和 MemoryIndex。SessionStore 先创建目录，再以临时文件加 rename 的方式保存 meta.json，避免设置文件只写到一半。</p>
+<p>加载 Session 时执行 hydrateSession。它先读取 meta.json，并检查记录的 Workspace 与当前 Workspace 是否一致；不一致则拒绝加载。随后读取 state.json 恢复 ContextLedger，再读取 events.jsonl 并调用 replaySessionEvents。回放函数按 seq 排序，识别重复序号、倒序、跨 Session 事件、孤立 Tool Result 和重复终态。合法 Item 被转换为 ModelMessage，ChangeSet 与 Checkpoint 放回内存索引，MemoryIndex 从历史重建。</p>
+<p>回放是纯 reducer：输入历史记录，输出恢复结果，不读写磁盘、不调用模型、不执行工具。这样设计是为了避免“恢复会话”意外重放副作用。假设历史中记录了 run_command 或 write_file，但应用在结果落盘前崩溃，系统无法可靠判断操作是否完成。SeeCoder 不猜测，也不重新执行；它把没有终态的 Turn 标记为 interrupted，并要求用户重新尝试。</p>
+<p>Compaction Item 在恢复时具有特殊含义。它保存压缩后的模型消息视图。Core 遇到它时会替换更早的模型消息视图，而不是删除原始 events.jsonl。原始轨迹仍可审计，模型只接收较小历史。之后出现的新 Item 继续追加到压缩视图之后。</p>
+<p>删除 Session 会删除 SeeCoder 数据目录中的会话、Ledger 和 Snapshot，并清理内存状态；不会删除 Workspace 源码。运行中的 Session 不允许删除，必须先取消 Turn。重命名只改变 meta.json 的标题，不改变 goal。归档和置顶是导航属性，不改变模型上下文。Fork 记录父分支位置并只保存自己的增量事件；它不创建 Git Worktree，也不复制 Workspace，因此是“对话历史分叉”，不是“代码环境隔离”。</p>
+<h2>Turn 状态机</h2>
+<p>当前 TurnStatus 为 queued、running、waitingApproval、waitingInput、completed、failed、cancelled、limitReached。queued 表示已经接受但循环尚未开始；running 表示 Core 正在准备上下文、请求模型或执行不需要等待用户的步骤；waitingApproval 表示某个副作用工具等待许可；waitingInput 表示 ask_user 等待回答；其余四个是终态。</p>
+<p>模型请求中、工具执行中和验证中没有各自的 TurnStatus。它们由 model.requested、tool.requested、tool.output、review.started 等事件描述。这样避免状态枚举过细，但 UI 必须结合 TurnStatus 与最新事件展示“正在调用模型”“正在运行测试”等阶段。若只看 running，无法判断具体进度。</p>
+<p>状态转换如下：</p>
+<p>~~~text queued → running → waitingApproval → running → waitingInput    → running → completed → failed → cancelled → limitReached ~~~</p>
+<p>Renderer 不拥有业务状态机。点击取消时，前端只发 turn.cancel 请求；只有 Core 完成 Abort 与清理并发布 turn.cancelled 后，UI 才显示最终取消。这防止“页面已经停止、后台仍在执行”。同理，审批按钮只提交决策，Core 才负责从 waitingApproval 回到 running。</p>
+<p>activeSessionTurns 保存 sessionId 到 turnId 的唯一映射。startTurn 在创建 Turn 前检查它；存在活动 Turn 时，新的正文不能另起并发 Turn，只能作为 Follow-up 排队或先取消。这个约束比在 UI 禁用按钮更可靠，因为 IPC 仍可能被重复触发。</p>
+<h2>对话历史：为什么不能把整个 JSONL 直接发给模型</h2>
+<p>对话历史有两种不同用途。审计历史要完整回答“用户说了什么、模型请求了什么工具、工具实际返回什么、任务为何结束”，因此采用追加式事件保存。模型工作历史只需要回答“当前目标是什么、已做过什么、下一步依据是什么”，并受到 Context Window 限制。这两种用途不能使用同一个无限增长数组。</p>
+<p>如果每轮把整个 JSONL 原样发送，会产生四个问题。旧命令日志会挤掉当前代码；重复文件读取会反复付费；已经被新决策推翻的内容仍与当前事实竞争；历史中的孤立 Tool Result 或损坏记录可能导致 API 400。简单保留最近 N 条也不可靠，因为一条 Assistant 消息可能请求多个工具，按条裁剪会把协议组截断。</p>
+<p>SeeCoder 因此保留三层数据。events.jsonl 是不可变事实轨迹；ContextLedger V2 是当前权威任务状态；ModelMessage[] 是可压缩的模型视图。模型视图可以被 Compaction Item 替换，但原始事件不删除。Ledger 通过 state.json 独立持久化，即使自然语言摘要遗漏细节，目标、revision、验证和错误仍可恢复。</p>
+<h2>ChangeSet、Snapshot 与 Checkpoint</h2>
+<p>文件工具成功返回 changes 后，recordChanges 创建 ChangeSet，记录 Session、Turn、文件 before、after 和时间。Ledger 增加 revision，Evidence 按路径失效，before 内容写入 SeeCoder 数据目录的 Snapshot。随后发布 changes.created。</p>
+<p>系统还自动创建 Checkpoint，记录 ChangeSet ID，以及每个文件修改前后内容的 SHA-256。Checkpoint 不是 Git commit，也不修改项目历史。它是针对 SeeCoder 本轮修改的恢复点。</p>
+<p>恢复 Checkpoint 前，系统重新读取每个目标并计算当前哈希。只有当前哈希等于 checkpoint.afterHash，才说明文件仍保持 Agent 修改后的版本。若用户、IDE 或其他进程改过文件，返回 checkpoint_conflict，不覆盖新内容。通过检查后，按 ChangeSet 恢复 before，并使 Evidence 失效、更新 Ledger。</p>
+<p>撤销 ChangeSet 同样调用 restoreChangeSet，以事务写入恢复 before。当前 Checkpoint 的 changeSetIds 通常只有自动创建时的一个变更集，手动 checkpoint 可以为空。该机制适合演示和单 Agent 修改，不替代 Git 分支与提交。</p>
+<h2>事件持久化与 JSONL</h2>
+<p>JSONL 是“一行一个 JSON 对象”的追加文件。它适合事件轨迹，因为每次只需 append，不必重写整个历史；最后一行损坏时，之前记录仍可读取；开发者可以直接检查。</p>
+<p>SessionStore 为每个 Session 保存独立 append Promise 队列。同一 Session 的下一次写入等待上一次完成，生成递增 seq，再追加 events.jsonl。不同 Session 可以独立写入。readEvents 逐行 JSON.parse，损坏行被跳过，合法行继续；然后按 seq 排序，并更新内存中的最高序号。</p>
+<p>meta.json 与 state.json 使用临时文件加 rename，避免部分写入。Snapshot 按 sessionId、changeSetId 和转义后的路径保存。API Key 不存入这里；Main 使用 Electron safeStorage 加密模型凭据，并在激活配置时把解密值放入主进程环境，Provider只从指定环境变量读取。</p>
+<p>JSONL 没有数据库事务、索引和查询语言。Session 数量与事件规模较小时简单可靠；规模很大时，全文搜索与启动回放会变慢。考核 Demo 不引入 SQLite，是为了避免原生依赖和迁移复杂度。后续若需要数万 Session，可保持 Event 协议不变，把 Store 实现替换为数据库。</p>
+<h2>事件回放与异常恢复</h2>
+<p>replaySessionEvents 先检查输入原始 seq 是否回退，再稳定排序。seenSeq 森别重复序号；eventSessionId 与目标不同则记录 cross_session_event 并跳过；Turn 的 started 与终态用于找 unfinishedTurns；Assistant Tool Calls 建立合法 callId 集；孤立 tool_result 被诊断并跳过。</p>
+<p>遇到 Compaction Item 时，模型 Items 被替换为该压缩点，之前历史仍在 records 中。ChangeSet 和 Checkpoint 以 id 去重恢复。回放结果是 records、modelItems、changeSets、checkpoints、unfinishedTurns 和 diagnostics。</p>
+<p>hydrateSession 对 unfinished Turn 创建 failed 终态，code 为 interrupted，message 说明应用在结束前退出、后台执行已停止。它不会试图恢复正在等待的 Promise、网络流或子进程，因为这些资源跨进程不存在。</p>
+<p>恢复过程还重新生成 Tool Observation。Assistant Item 恢复 Tool Calls 并记住 callId 到 toolName；tool_result 根据 toolName 使用 serializeObservation。这样恢复后的模型上下文与正常运行遵循同一压缩策略。</p>
+<h2>可观测性</h2>
+<p>一次任务至少可关联 sessionId、turnId、Tool Call ID、事件 timestamp、duration、status 和 error code。model.requested 到 model.completed 给出模型耗时、usage、重试和 finish reason；tool.requested 到 tool.completed 给出工具耗时与结果；tool.output 提供实时 stdout/stderr；context.compacted 记录 beforeTokens、afterTokens、availableInput、summarySource、retrievedEntries 与 droppedEvidence。</p>
+<p>事件用于 UI 状态和 Session 恢复，MainLogger 用于开发诊断。日志只记录事件类型、标识、耗时与错误码，不记录 API Key 和完整文件正文。普通用户默认看到“读取了几个文件、修改了几个文件、测试是否通过”，需要时在 Terminal 或工具 Details 展开必要信息；原始事件不提供独立查看页面。</p>
+<p>可观测性不是把所有数据打印出来。模型请求正文可能包含源码和用户隐私，工具输出可能包含凭据。SeeCoder 优先记录可关联元数据，并对正文执行敏感路径限制与长度控制。</p>
+<h2>一条真实任务如何穿过全部模块</h2>
+<p>假设用户在 Guided 模式输入：“修复空标题仍可提交的问题，并补充测试。”startTurn 创建 Turn，记录中文输出偏好，把原文写入 ModelMessage、Item 与 Ledger goal。第一轮 ContextBuilder 发送系统规则、工具 Schema、Ledger 和用户消息。</p>
+<p>模型请求 search_text。Provider 从 SSE 聚合 Tool Call，Core 先保存 Assistant Tool Calls。search_text 通过 Zod、WorkspacePolicy 和 rg 返回命中；完整 ToolResult 写入事件，压缩 Observation 加入消息。</p>
+<p>第二轮请求 read_files。工具批量读取实现与测试，EvidenceStore 记录哈希。第三轮模型请求 apply_patch。Guided 模式判断它有副作用，Turn 进入 waitingApproval；用户允许后执行补丁事务。成功产生 ChangeSet、Snapshot 和 Checkpoint，Ledger revision 从 0 变成 1，旧 Evidence 失效。</p>
+<p>第四轮模型请求 run_command。审批后执行测试，退出码 1。ToolResult.ok 为 false，stderr 尾部与诊断进入 Observation，Ledger 记录 command_failed。主 Turn 不终止。模型第五轮根据错误修改测试或实现，新 ChangeSet 让 revision 变为 2。</p>
+<p>第六轮测试通过，ValidationRecord 保存代码版本 2 与 passed。模型调用 finish，工具执行器检查当前版本有新鲜验证，输出 verified。TurnRunner.run 执行 turnEnd Hook，释放 Session 占用和临时资源，再发布 turn.completed。用户之后追问会在同一 Session 创建新 Turn，并从 Ledger、历史与检索中继承必要事实。</p>
+<h2>为什么采用事件流而不是让 Renderer读取 Core</h2>
+<p>Renderer 如果直接读取 Core 内部 Map，就必须理解所有状态转移，也容易在页面刷新或多 Session 切换时拿到过期引用。事件流把后台发生的事实变成稳定协议：Core 发布，Main 路由，Renderer 归并展示。</p>
+<p>事件信封显式携带 sessionId，使 UI 能丢弃不属于当前 Session 的事件；turnId 区分同一 Session 的多次执行；seq 用于重放顺序；event id 用于诊断重复。Renderer 的 Zustand 只保存视图状态，不复制工具权限和 Agent 状态机。</p>
+<p>缺点是 UI 需要正确处理乱序、恢复和未知事件。V3 协议通过显式版本和稳定 type 降低风险，Renderer 对新增字段应安全忽略。业务真相仍在 Main/Core 与 Storage，不以页面当前显示为准。</p>
+<h2>设计依据与项目差异</h2>
+<p>SeeCoder 的文档组织借鉴公开一手资料的表达方式：先定义核心实体，再描述生命周期、事件、审批和错误，最后给真实执行链。OpenAI Codex App Server 公开文档采用会话层、Turn 层、Item 层与流式通知的分层方式；SeeCoder 在项目内统一使用 Session 名称，但保留“长期对话包含多个 Turn、Turn 包含多种 Item”的思想。</p>
+<p>Claude Code 公开文档把 Agent Loop 解释为模型响应、工具执行与结果反馈的多轮过程，并强调 max turns、独立子 Agent Context、Compaction 与 Hook。SeeCoder 自己实现相应机制，但具体数据结构、预算、权限和存储均以本项目源码为准。TRAE Agent 公开仓库强调可修改的模块化工具与 trajectory recording；SeeCoder 使用 V3 事件和 JSONL实现本地轨迹。</p>
+<p>参考资料：</p>
+<ul class="plain-list"><li>OpenAI Codex App Server：https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md</li><li>Claude Code Agent Loop：https://code.claude.com/docs/en/agent-sdk/agent-loop</li><li>Claude Code Context Window：https://code.claude.com/docs/en/context-window</li><li>Claude Code 扩展机制：https://code.claude.com/docs/en/features-overview</li><li>TRAE Agent：https://github.com/bytedance/trae-agent</li></ul>
+<p>这些资料用于对照架构问题，不是 SeeCoder 的运行依赖。SeeCoder 未封装 Codex、Claude Code 或 TRAE，也没有使用其 Agent SDK。</p>
+
+<h2>核心数据模型</h2>
+<p>Workspace 是本地项目目录。Session 是一条长期任务对话。Turn 是 Session 中一次用户请求到终态的执行。Item 是需要持久保存的业务事实，例如用户消息、Assistant Tool Calls、Tool Result 和 ChangeSet。AgentEvent 是实时或可回放的状态变化。</p>
+<pre class="code-block"><span class="code-label">概念代码</span>Workspace
+└─ Session
+   ├─ Turn 1
+   │  ├─ Items
+   │  └─ Events
+   └─ Turn 2</pre>
+<p>Session 和 Turn 分开后，用户可以长期追问，但每次执行仍有独立状态、取消信号、迭代数和终态。</p>
+<h2>一次任务的数据流</h2>
+<p>用户点击发送后，Renderer 调用 <code>turn.start</code>。Main 校验参数并调用 AgentCore 门面。TurnRunner 保存用户消息、建立 Turn 和 AbortController，再进入主循环。上下文构建器从 Session 的消息、Ledger、Evidence 和 Memory 生成模型输入。Provider 流式返回文本和 Tool Call。</p>
+<p>有 Tool Call 时，Core 先持久化完整 Assistant Tool Calls，再校验工具、参数、权限和 Hook。工具输出通过事件实时发送，最终 Tool Result 使用相同 <code>callId</code> 写回消息。模型在下一轮看到 Observation 并继续决策。终态事件先持久化再广播，流式文本增量除外。</p>
+<h2>事件驱动 UI</h2>
+<p>Renderer 的 Agent 状态由 AgentEvent 驱动，不读取 Core 内部 Map。事件显式携带 <code>sessionId</code>，Turn 事件携带 <code>turnId</code>，工具事件携带 <code>callId</code>。快速切换 Session 时，Renderer 使用加载 token 丢弃过期异步结果。</p>
+<p>这种设计避免前端显示 running 而后台已经失败，也允许重启后用同一事件 reducer 恢复页面。UI 状态可以重新计算，业务事实不能由 UI 猜测。</p>
+<h2>数据与部署</h2>
+<p>生产数据位于 Electron 用户数据目录：</p>
+<pre class="code-block"><span class="code-label">概念代码</span>sessions-data/sessions/&lt;session-id&gt;/meta.json
+sessions-data/sessions/&lt;session-id&gt;/state.json
+sessions-data/sessions/&lt;session-id&gt;/events.jsonl
+sessions-data/snapshots/&lt;session-id&gt;/&lt;change-set-id&gt;/
+logs/main.log</pre>
+<p>SeeCoder 不需要数据库、Redis、远程 Queue 或 WebSocket。Renderer 与 Main 使用 Electron IPC，模型响应使用 HTTPS/SSE。本地命令按需启动受控 PowerShell 子进程。</p>
+<h2>当前限制</h2>
+<p>当前没有 OS 级沙箱、远程执行、跨设备同步和多写者 Worktree 调度。Session 隔离上下文，不隔离同一 Workspace 中的文件。Fork 只保存父历史引用和自己的增量，不复制项目或 Git 分支。未完成 Turn 重启后标记为 interrupted，不会自动续接旧网络和子进程。</p>
+<h2>状态分别由谁拥有</h2>
+<p>Core 拥有业务状态：Turn 状态、活动请求、审批、消息、Ledger、Evidence、ChangeSet 和 Checkpoint。Main 拥有应用状态：当前 Workspace、模型配置、API Key、窗口和计划任务。Renderer 只拥有界面状态：选中的 Session、打开的面板、输入框、折叠状态和由事件派生的展示数据。</p>
+<p>把状态放错位置会产生典型问题。如果 Renderer 自行维护 Turn 状态，刷新后可能和后台不一致；如果 ModelProvider保存 Session，它会把网络协议和业务状态耦合；如果 Tools 决定完成，测试命令就可能越权改变主循环。</p>
+<h2>Workspace 切换</h2>
+<p>切换 Workspace 不是简单修改一个路径字符串。Main 先取消旧 Core 的活动任务，再保存最近工作区，使用新路径重新创建 WorkspacePolicy、ToolRegistry 和 Agent Core。Renderer 清空旧项目派生状态，重新列出只属于新 Workspace 的 Session。</p>
+<p>Core 在列出、加载、读取历史和删除 Session 时都比较 <code>workspacePath</code>。这使已知其他 Session ID 的页面也不能跨工作区读取历史。Windows 路径比较需要规范化并忽略大小写。</p>
+<h2>事件为什么既用于 UI 又用于恢复</h2>
+<p>Core 内存中的对象适合运行，但进程退出后会消失。AgentEvent 把重要状态变化转换成可以持久化的事实。实时运行时，Main 将事件广播给 Renderer；重启时，Storage 读取同一类事件并交给 reducer 回放。</p>
+<p>不是所有 UI 更新都需要永久保存。<code>message.delta</code> 只服务流式显示，如果每个 token 都写 JSONL，会产生大量记录；模型完成后保存完整 Assistant Message 即可。相反，Tool Calls、Tool Result、ChangeSet 和终态必须持久化，否则无法恢复合法消息链与执行证据。</p>
+<p>事件驱动不等于完整 Event Sourcing。SeeCoder 还使用 <code>state.json</code> 保存 Ledger 快照，减少恢复成本；Snapshot 保存文件正文。这里采用的是“追加事件 + 权威状态快照”的组合，而不是强制所有状态都从事件推导。</p>
+<h2>故障怎样跨模块传播</h2>
+<p>模型网络错误先由 Provider 转成稳定 ModelEvent error。Core 判断有限重试已经结束后创建 AgentRunError，并发布 <code>turn.failed</code>。Renderer 将错误映射成用户可理解卡片，Storage 保存终态，Main 日志记录错误码和耗时。</p>
+<p>工具错误则不同。Tools 返回 <code>ok:false</code> 的 ToolResult，TurnRunner 通常把它作为 Observation 加入消息，Turn 保持 running。只有连续无进展或内部状态损坏才升级为 Turn 失败。由 TurnRunner 统一决定错误层级，可以避免 Model 和 Tools 各自用不同规则终止任务。</p>
+<p>Renderer 发生展示错误不能改变 Core 状态。即使对话工具卡或右侧检查器渲染失败，后台 Turn 仍按 Core 规则运行；全局前端错误处理应提示用户，而不是发送额外副作用。</p>
+<h2>架构演进边界</h2>
+<p>若未来增加远程执行，Main 不应直接连接任意远端 Shell。合理方向是增加明确 RemoteExecutor 接口和隔离服务，服务端负责身份、队列和沙箱，Core 仍只看 ToolResult。若增加 Anthropic 原生协议，应实现新的 ModelProvider，不改变 Agent Loop。</p>
+<p>若 Session 查询规模扩大，可以把 SessionStore 替换为 SQLite，但事件信封和 replay reducer 可以保留。若增加向量检索，应作为新的 Context Source，不能替代 Ledger 和消息协议保护。</p>
+<p>这些演进方式体现当前边界的价值：可替换基础设施，而不重写任务状态机。首版没有提前创建全部抽象，只在已有明确边界处保留接口。</p>
+
+<h2>一个 Session 目录里分别放什么</h2>
+<pre class="code-block"><span class="code-label">概念目录</span>session/
+  meta.json          标题、工作区、创建时间和分支关系
+  events.jsonl       按顺序追加的业务事件
+  state.json         当前任务账本与可恢复状态
+  artifacts/         过大的工具原始结果
+  snapshots/         文件修改前的内容与恢复信息</pre>
+<p><code>meta.json</code> 适合频繁读取的小型元数据；<code>events.jsonl</code> 保存不可变时间线；<code>state.json</code> 是从事件归约出的当前状态，加快启动但不能取代事件；Artifact 避免大段命令输出反复塞进事件；Snapshot 用于撤销文件修改。不同数据按用途分开，读取更直接，也能避免单个文件无限膨胀。</p>
+
+<h2>一条事件至少要回答什么</h2>
+<p>事件信封要说明它属于哪个 Session、在该 Session 中排第几、事件类型、发生时间和公开负载。Turn 事件还关联对应 Turn，工具事件关联对应调用。这些标识用于配对和恢复，普通界面不必直接展示。</p>
+<table class="data-table"><thead><tr><th>事件类别</th><th>保存的事实</th><th>回放后的作用</th></tr></thead><tbody>
+<tr><td>用户与助手消息</td><td>公开文本、工具请求和对应结果</td><td>重建对话与模型协议组</td></tr>
+<tr><td>Turn 状态</td><td>开始、等待、完成、失败、取消、限制</td><td>重建最新任务状态</td></tr>
+<tr><td>工具事件</td><td>工具名、参数摘要、结构化结果和耗时</td><td>恢复活动轨迹和错误证据</td></tr>
+<tr><td>修改与验证</td><td>ChangeSet、代码版本和测试结论</td><td>恢复 Diff 与验证新鲜度</td></tr>
+<tr><td>上下文事件</td><td>压缩摘要、快照和有效下界</td><td>恢复可继续的模型视图</td></tr>
+</tbody></table>
+<p>事件负载不保存 API Key，也不保存模型私有思维。工具原始输出过大时，事件只保存可读摘要和 Artifact 引用；需要诊断时再按引用读取完整结果。</p>
+
+<h2>回放为什么是“归约”而不是“重做”</h2>
+<p>归约就是从空状态开始，按顺序应用每条事实。遇到用户消息就加入历史，遇到工具结果就与请求配对，遇到 ChangeSet 就更新修改列表，遇到终态就关闭对应 Turn。整个过程只计算内存状态，不调用模型、不写项目文件、不启动命令。</p>
+<pre class="code-block"><span class="code-label">概念回放</span>state = emptySession()
+for (event of readEvents(session)) {
+  state = reduce(state, event)
+}
+return state</pre>
+<p>如果应用退出时某个 Turn 只有开始事件，没有完成、失败或取消事件，恢复时把它标记为 interrupted，表示进程结束打断了任务。系统不会猜测旧网络请求是否成功，也不会自动重放可能有副作用的工具。用户可以查看已有证据后明确启动新 Turn。</p>
+
+<figure class="visual"><img data-doc-asset="diagrams/event-replay.svg" alt="运行事实写入 events.jsonl 并更新界面，应用重启后回放事件恢复 Session" /><figcaption>同一事件流同时支持实时展示和重启恢复，但恢复绝不重新执行副作用。</figcaption></figure>
+
+<h2>增量分支怎样读取父历史</h2>
+<p>子 Session 的元数据保存直接父分支和分叉序号。读取时先沿父链取得父 Session 的可见事件，只保留到 <code>forkedFromSeq</code>，再追加子分支自己的 JSONL。若父本身也是分支，就继续向上读取，直到根 Session。最终得到一条确定的线性时间线。</p>
+<pre class="code-block"><span class="code-label">概念算法</span>readBranch(child):
+  assert child 未在访问集合中
+  inherited = child.parent
+    ? readBranch(child.parent).filter(seq ≤ child.forkedFromSeq)
+    : []
+  return inherited + readOwnEvents(child)</pre>
+<p>访问集合检测错误的循环关系，例如 A 指向 B、B 又指向 A。检测到循环时直接失败并给出稳定错误，不会无限递归。父分支在分叉点之后新增的事件不属于子分支，因此不会被带入。</p>
+
+<h2>为什么 Artifact 可以继承而不复制</h2>
+<p>分叉前的工具结果可能引用大型 Artifact。子分支读取继承事件时，引用仍指向产生它的祖先 Session。SessionStore 沿可见父链查找资源，并确认引用发生在分叉点之前。这样大段命令输出或文件内容不需要为每个分支复制。</p>
+<p>子分支产生的新 Artifact 只保存在自己目录，父分支不可见。删除父分支会让子分支失去继承资源，所以存在子分支时禁止删除父 Session。这项规则既保护事件历史，也保护关联的大型事实。</p>
+
+<h2>分叉时为什么要重建任务账本</h2>
+<p>当前 <code>state.json</code> 代表父分支最新状态，但用户可能从更早事件分叉。直接复制最新状态，会把分叉点之后的目标变化、修改版本和验证结果错误带入子分支。正确做法是只使用分叉点可见事件重新归约 ContextLedger，再保存为子分支初始状态。</p>
+<p>例如父分支在事件 20 修改代码，事件 24 测试通过，而子分支从事件 12 创建。子分支不能继承事件 20 的代码版本，也不能把事件 24 的验证当作自己的证据。它只继承事件 12 之前已经发生的目标、计划、错误和文件证据。</p>
+
+<h2>压缩下界用一个例子理解</h2>
+<p>假设事件 1 到 80 已被一次摘要覆盖，摘要事件位于 81，系统记录 <code>compactionFloor=81</code>。模型后续上下文依赖这份摘要。如果允许从事件 40 新建分支，新分支既拿不到 41 到 80 的完整模型视图，也不能合理使用事件 81 的摘要，工具消息配对和任务状态都可能不完整。</p>
+<p>因此 Fork 或 Rewind 的位置不得早于下界。原始 JSONL 仍可供审计，不代表每个历史点都能成为新的执行起点。压缩下界限制的是“可继续运行的模型视图”，不是删除或隐藏历史。</p>
+
+<h2>损坏尾行和异常退出怎样处理</h2>
+<p>JSONL 每行是一条独立 JSON。进程在写入最后一行时异常退出，可能只留下半行。读取器可以忽略损坏尾行并保留前面完整事件；中间行损坏则说明时间线不再可信，应报告错误，不能静默越过。元数据与状态文件使用临时文件替换，降低半写入概率。</p>
+<p>恢复后，已经完整写入的工具结果仍然是事实；只有开始而没有结束的动作被视为中断。系统不会根据磁盘当前内容反推历史工具“应该成功”，因为文件也可能被用户或其它程序修改。事件、文件哈希和 ChangeSet 共同提供可核对证据。</p>
+
+<h2>Session 并发为什么保持简单</h2>
+<p>同一 Session 同时只允许一个活动 Turn，避免两条模型循环交叉追加消息、共享审批和争抢同一任务账本。不同 Session 可以运行，但若它们指向同一工作区，所有写入仍经过共享写入协调器：同文件写入排队，范围未知的命令锁整个工作区。</p>
+<p>Session 隔离的是对话和任务状态，不等于文件系统隔离。Fork 也不自动创建 Git 分支或 Worktree。若未来需要多个分支同时实现不同方案，必须增加独立执行环境并定义合并策略，不能只放开并行限制。</p>
+
+<h2>从历史位置继续的真实流程</h2>
+<ol class="plain-list"><li>用户在历史中选择一个允许分叉的事件位置。</li><li>SessionLifecycle 检查目标 Session、工作区、活动 Turn 和压缩下界。</li><li>Storage 创建子目录，只写父关系与空的增量事件文件。</li><li>系统读取分叉点可见事件，重建消息、Ledger、ChangeSet 视图和记忆索引。</li><li>子分支显示继承历史，但后续新事件只追加到自己的 JSONL。</li><li>用户发出新请求，TurnRunner 在子分支中建立全新 Turn。</li><li>父分支继续保留原轨迹；切换回来时按父分支自己的事件恢复。</li></ol>
+<p>Rewind 与 Fork 都使用这套机制。差别主要是用户意图和标题：Fork 表示尝试另一条路线，Rewind 表示从旧位置重新继续。两者都不覆盖原历史，因此失败路线仍可审查，也能随时切回。</p>
+
+<h2>消息协议在历史中怎样保持完整</h2>
+<p>助手一次响应可能同时包含说明文字和多个工具请求。系统必须先保存完整 assistant 消息，再按调用标识依次保存 Tool Result。下一次模型请求只能携带完整协议组，不能留下没有结果的工具请求，也不能出现找不到请求来源的工具结果。上下文压缩和分支读取都以整个协议组为最小单位。</p>
+<p>这条规则解决过真实问题：如果只保存流式文字，工具执行后再把结果加入历史，兼容模型接口会因为缺少对应的 assistant tool call 拒绝请求。事件模型把“模型提出动作”和“程序完成动作”都当作事实，回放时按同一标识恢复配对。</p>
+
+<h2>分支树中四个字段如何配合</h2>
+<p><code>rootSessionId</code> 让系统快速知道整棵树的共同根；<code>parentSessionId</code> 给出直接继承关系；<code>forkedFromSeq</code> 划定父历史可见截止点；<code>compactionFloor</code> 划定能够继续运行的最早位置。根 Session 的父关系为空，子分支继承根标识并拥有自己的截止点。</p>
+<p>读取事件主要使用父关系和截止点，删除保护使用父子关系，界面展示分支树使用根与父关系，Fork 合法性再检查压缩下界。字段看似相近，但每个都回答不同问题，因此不能只保存一个“来源 Session”字符串代替。</p>
+
+<h2>Session 与 Git 分支不是一回事</h2>
+<p>Session 分支复制的是对话视图和 Agent 事实，不会自动执行 <code>git branch</code>，也不会复制工作目录。两条 Session 分支若指向同一个 Workspace，看到的磁盘文件仍然相同。用户在一条分支修改文件后，切到另一条分支时需要重新读取当前代码，不能假设磁盘回到了历史状态。</p>
+<p>Checkpoint 可以恢复 Agent 记录过的文件内容，但它也不是完整 Git 历史。若需要真正并行实现两个方案，应使用独立 Worktree 或其它隔离目录，再让每个 Session 绑定自己的执行环境。当前系统没有自动提供这层隔离。</p>
+
+<h2>如何检查 Session 实现是否可靠</h2>
+<p>测试至少覆盖递增事件序号、损坏尾行、重启后未完成 Turn、父子分支读取、父分支新增事件隔离、循环引用、压缩下界、祖先 Artifact 读取、分叉账本重建和父分支删除保护。每项测试都在临时目录运行，读取结果应与一条明确时间线完全一致。</p>
+<p>恢复测试还要证明没有副作用重放：历史中的写文件或命令只能恢复成记录，不能再次调用工具。只有同时验证时间线和磁盘行为，才能说明 Session 真正可恢复。</p>
+
 <h2>本章只需记住</h2>
 <div class="callout"><span class="callout-title">分支的本质</span><p>分支等于“父 Session + 截止位置 + 当前分支增量”，不是历史文件的完整副本。</p></div>

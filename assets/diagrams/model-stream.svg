@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="500" viewBox="0 0 1080 500" role="img" aria-labelledby="title">
+  <title id="title">模型流式响应的五层解析</title><style>.bg{fill:#fbf9fd}.n{fill:#fff;stroke:#d8c0ef;stroke-width:2}.p{fill:#f1e8fb;stroke:#8247d6;stroke-width:3}.t{font:600 17px 'Microsoft YaHei',sans-serif;fill:#252127}.s{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.a{stroke:#8247d6;stroke-width:3;fill:none;marker-end:url(#m)}</style><defs><marker id="m" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="#8247d6"/></marker></defs><rect class="bg" width="1080" height="500" rx="24"/>
+  <rect class="n" x="50" y="160" width="170" height="110" rx="16"/><text class="t" x="135" y="201" text-anchor="middle">网络字节</text><text class="s" x="135" y="233" text-anchor="middle">任意位置分块</text>
+  <rect class="n" x="255" y="160" width="170" height="110" rx="16"/><text class="t" x="340" y="201" text-anchor="middle">完整字符</text><text class="s" x="340" y="233" text-anchor="middle">TextDecoder</text>
+  <rect class="n" x="460" y="160" width="170" height="110" rx="16"/><text class="t" x="545" y="201" text-anchor="middle">完整 SSE 行</text><text class="s" x="545" y="233" text-anchor="middle">buffer 拼接</text>
+  <rect class="n" x="665" y="160" width="170" height="110" rx="16"/><text class="t" x="750" y="201" text-anchor="middle">模型事件</text><text class="s" x="750" y="233" text-anchor="middle">文字、工具、用量</text>
+  <rect class="p" x="870" y="135" width="170" height="160" rx="16"/><text class="t" x="955" y="183" text-anchor="middle">完整工具调用</text><text class="s" x="955" y="215" text-anchor="middle">按调用标识聚合</text><text class="s" x="955" y="245" text-anchor="middle">结束后解析参数</text>
+  <path class="a" d="M220 215H255"/><path class="a" d="M425 215H460"/><path class="a" d="M630 215H665"/><path class="a" d="M835 215H870"/><text class="s" x="540" y="365" text-anchor="middle">每一层只解决一种不完整：字节、字符、行、模型含义、工具参数</text>
+</svg>

@@ -1,22 +1,152 @@
 <span class="chapter-kicker">第一部分 · 先看全局</span>
 <h1>核心模块怎样分工</h1>
-<p class="lead">当前 Agent Core 已完成拆分。AgentCore 只保留对外 API 和依赖装配，具体工作交给职责单一的运行组件。</p>
-<h2>为什么要拆分</h2>
-<p>如果会话、循环、工具、审批、上下文和恢复都写在一个大类中，任何修改都可能影响整条链路。拆分后的原则很简单：每个模块只回答一个问题，AgentCore 负责把它们连接起来。</p>
-<table class="data-table"><thead><tr><th>模块</th><th>负责什么</th><th>核心入口</th></tr></thead><tbody>
-<tr><td>AgentCore</td><td>对外门面、依赖装配、事件持久化和广播</td><td><code>startTurn</code>、<code>forkFrom</code>、<code>emit</code></td></tr><tr><td>SessionLifecycle</td><td>创建、删除、分支、恢复 Session</td><td><code>create</code>、<code>forkFrom</code>、<code>hydrate</code></td></tr><tr><td>TurnRunner</td><td>Turn 状态机和模型工具循环</td><td><code>start</code>、<code>run</code></td></tr><tr><td>ToolCallExecutor</td><td>一批或一次工具调用的完整管线</td><td><code>executeBatch</code>、<code>execute</code></td></tr><tr><td>Context</td><td>账本、证据、记忆、预算和上下文组装</td><td><code>buildHybridContext</code></td></tr><tr><td>ChangeManager</td><td>记录修改、撤销和检查点恢复</td><td><code>record</code>、<code>revert</code>、<code>restore</code></td></tr><tr><td>SubagentRunner</td><td>运行只读 Explore 和 Review 子 Agent</td><td><code>run</code></td></tr>
-</tbody></table>
-<h2>AgentCore 现在做什么</h2>
-<p>构造函数创建工具注册表、工作区策略、写入协调器、拦截器和各运行组件。公共方法只是把请求转发给正确组件。所有重要事件最后经过 <code>emit()</code>，统一写入 SessionStore，再通知界面。</p>
-<pre class="code-block"><span class="code-label">简化结构</span>class AgentCore {
-  startTurn(...)       { return turnRunner.start(...); }
-  forkFrom(...)        { return sessionLifecycle.forkFrom(...); }
-  revertChangeSet(...) { return changes.revert(...); }
-  resolveApproval(...) { return toolExecutor.resolveApproval(...); }
+<p class="lead">当前 Agent Core 已完成整体拆分。AgentCore 只保留对外 API 和依赖装配，Session、Turn、工具和修改恢复分别由专门组件负责。</p>
+
+<h2>为什么一个大类会越来越难维护</h2>
+<p>Agent 每推进一步，都可能同时涉及模型流、工具校验、审批、Session 事件、文件恢复和界面更新。如果这些代码都放在 AgentCore 中，一个工具超时的改动可能影响 Turn 终态，一个分支恢复的改动也可能碰到模型循环。文件变大只是表面问题，真正的问题是多个变化原因混在同一处。</p>
+<p>拆分遵循一个简单原则：每个组件只回答一个稳定问题。SessionLifecycle 回答“长期会话如何创建和恢复”；TurnRunner 回答“一次用户任务如何推进”；ToolCallExecutor 回答“一个工具请求如何安全落地”；AgentCore 只回答“外部应该调用哪个入口，以及这些组件如何连接”。</p>
+
+<h2>先看整体依赖方向</h2>
+<pre class="code-block"><span class="code-label">从外到内</span>Desktop Main
+  → AgentCore                  对外门面
+      → SessionLifecycle       长期会话
+      → TurnRunner             一轮任务
+          → Context            模型输入
+          → ModelProvider      模型流
+          → ToolCallExecutor   工具执行
+              → Tools          本地能力
+              → ChangeManager  修改与恢复
+      → SessionStore           持久化事实</pre>
+<p>依赖方向很重要。界面只知道 AgentCore 的公共能力，不直接拼接上下文，也不直接实例化工具执行器。TurnRunner 可以使用上下文和工具执行器，但工具执行器不反过来控制 Turn。底层结果通过统一回调或事件回到 AgentCore，再由 AgentCore 保存并广播。</p>
+
+<h2>AgentCore：门面和依赖装配层</h2>
+<p>“门面”就是给外部一个稳定、简单的入口。桌面后端可以调用 <code>startTurn()</code>、<code>cancelTurn()</code>、<code>forkFrom()</code>、<code>rewindSession()</code>、<code>switchBranch()</code>、<code>resolveApproval()</code> 等方法，却不需要了解内部对象怎样协作。</p>
+<p>AgentCore 的构造函数负责创建工具注册表、工作区策略、写入协调器、拦截器管线和各运行组件。公共方法主要转发请求。重要事件统一经过 <code>emit()</code>：先追加到 SessionStore，再通知桌面界面和订阅者。这样“持久化事实”和“界面看到的事实”来自同一入口。</p>
+<pre class="code-block"><span class="code-label">简化后的门面</span>class AgentCore {
+  startTurn(input)       { return turnRunner.start(input); }
+  forkFrom(input)        { return sessionLifecycle.forkFrom(input); }
+  revertChangeSet(input) { return changeManager.revert(input); }
+  resolveApproval(input) { return toolExecutor.resolveApproval(input); }
+  emit(event)            { store.append(event); notify(event); }
 }</pre>
-<h2>桌面应用的权限边界</h2>
-<p>Renderer 没有 Node.js 权限，不能直接读取文件或运行命令。Preload 只暴露明确的 IPC 方法。Electron Main 才持有 AgentCore、工作区和模型配置。模型生成的内容必须经过 Main、Core 和 Tools 才可能影响本地项目。</p>
-<h2>五个基础包</h2>
-<div class="source-map"><div class="source-row"><code>protocol</code><span>所有模块共同使用的数据类型。</span></div><div class="source-row"><code>agent-core</code><span>Agent 状态、循环、上下文和调度。</span></div><div class="source-row"><code>model</code><span>统一模型接口和流式响应解析。</span></div><div class="source-row"><code>tools</code><span>本地文件、搜索、补丁、命令和 Git 能力。</span></div><div class="source-row"><code>storage</code><span>JSONL 事件、元数据、状态和快照。</span></div></div>
+<p>AgentCore 仍然重要，但重要性来自统一边界，而不是代码最多。以后替换存储或增加工具，不应迫使桌面端改写整条调用链。</p>
+
+<h2>SessionLifecycle：管理长期会话</h2>
+<p>Session 是一个可以跨多次用户请求、跨应用重启存在的任务容器。SessionLifecycle 负责创建、读取、删除、分支和恢复。它会把存储中的事件回放成内存状态，但不会重新执行历史工具，因为事件表示已经发生的事实。</p>
+<p>创建分支时，它只记录父 Session、分叉事件位置和当前分支增量；切换分支时，它重新恢复对应视图；删除时，它会阻止删除运行中的 Session，也会保护仍被子分支引用的父 Session。Session 规则集中在这里，TurnRunner 不需要自己维护分支树。</p>
+
+<h2>TurnRunner：一次用户请求的状态机</h2>
+<p>TurnRunner 的公开入口是 <code>start()</code>，内部 <code>run()</code> 执行循环。它先确认同一 Session 没有另一个活动 Turn，再创建取消控制器和 Turn 状态，发布开始事件。循环中每次准备上下文、调用模型、聚合模型事件、执行工具，并根据结果判断是否进入下一次 iteration。</p>
+<p>它拥有完成、失败、取消和达到限制的判断权。模型只能返回文本或工具请求，工具只能返回执行结果，两者都不能自行修改 Turn 终态。所有路径最终进入统一清理逻辑，释放活动记录、等待中的审批、子任务和取消控制器。</p>
+
+<h2>ToolCallExecutor：一次工具调用的完整管线</h2>
+<p>ToolCallExecutor 接收模型已经聚合好的工具请求。<code>executeBatch()</code> 负责一批调用的调度：只有这一批所有工具都明确声明 <code>parallelSafe</code> 时才使用并行；只要有一个工具不满足条件，整批就按模型给出的顺序执行并按原顺序返回结果。</p>
+<p><code>execute()</code> 处理单个调用：检查调用标识是否已经执行，查找工具定义，解析参数，检查运行模式，等待必要审批，运行工具前拦截器和 Hook，设置超时，进入工作区写入协调器，执行工具，再运行结束 Hook。无论底层抛出什么异常，对上层都返回结构化 ToolResult。</p>
+<p>执行器还负责内置控制工具，例如询问用户、请求上下文压缩和结束任务。它不决定是否开始下一轮模型请求，这个决定仍属于 TurnRunner。</p>
+
+<h2>WorkspaceMutationCoordinator：防止写入互相踩踏</h2>
+<p>并行执行只读工具通常安全，但两个写操作可能同时修改同一文件。写入协调器按标准化后的工作区共享：写文件和补丁按目标文件加锁，不同文件可以并行；命令可能修改任意文件，无法可靠预测范围，所以获取整个工作区的锁；未知副作用工具也走工作区级保护。</p>
+<p>撤销和检查点恢复使用同一个协调器，因此不会与正在进行的写入交叉。锁总在 <code>finally</code> 中释放，工具失败、超时或取消都不会把工作区永久锁住。它是当前进程内的协调，不是跨进程文件锁。</p>
+<figure class="visual"><img data-doc-asset="diagrams/tool-locks.svg" alt="ToolCallExecutor 校验工具后，由 WorkspaceMutationCoordinator 协调只读、文件写入和命令" /><figcaption>是否并行由工具风险属性和写入范围共同决定，不由模型自由决定。</figcaption></figure>
+
+<h2>Context：完整历史之外的模型视图</h2>
+<p>上下文模块不负责保存所有历史，而是为当前模型请求选择最有用的信息。任务账本保留目标、修改版本、验证和关键错误；文件证据保存当前代码片段及哈希；工具观察保留执行结论；记忆索引在旧事件中找回相关事实；预算模块估算输入是否过长。</p>
+<p><code>buildHybridContext()</code> 先用便宜、确定性的规则折叠旧内容，若仍超过可用输入的 60%，才调用语义摘要。构建结果保存 ContextSnapshot，记录本次用了哪些事实和预算估算，便于重启恢复和问题定位。</p>
+
+<h2>ChangeManager：把修改与验证连接起来</h2>
+<p>文件工具真正写入后，ChangeManager 记录 ChangeSet。它保存受影响文件、修改前后的哈希、恢复点和递增的 changeRevision。测试结果也带上执行时的 revision，因此系统可以回答“这次通过的测试是否对应当前代码”。</p>
+<p>撤销或恢复时先进入写入协调器，再检查文件是否仍与预期版本一致。若用户在 Agent 之外改过文件，系统不会盲目覆盖，而是报告冲突。修改记录和 Session 事件分开存储，但通过标识和版本关联。</p>
+
+<h2>Model、Tools、Storage 和 Protocol 四个基础包</h2>
+<table class="data-table"><thead><tr><th>包</th><th>解决的问题</th><th>上层得到什么</th></tr></thead><tbody>
+<tr><td><code>protocol</code></td><td>定义 Session、Turn、事件、模型事件、工具结果等共同数据</td><td>跨包、IPC 和测试使用同一语言</td></tr>
+<tr><td><code>model</code></td><td>构造兼容接口请求，解析流式文字、工具片段、用量和错误</td><td>稳定的 ModelEvent 流</td></tr>
+<tr><td><code>tools</code></td><td>在工作区边界内实现文件、搜索、补丁、命令和 Git</td><td>工作区内的结构化 ToolResult</td></tr>
+<tr><td><code>storage</code></td><td>保存元数据、JSONL 事件、状态、快照和大型结果</td><td>可追加、可分支、可重启恢复的事实</td></tr>
+</tbody></table>
+<p>Protocol 位于最底层，因为其它包都需要共同类型。Agent Core 依赖 Model、Tools 和 Storage，但这些底层包不依赖桌面界面。清晰的依赖方向减少循环引用，也让每个包可以独立测试。</p>
+
+<h2>桌面应用怎样保持权限边界</h2>
+<p>Renderer 运行普通网页代码，Node 集成关闭。Preload 使用受控桥接，只提供选择工作区、启动任务、取消、审批和订阅事件等明确能力。Main 收到 IPC 后再次校验参数，并确保操作指向当前工作区。API Key 只存在环境变量或进程内存，不写入仓库、日志和文档。</p>
+<p>这意味着页面中一段不可信文本不能直接调用 <code>fs</code>，模型生成的工具参数也不能绕过工作区策略。安全不是只放在某一层，而是从 Renderer 权限、IPC 白名单、工具 Schema、WorkspacePolicy 到写入协调器逐层收紧。</p>
+
+<h2>事件怎样穿过这些模块</h2>
+<p>TurnRunner 和 ToolCallExecutor 不直接操作界面，而是通过注入的回调发布事件。AgentCore 的 <code>emit()</code> 接收事件并确定 Session，先追加到事件日志，再广播给 Renderer。界面使用同一事件更新消息、运行阶段、工具卡片和审批状态。</p>
+<p>事件中只保存公开事实，例如模型输出文本、工具名称、结构化结果、耗时和终态。模型私有思维不会写入轨迹，也不会展示给用户。这样重启恢复、自动化测试和界面显示都围绕可验证事实工作。</p>
+
+<h2>拆分后如何添加一个新能力</h2>
+<p>如果要增加只读的“列出项目依赖”工具，先在 Tools 中定义参数和执行逻辑，声明它没有副作用且可并行；再注册到工具表。TurnRunner 不需要修改，因为它只依赖统一工具协议。若要新增一种 Session 分支规则，主要修改 SessionLifecycle 与 Storage；工具执行器和模型解析不应受到影响。</p>
+<p>判断模块边界的方法是问“这个变化为什么发生”。模型协议变化属于 Model；工具风险变化属于 Tools 和 ToolCallExecutor；Turn 终止规则变化属于 TurnRunner；历史保存格式变化属于 Storage；界面呈现变化属于 Renderer。把同一变化原因放在一起，代码才容易维护。</p>
+
+<h2>运行组件通过什么数据协作</h2>
+<p>模块拆开后不能靠随意读取彼此内部字段协作，否则只是把大文件变成多个相互缠绕的小文件。SeeCoder 使用 Protocol 中的稳定数据结构：ModelRequest 描述一次模型输入，ModelEvent 描述流式输出，ToolCall 描述模型请求，ToolResult 描述真实执行，AgentEvent 描述需要保存和展示的事实。</p>
+<p>组件还通过显式依赖获取能力。TurnRunner 构造时拿到模型、上下文构建器、工具执行器、Session 读取函数和事件发布函数；ToolCallExecutor 拿到工具注册表、审批管理器、写入协调器和 Hook。测试可以把这些依赖替换成 Fake，从而只验证目标组件。</p>
+
+<h2>依赖装配为什么集中在 AgentCore</h2>
+<p>若每个组件自己创建 SessionStore、Logger 或 WorkspacePolicy，同一进程可能出现多套不一致状态。AgentCore 在一个位置创建它们，并把同一实例传给需要的组件。例如正常写入、撤销和检查点恢复必须共享同一个 WorkspaceMutationCoordinator，才能避免它们同时修改文件。</p>
+<p>集中装配也让生命周期清晰。工作区变化时，Main 先取消旧 Core 的全部活动，再基于新目录创建一套 Core；关闭应用时，Core 可以统一中止模型、工具进程和等待。组件只实现业务，不负责猜测何时被销毁。</p>
+
+<h2>TurnRunner 与 ToolCallExecutor 的边界</h2>
+<table class="data-table"><thead><tr><th>问题</th><th>负责组件</th><th>原因</th></tr></thead><tbody>
+<tr><td>是否开始下一次模型请求</td><td>TurnRunner</td><td>它掌握 iteration、终态和无进展计数</td></tr>
+<tr><td>一个工具参数是否有效</td><td>ToolCallExecutor</td><td>它掌握工具定义和运行时 Schema</td></tr>
+<tr><td>一批工具能否并行</td><td>ToolCallExecutor</td><td>它能读取每个工具的 parallelSafe 属性</td></tr>
+<tr><td>工具失败后 Turn 是否终止</td><td>TurnRunner</td><td>单次失败通常应反馈模型继续修复</td></tr>
+<tr><td>何时请求用户审批</td><td>ToolCallExecutor</td><td>审批由工具风险和执行模式决定</td></tr>
+<tr><td>取消后最终状态是什么</td><td>TurnRunner</td><td>同一 Turn 只能发布一个权威终态</td></tr>
+</tbody></table>
+<p>这个边界避免执行器偷偷启动下一轮，也避免 TurnRunner 重复实现每个工具的安全细节。ToolCallExecutor 保证“给我一个请求，我返回一个可解释结果”；TurnRunner 保证“给我一轮用户目标，我推进到唯一终态”。</p>
+
+<h2>SessionLifecycle 与 Storage 的边界</h2>
+<p>Storage 提供持久化能力：创建目录、追加事件、读取分支视图、保存状态和大型结果。它不知道当前是否允许删除运行中的 Session，也不决定从哪个事件分叉。SessionLifecycle 使用这些基础能力实现业务规则，并结合活动 Turn 状态做判断。</p>
+<p>分支读取是一个例外：因为父子事件拼接直接关系到存储格式，Storage 的 <code>readEvents()</code> 会沿父链递归读取，并检测循环引用。SessionLifecycle 决定何时调用、怎样恢复内存账本以及界面切换到哪条分支。两层共同完成“持久化机制”和“会话业务”。</p>
+
+<h2>上下文模块为什么不直接改 Session 历史</h2>
+<p>上下文压缩的目标是减少一次模型请求的输入，不是抹掉审计记录。ContextBuilder 从完整事件、任务账本、文件证据和记忆索引生成一个模型视图；即使旧对话被摘要，原始事件仍保留。压缩事件只记录摘要和有效下界，后续分支不得回到缺少有效摘要的位置。</p>
+<p>这种分离让两个需求同时成立：系统可以长期保存真实过程，模型又不会因为历史无限增长而超过输入窗口。若把摘要直接覆盖历史，就无法可靠恢复工具配对、分支位置和变更证据。</p>
+
+<h2>目录结构与阅读入口</h2>
+<div class="source-map">
+<div class="source-row"><code>packages/protocol</code><span>先看共同类型，理解其它模块传递什么数据。</span></div>
+<div class="source-row"><code>packages/agent-core</code><span><code>index.ts</code> 是门面；<code>runtime/</code> 放 Session、Turn、工具、修改和干预组件。</span></div>
+<div class="source-row"><code>packages/model</code><span>模型供应商接口、SSE 流解析和测试用 FakeProvider。</span></div>
+<div class="source-row"><code>packages/tools</code><span>工作区策略、文件、搜索、补丁、命令和 Git 实现。</span></div>
+<div class="source-row"><code>packages/storage</code><span>Session 元数据、JSONL 事件、分支读取、状态和 Artifact。</span></div>
+<div class="source-row"><code>apps/desktop</code><span>Main、Preload、Renderer 三层及类型化 IPC。</span></div>
+</div>
+
+<h2>拆分怎样降低测试成本</h2>
+<p>过去测试一次工具审批可能必须启动整个主循环。现在 ToolCallExecutor 可以直接接收假的工具和审批结果，验证重复调用、超时、并发条件和结构化错误；TurnRunner 使用 FakeModelProvider 和假的执行器，验证 iteration、动态干预和终态；SessionLifecycle 使用临时存储验证分支与恢复。</p>
+<p>集成测试仍然需要把组件装配起来，因为真正风险往往发生在边界，例如工具完成事件是否先保存再展示、取消是否同时解除审批和命令进程。但单元测试能先快速定位是哪一层出错，减少每次都通过桌面端复现的成本。</p>
+
+<h2>不使用 Agent 框架意味着什么</h2>
+<p>SeeCoder 没有把核心循环交给 LangChain、Agents SDK 或其他 Agent 框架。模型事件解析、上下文、工具调用、终止和错误处理都在仓库内自行实现。好处是状态机、事件格式和本地安全边界完全可见，能与 Electron、Session 分支和 ChangeSet 深度配合。</p>
+<p>代价是每项能力都要自己测试，例如工具消息配对、SSE 分块、调用去重、取消传播和摘要失败降级。当前拆分正是为了控制这项成本：协议稳定、职责清晰、每个组件可单测，避免自研代码再次集中成不可理解的大类。</p>
+
+<h2>判断拆分是否成功的四个标准</h2>
+<ol class="plain-list"><li>外部只通过 AgentCore 公共方法使用核心能力。</li><li>每个运行组件有明确输入、输出和唯一变化原因。</li><li>底层包不依赖桌面界面，组件之间不读取私有状态。</li><li>新增工具、模型供应商或 Session 规则时，只修改少数相关模块并能独立测试。</li></ol>
+<p>文件行数减少并不是最终标准。如果两个小文件必须同时修改大量私有细节，边界仍然失败。真正清晰的拆分会让数据流可追踪、错误归属明确、测试能够在正确层次断言。</p>
+
+<h2>一次调用怎样返回到界面</h2>
+<p>用户点击发送后，Main 调用 <code>AgentCore.startTurn()</code>。门面把请求交给 TurnRunner，随后立即通过事件告诉界面 Turn 已运行。模型产生文字分片时，TurnRunner 发布消息增量；工具开始和结束时，ToolCallExecutor 发布工具事件；发生审批时，审批管理器发布等待事件。AgentCore 统一保存和转发这些事件。</p>
+<p>Renderer 不轮询 TurnRunner 的内部 Map，也不自行猜测工具是否完成。它只根据当前 Session 的事件更新展示状态。快速切换 Session 时，页面丢弃旧加载请求的迟到结果，避免把另一个会话的消息画到当前页面。</p>
+
+<h2>错误应该在哪一层处理</h2>
+<p>网络 429、网关错误和流中断先由 ModelProvider 进行有限重试；文件不存在、补丁冲突和命令退出码由 Tools 转成 ToolResult；ToolCallExecutor 保证超时、取消和异常都得到统一结果；TurnRunner 判断局部失败是否还能交给模型修复，只有不能可靠继续时才写入 Turn 失败。</p>
+<p>Renderer 只负责把稳定错误码翻译成用户可理解的提示，不决定重试策略。分层以后，测试失败可以继续进入下一轮，审批拒绝不会被误报为程序崩溃，用户取消也不会显示成未知异常。</p>
+
+<h2>状态应该放在哪里</h2>
+<table class="data-table"><thead><tr><th>状态</th><th>所有者</th><th>原因</th></tr></thead><tbody>
+<tr><td>活动 Turn、取消控制器、迭代数</td><td>TurnRunner</td><td>只在一次运行期间有效</td></tr>
+<tr><td>审批等待、已执行调用</td><td>ToolCallExecutor</td><td>属于工具管线的幂等与等待</td></tr>
+<tr><td>完整事件、分支元数据、快照</td><td>SessionStore</td><td>需要跨重启存在</td></tr>
+<tr><td>当前工作区、模型配置、密钥</td><td>Electron Main</td><td>属于本机可信应用状态</td></tr>
+<tr><td>选中页面、面板开关、输入框</td><td>Renderer</td><td>只影响显示，不是后台事实</td></tr>
+</tbody></table>
+<p>状态放错位置会产生直接问题：界面自己维护 Turn 终态会在刷新后失真；Provider 保存 Session 会把网络协议和业务恢复耦合；工具自行决定任务完成会越过主循环；每个组件各建写入锁则无法保护跨组件的撤销和恢复。</p>
+<p>模块之间只传必要信息。工具不需要知道 Session 标题，ModelProvider 不需要知道文件快照，Renderer 不需要读取活动控制器。减少无关依赖后，一个模块的内部实现可以替换，只要输入输出协议保持不变。</p>
+<p>依赖方向也必须单向：桌面层调用核心层，核心层调用模型、工具和存储，底层包不能反过来导入 Renderer。若出现循环依赖，通常说明状态所有者或公共协议放错了位置，应先重新判断职责，而不是增加更多转发方法掩盖问题。</p>
+<p>最直接的检查方法是从任一公开入口向下跟踪：每一步都应能说明调用目的、输入协议、状态所有者和事件出口，不能依赖隐式全局变量或跨层随意修改组件内部私有状态。</p>
+
 <h2>本章只需记住</h2>
-<div class="callout"><span class="callout-title">拆分后的主线</span><p>AgentCore 接收请求；SessionLifecycle 管长期会话；TurnRunner 管一轮任务；ToolCallExecutor 管一次工具调用；Context 管模型看到什么。</p></div>
+<div class="callout"><span class="callout-title">拆分后的主线</span><p>AgentCore 接收请求并装配依赖；SessionLifecycle 管长期会话；TurnRunner 管一轮任务；ToolCallExecutor 管工具管线；Context 决定模型看到什么；Storage 保存事实。</p></div>

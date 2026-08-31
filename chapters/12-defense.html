@@ -35,5 +35,58 @@
 <h2>当前实现的关键设计决定</h2>
 <ul><li>不用 Agent 框架，核心循环和工具执行自行实现。</li><li>AgentCore 是门面，TurnRunner 和 ToolCallExecutor 承载执行细节。</li><li>完整历史与模型上下文分离。</li><li>只读工具可受控并行，写操作由 Workspace 协调器保护。</li><li>Session 分支保存增量，不复制父历史。</li><li>任何历史恢复都不重新执行副作用。</li></ul>
 
+<h2>先理解 Agent Harness</h2>
+<p>大语言模型可以根据输入生成代码，但它不能自行读取电脑文件，也不会自动保存上一次请求的内容。它在每次 API 请求中只能看到调用方发送的消息。所谓 Coding Agent，本质上是一个持续控制循环：系统准备当前任务需要的上下文，把上下文和工具说明发给模型；模型决定回答还是请求工具；系统校验并执行工具；系统把真实结果反馈给模型；模型依据新证据继续决策。这个循环直到出现明确终止条件。</p>
+<p>Agent Harness 是包围模型的工程运行环境。它负责状态、权限、工具、上下文、重试、取消、日志和持久化。模型负责提出下一步，Harness 负责判断这一步能不能做、怎样做、结果是否可信、什么时候必须停止。SeeCoder 的 Harness 由 packages/agent-core、packages/model、packages/tools、packages/storage 和 packages/protocol 共同组成，没有使用 LangChain、OpenAI Agents SDK、Claude Agent SDK 等编排框架。</p>
+<p>可以把一次执行写成下面的闭环：</p>
+<p>~~~text 用户任务 ↓ 创建 Turn 并记录目标 ↓ 构建受预算约束的模型上下文 ↓ 流式调用模型并解析文本、Tool Call、usage、finish reason ↓ 没有 Tool Call ───────────────→ 结束 Turn ↓ 有 Tool Call 保存完整 Assistant Tool Calls ↓ 参数校验、权限判断、审批、Hook ↓ 本地执行工具并生成 Tool Result ↓ 保存事件、ChangeSet、Checkpoint、Observation ↓ 把结果加入下一轮上下文，再次调用模型 ~~~</p>
+<p>这不是固定工作流。模型可以先搜索、再批量读取、再修改，也可以在测试失败后重新定位。固定的是控制边界：每次模型请求都经过上下文构建，每批工具都经过 <code>ToolCallExecutor.executeBatch()</code>，每个副作用都经过权限策略，每个 Turn 都经过统一终止和清理路径。</p>
+<h2>设计目标、非目标与核心不变量</h2>
+<p>Agent Core 的第一目标不是让模型“看起来聪明”，而是保证任务状态不会因为模型输出不稳定而损坏。系统必须允许模型犯错，同时把错误限制在可观察、可恢复的范围内。例如模型可能请求不存在的工具，Core 返回 unknown_tool；模型可能给出不完整 JSON，Core 返回 invalid_args；模型可能连续探索，Core 通过探索预算迫使它收敛；模型可能请求危险命令，Core 进入审批或拒绝。</p>
+<p>当前设计追求五项性质。第一，确定性边界：同一 Tool Call ID 不重复产生副作用。第二，协议完整性：Assistant Tool Calls 与对应 Tool Result 成组保存和发送。第三，工作区隔离：文件路径必须留在当前 Workspace。第四，状态可恢复：应用重启后能够从 JSONL 和状态文件重建 Session。第五，成本有上界：主 Agent 最多 24 次模型迭代，子 Agent 最多 6 次，模型重试最多 3 次，命令有超时。</p>
+<p>以下规则是实现中的核心不变量：</p>
+<table class="data-table"><thead><tr><th>不变量</th><th>强制位置</th><th>意义</th></tr></thead><tbody><tr><td>一个 Session 同时只有一个活动 Turn</td><td>TurnRunner</td><td>防止同一任务并发写入与状态串线</td></tr><tr><td>一个 Tool Result 必须对应先前的 Assistant Tool Call</td><td>消息分组与事件回放</td><td>保证下一次模型请求符合协议</td></tr><tr><td>同一 Turn 内相同调用只执行一次</td><td>ToolCallExecutor</td><td>防止重试造成重复写入或重复命令</td></tr><tr><td>Plan 模式不能执行副作用工具</td><td>ToolCallExecutor.execute</td><td>不依赖模型自觉遵守只读要求</td></tr><tr><td>文件路径不能越出 Workspace</td><td>WorkspacePolicy</td><td>限制模型可接触的本地范围</td></tr><tr><td>子 Agent 只能读取</td><td>子 Agent 工具白名单</td><td>保证主 Agent 是唯一写入者</td></tr><tr><td>验证只证明相同代码版本</td><td>ContextLedger</td><td>防止用修改前的测试证明修改后的代码</td></tr><tr><td>一个 Turn 只发布一个终态</td><td>TurnRunner.run 统一出口</td><td>防止 UI 同时看到 completed 和 failed</td></tr><tr><td>取消必须传播到模型、工具和子 Agent</td><td>AbortSignal</td><td>避免 UI 停止但后台继续运行</td></tr></tbody></table>
+<p>当前版本不是操作系统级沙箱，也不是云端多租户服务。它不承诺阻止当前 Windows 用户通过任意可执行程序访问全部系统资源。安全来自工具面收缩、路径规范化、敏感文件过滤、命令风险识别、审批和审计。这个边界必须在答辩中主动说明。</p>
+<h2>模块边界：每个包只负责一种问题</h2>
+<p>packages/protocol 定义跨模块共享的数据契约，包括 Session、Turn、Item、AgentEvent、ModelMessage、ToolCall 和 ToolResult。它不执行任务。把协议单独成包的原因是 Main、Core、Model、Tools、Storage 和 Renderer 都要理解同一组对象；若各层自行声明近似类型，字段和状态会逐渐不一致。TypeScript 类型只能约束编译期，因此 IPC、模型参数和文件配置仍需要运行时校验。</p>
+<p>packages/model 只处理 OpenAI 兼容 Chat Completions 协议。它把内部 ModelMessage 转成 API 消息，使用 fetch 发起流式请求，把 SSE 分片解析为统一 ModelEvent，并完成有限重试。它不知道 Workspace、审批或任务是否完成。</p>
+<p>packages/tools 定义本地能力。每个 ToolDefinition 包含名称、描述、Zod 参数、sideEffect、risk 和 execute。该包还实现 WorkspacePolicy、文件事务写入、补丁解析、命令执行、输出截断和敏感路径过滤。工具返回结构化 ToolResult，不直接改变 Agent 状态。</p>
+<p>packages/storage 使用追加式 JSONL 保存事件，用 meta.json 保存 Session 元数据，用 state.json 保存 ContextLedger，用 snapshot 文件保存修改前内容。它还提供纯事件回放函数。Storage 不调用模型、不执行历史工具。</p>
+<p>packages/agent-core 是协调者。它持有 Session、Turn、消息视图、审批、AbortController、ChangeSet、Checkpoint、Ledger、Evidence 和 MemoryIndex，把 Model、Tools 与 Storage 串成主循环。Core 不负责窗口和页面。</p>
+<p>Electron Main 是本地可信后端。它创建 Core、读取加密模型配置、注册 IPC、选择 Workspace、管理 Git 和计划任务，并把 AgentEvent 推给 Renderer。Renderer 是 React 前端，只能通过 preload 暴露的类型化 IPC 请求本地操作；nodeIntegration 关闭，Renderer 不能直接调用 Node.js 文件系统。</p>
+<p>这种模块化单体没有远程后端、数据库、Redis 或队列。对本地 Demo 而言，单进程内调用比远程服务更少故障点，也更容易保证文件操作发生在用户电脑。代价是任务不能在应用退出后继续执行，未完成 Turn 重启后只能标记为 interrupted，而不能恢复到某条机器指令的中间位置。</p>
+<h2>为什么没有采用现成 Agent SDK</h2>
+<p>考核明确要求历史、上下文、工具执行、解析、终止和错误处理自行实现。采用 Agent SDK 会直接隐藏主循环、工具配对、压缩和恢复逻辑，无法证明对关键机制负责。因此 SeeCoder 只使用 fetch、Node.js 标准能力、Zod 与 Electron，不把编排交给框架。</p>
+<p>自行实现的代价是要处理 SSE 分片、Tool Call 参数拼接、协议组裁剪、重试和取消等大量边界。好处是每条机制可在源码中定位，可用 FakeModelProvider 确定性测试，也能针对本地文件安全和 UI 事件流做定制。</p>
+<p>公开产品只用于设计参照。Codex App Server 的公开文档展示了对话、Turn、Item、事件和审批的分层；Claude Code 的公开文档强调 Agent Loop、上下文压缩、子 Agent 隔离与 Hook 生命周期；TRAE Agent 公开仓库强调工具生态和轨迹记录。SeeCoder 没有复制它们的代码，也没有把这些产品当后端。</p>
+<h2>当前实现的已知限制</h2>
+<p>SeeCoder 的主要限制需要明确说明。第一，没有 OS 级沙箱，命令可在当前用户权限下运行。第二，主模型请求没有独立总超时，兼容网关长时间不返回时主要依赖用户取消。第三，SSE 畸形行会被忽略，没有协议损坏阈值。第四，JSON Schema 与 Zod 分两处维护，存在漂移风险。</p>
+<p>第五，根 AGENTS.md 会加载，但嵌套规则不会按路径加载。第六，Review Finding 的结构化程度有限。第七，子 Agent 完整消息轨迹未单独持久化。第八，ContextLedger 中 acceptanceCriteria、constraints、decisions 的自动维护不完整。第九，finish 不是代码变更后的强制唯一路径，只是推荐路径。第十，命令风险判断基于正则，不是 Shell AST 或操作系统权限隔离。</p>
+<p>这些限制不否定当前架构。核心协议、执行与恢复链路已闭环，限制主要位于更强安全、精确检索和产品成熟度。答辩时应说明“为什么首版选择应用层边界、哪些能力已经用测试证明、下一步怎样增强”，而不是把限制隐藏起来。</p>
+<h2>源码阅读顺序</h2>
+<p>第一次阅读建议从 <code>packages/protocol/src/index.ts</code> 理解数据结构，再看 <code>packages/agent-core/src/index.ts</code> 的门面和依赖装配，接着看 <code>runtime/turn-runner.ts</code> 的 <code>start()</code>、<code>run()</code>，以及 <code>runtime/tool-call-executor.ts</code> 的 <code>executeBatch()</code>、<code>execute()</code>。掌握控制流后，再看 context、model、tools 和 storage。</p>
+<p>不要先从 React 页面理解 Agent，因为 UI 只消费事件。也不要先钻进补丁解析器，否则会看到大量局部细节却不知道它在主循环中的位置。</p>
+<p>~~~text 推荐调用链</p>
+<pre class="code-block"><span class="code-label">当前调用链</span>Renderer send
+→ preload IPC
+→ Main turn handler
+→ AgentCore.startTurn
+→ TurnRunner.start / run
+→ buildHybridContext
+→ ModelProvider.stream
+→ ToolCallExecutor.executeBatch / execute
+→ ToolDefinition.execute
+→ AgentCore.emit / SessionStore.append
+→ AgentEvent 回到 Renderer</pre>
+<h2>设计依据与项目差异</h2>
+<p>SeeCoder 的文档组织借鉴公开一手资料的表达方式：先定义核心实体，再描述生命周期、事件、审批和错误，最后给真实执行链。OpenAI Codex App Server 公开文档采用会话层、Turn 层、Item 层与流式通知的分层方式；SeeCoder 在项目内统一使用 Session 名称，但保留“长期对话包含多个 Turn、Turn 包含多种 Item”的思想。</p>
+<p>Claude Code 公开文档把 Agent Loop 解释为模型响应、工具执行与结果反馈的多轮过程，并强调 max turns、独立子 Agent Context、Compaction 与 Hook。SeeCoder 自己实现相应机制，但具体数据结构、预算、权限和存储均以本项目源码为准。TRAE Agent 公开仓库强调可修改的模块化工具与 trajectory recording；SeeCoder 使用 V3 事件和 JSONL实现本地轨迹。</p>
+<p>参考资料：</p>
+<ul class="plain-list"><li>OpenAI Codex App Server：https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md</li><li>Claude Code Agent Loop：https://code.claude.com/docs/en/agent-sdk/agent-loop</li><li>Claude Code Context Window：https://code.claude.com/docs/en/context-window</li><li>Claude Code 扩展机制：https://code.claude.com/docs/en/features-overview</li><li>TRAE Agent：https://github.com/bytedance/trae-agent</li></ul>
+<p>这些资料用于对照架构问题，不是 SeeCoder 的运行依赖。SeeCoder 未封装 Codex、Claude Code 或 TRAE，也没有使用其 Agent SDK。</p>
+<h2>最终结论</h2>
+<p>SeeCoder 的核心不是一次能生成代码的模型请求，而是一套自行实现的 Harness。对话历史通过 Session、Item、Event 与 JSONL 持久化；模型上下文通过 Ledger、Evidence、Observation、检索、语义摘要和协议组进行预算分配；模型输出通过 SSE 缓冲与 callId 聚合解析；工具通过 Schema、Zod、WorkspacePolicy、权限、审批、Hook 和 AbortSignal 在本地执行；主循环通过完成、取消、迭代上限、无进展、输出截断与错误分类停止。</p>
+<p>这些机制共同回答了考核的核心要求：历史不是简单数组，工具不是让模型直接运行 Shell，解析不是对半段 JSON 立即执行，终止不是只相信模型说“完成”，错误也不是 catch 后统一显示失败。模型可以不稳定，但系统边界必须稳定；这正是 Coding Agent 工程设计与普通聊天应用的区别。</p>
+
 <h2>本章只需记住</h2>
 <div class="callout"><span class="callout-title">推荐顺序</span><p>Protocol → AgentCore → TurnRunner → ToolCallExecutor → Context → Session/Storage → Tools → Desktop。先看调用关系，再看底层实现。</p></div>
