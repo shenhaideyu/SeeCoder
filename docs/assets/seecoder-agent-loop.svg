@@ -1,78 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 主循环架构图</title>
-  <desc id="desc">展示从创建 Turn、构建上下文、调用模型、解析工具、执行与回填，到完成、失败或取消的完整流程。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder Agent 主循环</title>
+  <desc id="desc">AgentCore 重复执行上下文构建、模型调用、输出解析、工具执行和结果反馈，并在明确条件下结束。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#4d0099" flood-opacity=".10"/></filter>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#6d6475"/></marker>
-    <style>
-      .title{font:700 32px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.subtitle{font:400 16px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}
-      .lane{fill:#fbf9fd;stroke:#d8cce6;stroke-width:2;stroke-dasharray:8 7}.node{fill:#fff;stroke:#b99aef;stroke-width:2;filter:url(#shadow)}
-      .decision{fill:#f7f1fc;stroke:#8247d6;stroke-width:2}.terminal{fill:url(#brand);stroke:#4d0099;stroke-width:2}.error{fill:#fff5f6;stroke:#ff667d;stroke-width:2}
-      .txt{font:600 16px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#342b3c;text-anchor:middle;dominant-baseline:middle}.small{font:400 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79;text-anchor:middle}.white{fill:#fff}
-      .edge{fill:none;stroke:#6d6475;stroke-width:2.2;marker-end:url(#arrow)}.label{font:600 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}
-      .badge{fill:#4d0099}.badgeText{font:700 15px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#fff;text-anchor:middle;dominant-baseline:middle}
-      .card{fill:#fff;stroke:#e5e1e8;stroke-width:1.5;filter:url(#shadow)}.cardTitle{font:700 17px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#342b3c}.cardBody{font:400 14px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#62596a}
-      .section{font:700 19px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.mono{font:500 13px Consolas,'Microsoft YaHei',monospace;fill:#62596a}
-    </style>
+    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
   </defs>
+  <rect width="1200" height="470" rx="28" fill="#f8f7fa"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="55" y="85" width="180" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2" filter="url(#shadow)"/>
+    <text x="145" y="130" text-anchor="middle" font-size="22" font-weight="700" fill="#241b2b">用户目标</text><text x="145" y="160" text-anchor="middle" font-size="15" fill="#746d79">开始 Turn</text>
+    <path d="M235 135H285" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="295" y="85" width="190" height="100" rx="20" fill="#f0e7fa" stroke="#b38add" stroke-width="2"/>
+    <text x="390" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#4d0099">构建上下文</text><text x="390" y="160" text-anchor="middle" font-size="15" fill="#675774">ContextBuilder</text>
+    <path d="M485 135H535" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="545" y="85" width="190" height="100" rx="20" fill="#eef5ff" stroke="#79a9ed" stroke-width="2"/>
+    <text x="640" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#243a63">调用模型</text><text x="640" y="160" text-anchor="middle" font-size="15" fill="#5d6980">ModelProvider</text>
+    <path d="M735 135H785" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="795" y="85" width="170" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
+    <text x="880" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#241b2b">解析输出</text><text x="880" y="160" text-anchor="middle" font-size="15" fill="#746d79">文本 / Tool Call</text>
 
-  <rect width="1600" height="1080" fill="#f6f6f7"/>
-  <text x="48" y="58" class="title">06 · SeeCoder Agent 主循环</text>
-  <text x="48" y="88" class="subtitle">一个用户请求对应一个 Turn；Turn 内进行最多 24 次“模型决策 → 工具观察”迭代</text>
+    <path d="M880 185V235" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M880 245L1010 325L880 405L750 325Z" fill="#fff" stroke="#7c3aed" stroke-width="2.5"/>
+    <text x="880" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#4d0099">需要工具？</text><text x="880" y="348" text-anchor="middle" font-size="15" fill="#746d79">并检查终止条件</text>
 
-  <rect x="42" y="116" width="1018" height="916" rx="24" class="lane"/>
-  <rect x="62" y="136" width="118" height="34" rx="17" fill="#f0e7fa"/><text x="121" y="158" class="label" text-anchor="middle">Turn 生命周期</text>
-  <rect x="105" y="186" width="290" height="58" rx="12" class="terminal"/><text x="250" y="215" class="txt white">① startTurn：记录目标与附件</text>
-  <path d="M250 244V278" class="edge"/>
-  <rect x="105" y="279" width="290" height="58" rx="12" class="node"/><text x="250" y="302" class="txt">状态 queued → running</text><text x="250" y="327" class="small">创建 AbortController，发布 turn.started</text>
-  <path d="M250 337V373" class="edge"/>
-  <polygon points="250,368 395,422 250,476 105,422" class="decision"/><text x="250" y="414" class="txt">② 已取消或超过</text><text x="250" y="437" class="small">24 次迭代？</text>
+    <path d="M750 325H640" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="700" y="310" text-anchor="middle" font-size="15" fill="#675774">是</text>
+    <rect x="435" y="270" width="195" height="110" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2" filter="url(#shadow)"/>
+    <text x="532" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#5c4119">执行工具</text><text x="532" y="350" text-anchor="middle" font-size="15" fill="#725d3b">ToolRuntime</text>
+    <path d="M435 325H280" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="80" y="270" width="190" height="110" rx="20" fill="#edf8f4" stroke="#63b89b" stroke-width="2" filter="url(#shadow)"/>
+    <text x="175" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#185b49">Observation</text><text x="175" y="350" text-anchor="middle" font-size="15" fill="#477366">结果返回下一轮</text>
+    <path d="M175 270V225H390V195" fill="none" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
 
-  <path d="M395 422H472" class="edge"/><text x="420" y="408" class="label">否</text>
-  <rect x="472" y="383" width="315" height="78" rx="12" class="node"/><text x="629" y="405" class="txt">③ 注入 Follow-up 与约束提醒</text><text x="629" y="431" class="small">压缩历史、Ledger、Evidence、Memory</text><text x="629" y="450" class="small">组装系统提示、消息与 Tool Schema</text>
-  <path d="M629 461V500" class="edge"/>
-  <rect x="472" y="501" width="315" height="64" rx="12" class="node"/><text x="629" y="523" class="txt">④ 流式调用 ModelProvider</text><text x="629" y="549" class="small">文本 / Tool Call 片段 / Usage / Retry / FinishReason</text>
-  <path d="M629 565V604" class="edge"/>
-  <rect x="472" y="605" width="315" height="70" rx="12" class="node"/><text x="629" y="628" class="txt">⑤ 聚合并持久化 Assistant 输出</text><text x="629" y="653" class="small">Tool 参数流结束后才解析；先保存 tool_calls</text>
-  <path d="M629 675V712" class="edge"/>
-  <polygon points="629,708 777,758 629,808 481,758" class="decision"/><text x="629" y="751" class="txt">存在 Tool Calls？</text><text x="629" y="775" class="small">length 截断走恢复分支</text>
-
-  <path d="M481 758H395" class="edge"/><text x="424" y="745" class="label">否</text>
-  <rect x="105" y="724" width="290" height="68" rx="12" class="terminal"/><text x="250" y="749" class="txt white">⑧ 完成 Turn</text><text x="250" y="775" class="small white">纯文本完成或 finish 成功</text>
-
-  <path d="M777 758H842" class="edge"/><text x="792" y="745" class="label">是</text>
-  <rect x="842" y="709" width="185" height="98" rx="12" class="node"/><text x="934" y="731" class="txt">⑥ 顺序执行工具</text><text x="934" y="757" class="small">校验 → 策略 → 审批</text><text x="934" y="778" class="small">执行 → ToolResult</text><text x="934" y="798" class="small">Observation → Ledger</text>
-  <path d="M934 807V855H629" class="edge"/>
-  <polygon points="629,820 777,870 629,920 481,870" class="decision"/><text x="629" y="861" class="txt">⑦ finish 成功或</text><text x="629" y="884" class="small">连续 3 次无进展？</text>
-  <path d="M481 870H250V792" class="edge"/><text x="392" y="855" class="label">finish</text>
-  <path d="M629 820V704H828V422H787" class="edge"/><text x="798" y="692" class="label">继续下一轮</text>
-
-  <path d="M105 422H75V962H250V792" class="edge"/><text x="54" y="700" class="label" transform="rotate(-90 54 700)">取消</text>
-  <path d="M250 476V680H82V967H472" class="edge"/><text x="95" y="952" class="label">迭代上限</text>
-  <rect x="472" y="944" width="315" height="60" rx="12" class="error"/><text x="629" y="967" class="txt">失败 / limitReached / cancelled</text><text x="629" y="989" class="small">记录错误、运行 turnEnd Hook、清理等待项</text>
-  <path d="M777 870H934V944H787" class="edge"/><text x="844" y="856" class="label">无进展</text>
-
-  <text x="1096" y="151" class="section">流程说明</text>
-  <g transform="translate(1090 177)">
-    <rect width="466" height="91" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">1</text><text x="62" y="28" class="cardTitle">建立可恢复的 Turn</text><text x="62" y="54" class="cardBody">保存用户消息、附件、目标和语言；同一 Session</text><text x="62" y="74" class="cardBody">只允许一个活动 Turn，避免状态与写入竞争。</text>
-  </g>
-  <g transform="translate(1090 280)">
-    <rect width="466" height="91" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">2</text><text x="62" y="28" class="cardTitle">在每个模型边界检查控制信号</text><text x="62" y="54" class="cardBody">取消、Follow-up 和迭代预算只在安全边界生效，</text><text x="62" y="74" class="cardBody">不会把新消息插入尚未完成的工具协议组。</text>
-  </g>
-  <g transform="translate(1090 383)">
-    <rect width="466" height="108" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">3</text><text x="62" y="28" class="cardTitle">构建受预算约束的上下文</text><text x="62" y="54" class="cardBody">安全规则和 Ledger 优先，随后是当前代码证据、</text><text x="62" y="74" class="cardBody">最近消息、历史检索与语义摘要；最终再次检查</text><text x="62" y="94" class="cardBody">assistant/tool 配对，原始 JSONL 不被删除。</text>
-  </g>
-  <g transform="translate(1090 503)">
-    <rect width="466" height="108" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">4</text><text x="62" y="28" class="cardTitle">解析模型流，而不是执行半截参数</text><text x="62" y="54" class="cardBody">按 callId 聚合 Tool Call；SSE 结束后才解析 JSON，</text><text x="62" y="74" class="cardBody">模型层只归一化事件，完成语义由 Core 判断。</text><text x="62" y="94" class="cardBody">输出截断最多恢复 3 次，不能冒充成功。</text>
-  </g>
-  <g transform="translate(1090 623)">
-    <rect width="466" height="126" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">5</text><text x="62" y="28" class="cardTitle">工具执行是受控事务</text><text x="62" y="54" class="cardBody">参数经 Zod 校验，路径经工作区策略检查；Guided</text><text x="62" y="74" class="cardBody">模式用 Promise 暂停等待审批。主 Agent 顺序执行，</text><text x="62" y="94" class="cardBody">结果压缩成 Observation 回填；重复 callId 不重放</text><text x="62" y="114" class="cardBody">副作用，写入前创建 Checkpoint。</text>
-  </g>
-  <g transform="translate(1090 761)">
-    <rect width="466" height="126" rx="14" class="card"/><circle cx="31" cy="30" r="18" class="badge"/><text x="31" y="31" class="badgeText">6</text><text x="62" y="28" class="cardTitle">显式收敛与终止</text><text x="62" y="54" class="cardBody">无 Tool Call 的文本、finish 成功可正常完成；取消、</text><text x="62" y="74" class="cardBody">24 轮上限、3 次无进展、3 次输出截断或不可恢复</text><text x="62" y="94" class="cardBody">错误进入保护性终止。finish 会检查当前 revision</text><text x="62" y="114" class="cardBody">的验证新鲜度，并在内部结果中记录验证状态。</text>
-  </g>
-  <g transform="translate(1090 899)">
-    <rect width="466" height="105" rx="14" fill="#f0e7fa" stroke="#b99aef" stroke-width="1.5"/><text x="22" y="29" class="cardTitle">关键不变量</text><text x="22" y="55" class="mono">assistant(tool_calls) 必须先于 tool result</text><text x="22" y="76" class="mono">toolCallId 必须配对；当前工具组不可被压缩拆散</text><text x="22" y="97" class="mono">AbortSignal 贯穿模型、工具、命令与子 Agent</text>
+    <path d="M1010 325H1095" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="1050" y="310" text-anchor="middle" font-size="15" fill="#675774">否</text>
+    <rect x="1095" y="275" width="80" height="100" rx="20" fill="url(#brand)" filter="url(#shadow)"/>
+    <text x="1135" y="318" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">结束</text><text x="1135" y="347" text-anchor="middle" font-size="14" fill="#f4eefe">终态</text>
   </g>
 </svg>

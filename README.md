@@ -11,7 +11,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-4D0099?style=flat-square)
 ![Agent Core](https://img.shields.io/badge/Agent%20Core-Self--built-6418B8?style=flat-square)
 
-[快速开始](#快速开始) · [核心能力](#核心能力) · [九层机制图](#九层机制图) · [源码地图](#源码地图) · [技术文档](docs/README.md)
+[快速开始](#快速开始) · [核心能力](#核心能力) · [核心机制图](#核心机制图) · [源码地图](#源码地图) · [技术文档](docs/README.md)
 
 </div>
 
@@ -63,63 +63,63 @@ pnpm dev
 
 </details>
 
-## 九层机制图
+## 核心机制图
 
-下面九张图按照“认识产品 → 看懂一次任务 → 进入核心机制 → 理解正确性保障”的顺序组织。点击任意图片可查看完整尺寸。
+下面九张图从产品使用逐步进入核心机制。每张图只回答一个问题，点击图片可查看完整尺寸。
 
 ### 01 · 初识 SeeCoder
 
 [![SeeCoder 产品工作台总览](docs/assets/seecoder-overview.svg)](docs/assets/seecoder-overview.svg)
 
-SeeCoder 将编程任务组织为一个可观察的工作台：左侧管理工作区和 Session，中间承载对话、计划、工具活动与审批，右侧集中展示代码变更、文件、终端、预览和执行轨迹。用户提供自然语言目标，系统以“理解、计划、执行、验证”的阶段推进，并用真实 Diff、命令结果和测试证据说明完成情况。
+用户在 Workspace 和 Session 中描述目标。AgentCore 协调模型与本地工具，界面持续展示执行过程和结果证据。
 
 ### 02 · 一次任务怎样完成
 
 [![SeeCoder 单次任务 UML 时序图](docs/assets/seecoder-task-sequence.svg)](docs/assets/seecoder-task-sequence.svg)
 
-用户发送消息后，Renderer 通过受限 IPC 请求 Electron Main。Agent Core 在当前 Session 中创建 Turn，持久化目标并构建上下文，然后流式调用模型。模型提出 Tool Call 时，Core 先完成协议聚合、权限检查和必要审批，再调用本地工具；结果保存为事件并进入下一轮。Renderer 只消费事件，因此界面状态与后台事实保持一致。
+用户提交目标后，AgentCore 构建上下文并调用模型。模型提出 Tool Call，本地工具执行并返回 Observation，系统据此继续处理或验证完成。
 
 ### 03 · 系统架构与信任边界
 
 [![SeeCoder 系统组件架构](docs/assets/seecoder-system-architecture.svg)](docs/assets/seecoder-system-architecture.svg)
 
-Renderer 只负责交互和展示；Preload 提供最小 IPC 桥；Electron Main 是可信本地后端，持有模型凭据与本地执行权限。Agent Core 在模型、上下文、工具和持久化之间运行闭环。模型只能提出 Tool Call，无法直接访问本地文件或启动命令。当前隔离依赖 IPC、路径策略、审批和审计，不宣称操作系统级沙箱。
+Renderer 负责界面，Preload 提供受限通信入口，Electron Main 负责可信执行。AgentCore 在主进程内协调 ModelProvider、ToolRuntime 和 SessionStore，模型不能直接操作本地系统。
 
 ### 04 · Session 与对话历史
 
 [![SeeCoder Session 与对话历史](docs/assets/seecoder-session-history.svg)](docs/assets/seecoder-session-history.svg)
 
-一个 Workspace 可以包含多个 Session，一个 Session 可以包含多个 Turn。每次消息、工具调用、审批、变更和终态都以带顺序号的事件追加保存。应用重启时会读取状态快照并回放事件，恢复历史、计划、ChangeSet 和 Checkpoint；未结束的 Turn 标记为中断，不会重新执行已经发生过的本地副作用。
+Workspace 表示本地项目，Session 保存连续对话，Turn 表示一次用户请求。执行事实以 AgentEvent 写入 SessionStore，应用重启后可以恢复历史和状态，但不会重复执行旧操作。
 
 ### 05 · 上下文管理与压缩
 
 [![SeeCoder 混合上下文管理与压缩](docs/assets/seecoder-context-management.svg)](docs/assets/seecoder-context-management.svg)
 
-模型每轮接收的是 ContextBuilder 生成的有限工作视图，而不是完整 JSONL。视图由固定规则、ContextLedger、当前代码证据、压缩后的工具观察、相关历史召回、语义摘要和最近完整协议组组成。输入达到可用预算的 75% 时触发压缩，目标为 60% 以下；摘要失败使用确定性回退，权威任务状态与原始历史始终保留。
+ContextBuilder 从 ContextLedger、代码 Evidence 和最近历史中构建本轮工作视图。内容过长时使用语义摘要和历史检索减少重复信息，完整 Session 历史仍然保留。
 
 ### 06 · Agent 主循环
 
 [![SeeCoder Agent 主循环](docs/assets/seecoder-agent-loop.svg)](docs/assets/seecoder-agent-loop.svg)
 
-主循环执行“构建上下文 → 调用模型 → 聚合输出 → 校验并执行工具 → 写回观察 → 再规划”。Assistant Tool Calls 必须先于对应 Tool Result 保存；当前工具消息组不能被压缩拆开；同一 Turn 内重复 `callId` 不会再次执行副作用。Follow-up 只在下一次模型调用边界注入，不会打断正在执行的工具组。
+AgentCore 重复执行“构建上下文、调用模型、解析输出、执行工具、反馈结果”。每轮都会检查完成、取消、错误和迭代上限，只有满足明确条件才结束。
 
 ### 07 · 模型输出解析
 
 [![SeeCoder 模型流输出解析](docs/assets/seecoder-model-parser.svg)](docs/assets/seecoder-model-parser.svg)
 
-Provider 自行处理 HTTP、SSE 分帧和重试，将流转换为文本增量、Tool Call 增量、usage、完成与错误事件。Agent Core 按 `callId` 拼接工具名称和参数片段。SSE payload JSON 与 `function.arguments` 字符串是两个独立解析边界；只有模型流完整结束、参数 JSON 解析成功并通过 Zod 校验后，工具调用才可能执行。
+ModelProvider 将模型流解析为文本和 Tool Call。AgentCore 聚合并校验完整参数，未接收完整的工具调用不会进入本地执行。
 
 ### 08 · 工具与本地执行
 
 [![SeeCoder 工具定义与本地执行](docs/assets/seecoder-tool-execution.svg)](docs/assets/seecoder-tool-execution.svg)
 
-工具同时具有给模型看的 JSON Schema 和主进程使用的 Zod 运行时 Schema。调用依次经过名称、参数、模式、审批、Hook 与 WorkspacePolicy 门禁。文件修改采用临时写入或事务补丁并生成 ChangeSet、Snapshot 和 Checkpoint；命令以受控非交互子进程运行，支持输出分流、超时和取消。完整结果用于审计，紧凑 Observation 返回模型。
+Tool Call 依次经过参数校验、权限模式、用户审批和工作区边界检查，再由 ToolRuntime 执行。完整 ToolResult 用于记录，紧凑 Observation 返回模型，文件修改形成可检查的 ChangeSet。
 
 ### 09 · 终止条件与错误处理
 
 [![SeeCoder 终止条件与错误处理](docs/assets/seecoder-termination-errors.svg)](docs/assets/seecoder-termination-errors.svg)
 
-每轮结束都显式判断是否继续：无 Tool Call 的正常文本、成功 `finish`、用户取消、模型错误、连续无进展、输出反复截断和 24 轮上限会进入不同终态。单次工具失败通常以结构化结果交还模型，允许其修正方案；不可恢复错误才终止 Turn。终态事件只发布一次，并在清理请求、审批、子 Agent 和子进程后持久化。
+可恢复错误会作为结构化结果返回模型，使其调整方案。任务完成、不可恢复错误、用户取消或达到迭代上限时，AgentCore 清理运行资源并记录唯一终态。
 
 ## 执行模式
 

@@ -61,7 +61,7 @@ SeeCoder 是 Windows 本地 Electron 编程智能体。React Renderer 是前端�
 | Storage | `packages/storage/src/index.ts` | Session 元数据、JSONL、状态、快照和回放 |
 | Main | `apps/desktop/src/main/main.ts` | Electron 生命周期、IPC、设置、密钥和工作区 |
 | Preload | `apps/desktop/src/preload/preload.ts` | Renderer 最小权限桥 |
-| Renderer | `apps/desktop/src/renderer/main.tsx` | 对话、任务管理、审批、Diff、终端和 Trace |
+| Renderer | `apps/desktop/src/renderer/main.tsx` | 对话、任务管理、审批、Diff 和终端 |
 
 文档和源码冲突时，以已测试源码为准，并应立即修正文档。
 
@@ -99,7 +99,7 @@ ModelProvider 把 ModelRequest 转换成兼容模型需要的 HTTP 请求。返�
 
 如果工具修改文件，系统产生 ChangeSet、Snapshot 和 Checkpoint。ChangeSet 用于展示“改了什么”，Snapshot 保存“修改前是什么”，Checkpoint 用于恢复一组修改。ContextLedger 的 revision 同时增加，因此修改前通过的测试会自动变成旧验证。模型再次运行测试并通过后，验证记录才与当前 revision 一致。
 
-所有过程通过 AgentEvent 形成轨迹。Renderer 只把这些事实转换成消息卡、状态、Diff、终端和 Trace。SessionStore 将重要事件写入 JSONL。应用重启后，通过回放事件恢复已经发生的事实，但不会重新启动已经消失的网络请求和命令进程。
+所有过程通过 AgentEvent 形成内部事件记录。Renderer 只把用户需要的事实转换成消息卡、状态、Diff 和终端。SessionStore 将重要事件写入 JSONL。应用重启后，通过回放事件恢复已经发生的事实，但不会重新启动已经消失的网络请求和命令进程。
 
 ## 常见概念误区
 

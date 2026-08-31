@@ -1,85 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 模型流输出解析</title>
-  <desc id="desc">展示 OpenAI 兼容请求、SSE 分帧、ModelEvent 转换、Tool Call 参数聚合，以及模型输出进入工具执行前的完整校验边界。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="390" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 模型输出解析</title>
+  <desc id="desc">ModelProvider 将流式响应解析成文本和 Tool Call，完成聚合与校验后交给 AgentCore。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3c2850" flood-opacity=".10"/></filter>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#746d79"/></marker>
-    <style>
-      .h1{font:700 38px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.sub{font:400 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.section{font:700 21px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.label{font:700 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.body{font:400 15px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4e4753}.meta{font:400 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.mono{font:500 14px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}.white{fill:#fff}.line{stroke:#746d79;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#8247d6;stroke-width:2;fill:none;stroke-dasharray:7 7;marker-end:url(#arrow)}
-    </style>
+    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
   </defs>
-  <rect width="1600" height="1120" fill="#f6f6f7"/>
-  <rect x="48" y="44" width="1504" height="990" rx="28" fill="#fff" stroke="#e5e1e8" filter="url(#shadow)"/>
-  <rect x="48" y="44" width="12" height="990" rx="6" fill="url(#brand)"/>
-  <text x="92" y="104" class="h1">07 · 模型输出解析</text>
-  <text x="92" y="139" class="sub">模型流先转成内部事件，再由 Agent Core 聚合；只有完整 Tool Call 通过 JSON 与 Zod 校验后，才可能进入本地执行。</text>
+  <rect width="1200" height="390" rx="28" fill="#f8f7fa"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="45" y="115" width="190" height="120" rx="21" fill="#eef5ff" stroke="#79a9ed" stroke-width="2" filter="url(#shadow)"/>
+    <text x="140" y="165" text-anchor="middle" font-size="22" font-weight="700" fill="#243a63">ModelProvider</text><text x="140" y="200" text-anchor="middle" font-size="16" fill="#5d6980">接收模型流</text>
+    <path d="M235 175H285" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="295" y="115" width="180" height="120" rx="21" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
+    <text x="385" y="165" text-anchor="middle" font-size="23" font-weight="700" fill="#241b2b">SSE 解析</text><text x="385" y="200" text-anchor="middle" font-size="16" fill="#746d79">连续事件</text>
+    <path d="M475 175H525" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
 
-  <g>
-    <rect x="92" y="180" width="322" height="42" rx="12" fill="#f0e7fa"/><text x="253" y="207" text-anchor="middle" class="section">① 请求与网络适配</text>
-    <rect x="434" y="180" width="322" height="42" rx="12" fill="#eef5ff"/><text x="595" y="207" text-anchor="middle" class="section" style="fill:#3976c5">② SSE 字节流解析</text>
-    <rect x="776" y="180" width="322" height="42" rx="12" fill="#eef8f4"/><text x="937" y="207" text-anchor="middle" class="section" style="fill:#15966f">③ 内部事件聚合</text>
-    <rect x="1118" y="180" width="374" height="42" rx="12" fill="#fff7e8"/><text x="1305" y="207" text-anchor="middle" class="section" style="fill:#9b5a1e">④ 安全执行边界</text>
+    <rect x="535" y="65" width="190" height="100" rx="20" fill="#f0e7fa" stroke="#b38add" stroke-width="2"/>
+    <text x="630" y="108" text-anchor="middle" font-size="22" font-weight="700" fill="#4d0099">文本增量</text><text x="630" y="138" text-anchor="middle" font-size="15" fill="#675774">实时显示</text>
+    <rect x="535" y="205" width="190" height="100" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2"/>
+    <text x="630" y="248" text-anchor="middle" font-size="22" font-weight="700" fill="#5c4119">Tool Call</text><text x="630" y="278" text-anchor="middle" font-size="15" fill="#725d3b">按 callId 聚合</text>
+    <path d="M725 255H785" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="795" y="205" width="180" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
+    <text x="885" y="248" text-anchor="middle" font-size="22" font-weight="700" fill="#241b2b">完整校验</text><text x="885" y="278" text-anchor="middle" font-size="15" fill="#746d79">名称与参数</text>
+    <path d="M725 115H1005V175" fill="none" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M975 255H1005V205" fill="none" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <rect x="1015" y="115" width="145" height="120" rx="21" fill="url(#brand)" filter="url(#shadow)"/>
+    <text x="1087" y="165" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">AgentCore</text><text x="1087" y="200" text-anchor="middle" font-size="15" fill="#f4eefe">统一事件</text>
+    <rect x="340" y="335" width="520" height="38" rx="19" fill="#edf8f4" stroke="#63b89b"/>
+    <text x="600" y="360" text-anchor="middle" font-size="15" fill="#185b49">未完整结束的 Tool Call 不会进入本地执行</text>
   </g>
-
-  <rect x="92" y="246" width="322" height="610" rx="20" fill="#fbf8ff" stroke="#d8cae5"/>
-  <rect x="116" y="274" width="274" height="88" rx="16" fill="#fff" stroke="#b99aef"/>
-  <text x="136" y="306" class="label">ModelRequest</text><text x="136" y="334" class="body">messages · tools · model config</text>
-  <path d="M253 362V402" class="line"/>
-  <rect x="116" y="413" width="274" height="104" rx="16" fill="#fff" stroke="#b99aef"/>
-  <text x="136" y="445" class="label">发送前协议清理</text><text x="136" y="473" class="body">丢弃孤立 tool 消息</text><text x="136" y="497" class="body">不完整工具组只保留可见文本</text>
-  <path d="M253 517V557" class="line"/>
-  <rect x="116" y="568" width="274" height="118" rx="16" fill="url(#brand)"/>
-  <text x="136" y="602" class="white" style="font:700 18px 'Segoe UI','Microsoft YaHei'">POST /chat/completions</text>
-  <text x="136" y="630" class="white" style="font:400 14px Consolas">stream = true</text><text x="136" y="654" class="white" style="font:400 14px Consolas">include_usage = true</text><text x="136" y="678" class="white" style="font:400 13px 'Segoe UI','Microsoft YaHei'">AbortSignal 可取消 fetch</text>
-  <path d="M253 686V726" class="line"/>
-  <rect x="116" y="737" width="274" height="88" rx="16" fill="#fff7e8" stroke="#e2bb67"/>
-  <text x="136" y="769" class="label">失败时有界重试</text><text x="136" y="795" class="body">429 / 502 / 503 / 504 / 网络中断</text><text x="136" y="817" class="meta">总计最多 3 次 · 指数退避 + 抖动</text>
-
-  <rect x="434" y="246" width="322" height="610" rx="20" fill="#f6faff" stroke="#b8d5f7"/>
-  <rect x="458" y="274" width="274" height="88" rx="16" fill="#fff" stroke="#65a9ff"/>
-  <text x="478" y="306" class="label">ReadableStream</text><text x="478" y="334" class="body">TextDecoder + 未完成字符缓冲</text>
-  <path d="M595 362V402" class="line"/>
-  <rect x="458" y="413" width="274" height="104" rx="16" fill="#fff" stroke="#65a9ff"/>
-  <text x="478" y="445" class="label">按 CRLF / LF 分行</text><text x="478" y="473" class="body">只处理 data: 行</text><text x="478" y="497" class="meta">空行、非 data 行、非法 payload 被忽略</text>
-  <path d="M595 517V557" class="line"/>
-  <rect x="458" y="568" width="274" height="118" rx="16" fill="#eef5ff" stroke="#3976c5" stroke-width="2"/>
-  <text x="478" y="600" class="label">JSON 边界 A</text><text x="478" y="628" class="body">解析 data: 后的响应 payload</text><text x="478" y="654" class="mono">choices[0].delta</text><text x="478" y="678" class="meta">[DONE] 表示 SSE 结束</text>
-  <path d="M595 686V726" class="line"/>
-  <rect x="458" y="737" width="274" height="88" rx="16" fill="#fff" stroke="#65a9ff"/>
-  <text x="478" y="769" class="label">转换 ModelEvent</text><text x="478" y="795" class="body">textDelta · toolCallDelta</text><text x="478" y="817" class="body">usage · completed · error</text>
-
-  <rect x="776" y="246" width="322" height="610" rx="20" fill="#f4fbf8" stroke="#a9d9c7"/>
-  <rect x="800" y="274" width="274" height="88" rx="16" fill="#fff" stroke="#72b99f"/>
-  <text x="820" y="306" class="label">文本增量</text><text x="820" y="334" class="body">追加 Assistant 文本并实时发 UI 事件</text>
-  <path d="M937 362V402" class="line"/>
-  <rect x="800" y="413" width="274" height="104" rx="16" fill="#fff" stroke="#72b99f"/>
-  <text x="820" y="445" class="label">Tool Call 碎片</text><text x="820" y="473" class="mono">Map&lt;callId, { name, args }&gt;</text><text x="820" y="497" class="meta">name 合并 · argsDelta 按到达顺序拼接</text>
-  <path d="M937 517V557" class="line"/>
-  <rect x="800" y="568" width="274" height="118" rx="16" fill="#eef8f4" stroke="#15966f" stroke-width="2"/>
-  <text x="820" y="600" class="label">模型流完整结束</text><text x="820" y="628" class="body">构造完整 ModelToolCall[]</text><text x="820" y="654" class="body">记录 usage / retry / finishReason</text><text x="820" y="678" class="meta">增量输出从不直接触发工具</text>
-  <path d="M937 686V726" class="line"/>
-  <rect x="800" y="737" width="274" height="88" rx="16" fill="#fff" stroke="#72b99f"/>
-  <text x="820" y="769" class="label">先持久化 Assistant</text><text x="820" y="795" class="body">完整文本 + tool_calls</text><text x="820" y="817" class="meta">早于任何对应 Tool Result</text>
-
-  <rect x="1118" y="246" width="374" height="610" rx="20" fill="#fffaf2" stroke="#ecd19b"/>
-  <rect x="1142" y="274" width="326" height="112" rx="16" fill="#fff7e8" stroke="#c36b20" stroke-width="2"/>
-  <text x="1162" y="306" class="label">JSON 边界 B</text><text x="1162" y="334" class="body">function.arguments 此时仍是字符串</text><text x="1162" y="360" class="mono">JSON.parse(completeArguments)</text><text x="1162" y="380" class="meta">只在整个流结束后执行一次</text>
-  <path d="M1305 386V426" class="line"/>
-  <rect x="1142" y="437" width="326" height="104" rx="16" fill="#fff" stroke="#e2bb67"/>
-  <text x="1162" y="469" class="label">运行时参数校验</text><text x="1162" y="497" class="body">ToolRegistry 查找工具 · Zod safeParse</text><text x="1162" y="521" class="meta">非法 JSON → __invalid；Schema 错误 → invalid_args</text>
-  <path d="M1305 541V581" class="line"/>
-  <rect x="1142" y="592" width="326" height="104" rx="16" fill="#fff" stroke="#e2bb67"/>
-  <text x="1162" y="624" class="label">模式、审批与路径门禁</text><text x="1162" y="652" class="body">Plan / Guided / Auto · WorkspacePolicy</text><text x="1162" y="676" class="meta">模型没有本地文件或进程权限</text>
-  <path d="M1305 696V736" class="line"/>
-  <rect x="1142" y="747" width="326" height="78" rx="16" fill="#c36b20"/>
-  <text x="1305" y="780" text-anchor="middle" class="white" style="font:700 18px 'Segoe UI','Microsoft YaHei'">合法 Tool Call 才能执行</text><text x="1305" y="807" text-anchor="middle" class="white" style="font:400 14px 'Segoe UI','Microsoft YaHei'">执行结果带原 callId 返回下一轮</text>
-
-  <path d="M390 627H448" class="line"/><path d="M732 627H790" class="line"/><path d="M1074 627H1132" class="line"/>
-
-  <rect x="92" y="888" width="1400" height="84" rx="18" fill="#f9f7fa" stroke="#d8cae5"/>
-  <text x="118" y="920" class="label">解析失败怎样处理</text>
-  <text x="118" y="950" class="body">HTTP 非成功、空响应体或 ModelEvent.error 使当前 Turn 进入统一模型错误路径；非法工具参数作为结构化工具失败返回，模型可以改正后继续。</text>
-  <rect x="92" y="990" width="1400" height="44" rx="12" fill="#4d0099"/>
-  <text x="792" y="1018" text-anchor="middle" class="white" style="font:600 16px 'Segoe UI','Microsoft YaHei'">关键不变量 · 两层 JSON 分开解析 · 参数碎片按 callId 聚合 · 流结束前不执行 · Assistant Tool Calls 先落盘</text>
 </svg>

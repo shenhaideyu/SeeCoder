@@ -1,99 +1,32 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 系统架构与信任边界</title>
-  <desc id="desc">展示 React Renderer、Preload、Electron Main、模型 API、本地工作区与应用数据目录之间的职责和通信边界。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 系统架构</title>
+  <desc id="desc">Renderer 通过 Preload 与 Electron Main 通信，AgentCore 在可信主进程内协调模型、工具和会话存储。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8247d6"/><stop offset="1" stop-color="#4d0099"/></linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#3c2850" flood-opacity=".10"/></filter>
-    <marker id="purpleArrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#4d0099"/></marker>
-    <marker id="greenArrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#15966f"/></marker>
-    <marker id="blueArrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#3976c5"/></marker>
-    <marker id="orangeArrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#c36b20"/></marker>
-    <style>
-      .h1{font:700 38px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.sub{font:400 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.section{font:700 20px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4d0099}.label{font:700 18px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#242027}.body{font:400 15px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#4e4753}.meta{font:400 13px 'Segoe UI','Microsoft YaHei',sans-serif;fill:#746d79}.mono{font:500 14px Consolas,'Microsoft YaHei',monospace;fill:#4d0099}.white{fill:#fff}.purple{stroke:#4d0099;stroke-width:2.5;fill:none;marker-end:url(#purpleArrow)}.green{stroke:#15966f;stroke-width:2.5;fill:none;marker-end:url(#greenArrow)}.blue{stroke:#3976c5;stroke-width:2.5;fill:none;marker-end:url(#blueArrow)}.orange{stroke:#c36b20;stroke-width:2.5;fill:none;marker-end:url(#orangeArrow)}.internal{stroke:#a99db5;stroke-width:2;fill:none;marker-end:url(#purpleArrow)}
-    </style>
+    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#32104f" flood-opacity=".12"/></filter>
   </defs>
-  <rect width="1600" height="1080" fill="#f6f6f7"/>
-  <text x="48" y="68" class="h1">03 · 系统架构与信任边界</text>
-  <text x="48" y="104" class="sub">桌面端模块化单体：界面只发送请求，Electron Main 统一编排模型、工具、安全策略与本地持久化。</text>
-  <g transform="translate(1000 48)">
-    <line x1="0" y1="8" x2="42" y2="8" class="purple"/><text x="54" y="14" class="meta">IPC 请求</text>
-    <line x1="160" y1="8" x2="202" y2="8" class="green"/><text x="214" y="14" class="meta">事件 / 结果</text>
-    <line x1="330" y1="8" x2="372" y2="8" class="blue"/><text x="384" y="14" class="meta">HTTPS / SSE</text>
+  <rect width="1200" height="480" rx="28" fill="#f8f7fa"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="45" y="90" width="220" height="300" rx="26" fill="#fff" stroke="#d9c9e8" stroke-width="2" filter="url(#shadow)"/>
+    <text x="155" y="155" text-anchor="middle" font-size="27" font-weight="700" fill="#241b2b">Renderer</text>
+    <text x="155" y="205" text-anchor="middle" font-size="18" fill="#746d79">对话与计划</text><text x="155" y="240" text-anchor="middle" font-size="18" fill="#746d79">审批与 Diff</text><text x="155" y="275" text-anchor="middle" font-size="18" fill="#746d79">终端与轨迹</text>
+    <rect x="82" y="320" width="146" height="42" rx="21" fill="#f0e7fa"/><text x="155" y="347" text-anchor="middle" font-size="15" fill="#4d0099">无本地执行权限</text>
+
+    <path d="M265 240H335" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="345" y="155" width="150" height="170" rx="22" fill="#fff" stroke="#b38add" stroke-width="2" filter="url(#shadow)"/>
+    <text x="420" y="220" text-anchor="middle" font-size="25" font-weight="700" fill="#4d0099">Preload</text><text x="420" y="258" text-anchor="middle" font-size="17" fill="#746d79">类型化 IPC</text><text x="420" y="288" text-anchor="middle" font-size="15" fill="#746d79">最小能力桥</text>
+    <path d="M495 240H555" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="565" y="45" width="590" height="390" rx="30" fill="#fcfaff" stroke="#4d0099" stroke-width="3" filter="url(#shadow)"/>
+    <text x="860" y="92" text-anchor="middle" font-size="26" font-weight="700" fill="#4d0099">Electron Main · 可信执行边界</text>
+    <rect x="620" y="120" width="480" height="100" rx="22" fill="url(#brand)"/>
+    <text x="860" y="170" text-anchor="middle" font-size="28" font-weight="700" fill="#fff">AgentCore</text><text x="860" y="200" text-anchor="middle" font-size="16" fill="#f4eefe">状态机与任务闭环</text>
+    <rect x="610" y="270" width="150" height="105" rx="19" fill="#eef5ff" stroke="#79a9ed" stroke-width="2"/><text x="685" y="315" text-anchor="middle" font-size="20" font-weight="700" fill="#243a63">ModelProvider</text><text x="685" y="345" text-anchor="middle" font-size="15" fill="#5d6980">模型访问</text>
+    <rect x="785" y="270" width="150" height="105" rx="19" fill="#fff8e8" stroke="#e5ad45" stroke-width="2"/><text x="860" y="315" text-anchor="middle" font-size="20" font-weight="700" fill="#5c4119">ToolRuntime</text><text x="860" y="345" text-anchor="middle" font-size="15" fill="#725d3b">本地工具</text>
+    <rect x="960" y="270" width="150" height="105" rx="19" fill="#edf8f4" stroke="#63b89b" stroke-width="2"/><text x="1035" y="315" text-anchor="middle" font-size="20" font-weight="700" fill="#185b49">SessionStore</text><text x="1035" y="345" text-anchor="middle" font-size="15" fill="#477366">事件与恢复</text>
+    <path d="M685 270V235H860V220" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
+    <path d="M860 270V220" stroke="#7c3aed" stroke-width="2.5"/>
+    <path d="M1035 270V235H860" fill="none" stroke="#7c3aed" stroke-width="2.5"/>
   </g>
-
-  <rect x="48" y="138" width="1504" height="830" rx="28" fill="#fff" stroke="#e5e1e8" filter="url(#shadow)"/>
-
-  <rect x="78" y="174" width="286" height="670" rx="24" fill="#fbf8ff" stroke="#d8cae5" stroke-width="2"/>
-  <rect x="98" y="194" width="246" height="42" rx="12" fill="#f0e7fa"/>
-  <text x="120" y="222" class="section">表现层 · React Renderer</text>
-  <text x="104" y="268" class="meta">Chromium 界面进程 · 非可信执行区</text>
-  <rect x="104" y="298" width="234" height="160" rx="18" fill="#fff" stroke="#b99aef"/>
-  <text x="126" y="334" class="label">交互工作台</text>
-  <text x="126" y="367" class="body">对话 · Composer · Plan</text><text x="126" y="396" class="body">审批 · Workspace · Session</text><text x="126" y="425" class="meta">只提出明确 IPC 请求</text>
-  <rect x="104" y="486" width="234" height="184" rx="18" fill="#fff" stroke="#72b99f"/>
-  <text x="126" y="522" class="label">事件驱动视图</text>
-  <text x="126" y="555" class="body">Messages · Changes · Files</text><text x="126" y="584" class="body">Terminal · Trace · Sources</text><text x="126" y="619" class="meta">只消费 AgentEvent</text><text x="126" y="644" class="meta">不复制后台状态机</text>
-  <rect x="104" y="700" width="234" height="110" rx="16" fill="#f2f0f3"/>
-  <text x="126" y="735" class="mono">nodeIntegration: false</text><text x="126" y="766" class="mono">contextIsolation: true</text><text x="126" y="794" class="meta">无任意 fs / process 能力</text>
-
-  <rect x="404" y="270" width="220" height="366" rx="24" fill="#fff" stroke="#8247d6" stroke-width="2"/>
-  <rect x="426" y="294" width="176" height="42" rx="21" fill="#f0e7fa"/>
-  <text x="514" y="321" text-anchor="middle" class="section">最小能力桥</text>
-  <text x="514" y="382" text-anchor="middle" class="label">Preload</text>
-  <text x="514" y="414" text-anchor="middle" class="body">contextBridge</text>
-  <line x1="436" y1="444" x2="592" y2="444" stroke="#e5e1e8"/>
-  <text x="514" y="476" text-anchor="middle" class="body">window.seecoder 白名单</text>
-  <text x="514" y="507" text-anchor="middle" class="body">参数经过协议校验</text>
-  <text x="514" y="538" text-anchor="middle" class="body">无任意文件或进程 API</text>
-  <text x="514" y="590" text-anchor="middle" class="meta">Renderer 与主进程之间</text><text x="514" y="613" text-anchor="middle" class="meta">唯一允许的通信入口</text>
-
-  <rect x="664" y="174" width="610" height="734" rx="28" fill="#fbf8ff" stroke="#4d0099" stroke-width="3"/>
-  <rect x="690" y="194" width="188" height="42" rx="21" fill="#4d0099"/>
-  <text x="784" y="221" text-anchor="middle" class="white" style="font:700 16px 'Segoe UI','Microsoft YaHei'">可信执行边界</text>
-  <text x="900" y="221" class="section">Electron Main</text>
-  <text x="690" y="258" class="meta">唯一持有 Node.js、本地文件、子进程、运行时 API Key 与持久化权限的进程</text>
-
-  <rect x="698" y="284" width="542" height="92" rx="18" fill="#fff" stroke="#b99aef"/>
-  <text x="724" y="318" class="label">IPC Gateway + Event Hub</text>
-  <text x="724" y="348" class="body">请求校验 · Session 路由 · 工作区切换 · AgentEvent 发布</text>
-  <path d="M969 376V406" class="internal"/>
-  <rect x="698" y="418" width="542" height="124" rx="20" fill="url(#brand)" filter="url(#shadow)"/>
-  <text x="724" y="456" class="white" style="font:700 20px 'Segoe UI','Microsoft YaHei'">AgentCore</text>
-  <text x="724" y="487" class="white" style="font:400 15px 'Segoe UI','Microsoft YaHei'">Turn 状态机 · 模型/工具循环 · 审批暂停 · 取消传播</text>
-  <text x="724" y="515" class="white" style="font:400 15px 'Segoe UI','Microsoft YaHei'">终止判断 · callId 幂等 · Checkpoint · 只读子 Agent 调度</text>
-
-  <rect x="698" y="580" width="252" height="118" rx="18" fill="#fff" stroke="#65a9ff"/>
-  <text x="720" y="614" class="label">ContextBuilder</text><text x="720" y="643" class="body">Ledger · Evidence · Memory</text><text x="720" y="670" class="meta">预算、摘要与工具协议保护</text>
-  <rect x="988" y="580" width="252" height="118" rx="18" fill="#eef5ff" stroke="#3976c5"/>
-  <text x="1010" y="614" class="label">ModelProvider</text><text x="1010" y="643" class="body">fetch · SSE · Tool Call 聚合</text><text x="1010" y="670" class="meta">统一输出 ModelEvent</text>
-  <rect x="698" y="734" width="252" height="118" rx="18" fill="#fff" stroke="#8247d6"/>
-  <text x="720" y="768" class="label">SessionStore</text><text x="720" y="797" class="body">JSONL · 状态 · Snapshot</text><text x="720" y="824" class="meta">事件追加、hydrate 与恢复</text>
-  <rect x="988" y="734" width="252" height="118" rx="18" fill="#fff7e8" stroke="#c36b20"/>
-  <text x="1010" y="768" class="label">ToolRegistry</text><text x="1010" y="797" class="body">WorkspacePolicy · Zod · 审批</text><text x="1010" y="824" class="meta">文件、搜索、补丁、命令与 Git</text>
-  <path d="M969 542V560H824V570" class="internal"/><path d="M969 542V560H1114V570" class="internal"/>
-  <path d="M969 542V714H824V724" class="internal"/><path d="M969 542V714H1114V724" class="internal"/>
-  <rect x="698" y="872" width="542" height="20" rx="10" fill="#f0e7fa"/>
-  <text x="969" y="887" text-anchor="middle" class="meta">应用层安全：最小工具面 + 工作区边界 + 审批 + 审计；不宣称操作系统级沙箱</text>
-
-  <text x="1312" y="192" class="section">受控外部资源</text>
-  <rect x="1312" y="218" width="212" height="148" rx="20" fill="#eef5ff" stroke="#65a9ff"/>
-  <text x="1336" y="254" class="label">OpenAI 兼容 API</text><text x="1336" y="286" class="body">Chat Completions</text><text x="1336" y="314" class="body">SSE + Tool Calls</text><text x="1336" y="343" class="meta">模型无本地执行权限</text>
-  <rect x="1312" y="448" width="212" height="162" rx="20" fill="#fff7e8" stroke="#e2bb67"/>
-  <text x="1336" y="484" class="label">当前本地工作区</text><text x="1336" y="516" class="body">源码 · Git · 测试命令</text><text x="1336" y="544" class="body">真实路径与符号链接检查</text><text x="1336" y="573" class="meta">只有 ToolRuntime 可访问</text>
-  <rect x="1312" y="692" width="212" height="162" rx="20" fill="#fbf8ff" stroke="#b99aef"/>
-  <text x="1336" y="728" class="label">%APPDATA%/SeeCoder</text><text x="1336" y="760" class="body">Session · events.jsonl</text><text x="1336" y="788" class="body">设置 · 日志 · Checkpoint</text><text x="1336" y="817" class="meta">无数据库、Redis 或 Queue</text>
-
-  <path d="M364 350H394" class="purple"/><text x="380" y="337" text-anchor="middle" class="meta">调用</text>
-  <path d="M624 330H688" class="purple"/><text x="656" y="317" text-anchor="middle" class="meta">IPC</text>
-  <path d="M698 360H644V590H634" class="green"/><text x="653" y="575" class="meta">事件</text>
-  <path d="M404 590H374" class="green"/>
-  <path d="M1240 639H1282V292H1302" class="blue"/><text x="1250" y="621" class="meta">HTTPS / SSE</text>
-  <path d="M1240 793H1282V529H1302" class="orange"/><text x="1253" y="780" class="meta">受控执行</text>
-  <path d="M698 793H682V862H1282V773H1302" class="purple"/>
-
-  <rect x="78" y="918" width="1446" height="58" rx="16" fill="#f9f7fa" stroke="#d8cae5"/>
-  <text x="102" y="953" class="label">核心边界</text>
-  <text x="220" y="953" class="body">Renderer 不执行 · Preload 只暴露白名单 · 模型只提出 Tool Call · Main 校验并执行 · 事件先持久化再驱动 UI</text>
-  <rect x="78" y="994" width="1446" height="44" rx="12" fill="#4d0099"/>
-  <text x="801" y="1022" text-anchor="middle" class="white" style="font:600 16px 'Segoe UI','Microsoft YaHei'">关键不变量 · API Key 不进入 Renderer · 本地能力不越过 IPC · 工作区路径受约束 · 原始事件可恢复与审计</text>
 </svg>

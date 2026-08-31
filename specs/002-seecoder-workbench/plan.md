@@ -6,11 +6,11 @@
 |---|---|---|
 | protocol/storage | FR-201/205/213 | V3 Session Envelope、会话索引、Checkpoint |
 | model/agent-core | FR-202/203/204/209/213 | 三档模式、工具循环、提问、Follow-up、子 Agent |
-| tools/runtime | FR-206/207/208/214 | Git、终端、文件树、附件、权限、回滚 |
+| tools/runtime | FR-206/207/208/214 | Git、终端、附件、权限、回滚 |
 | desktop IPC | FR-211/212/214 | 类型化 IPC、通知、设置、任务管理 |
 | renderer | FR-206/208/211/212 | Codex 风格三栏工作台和全部按钮行为 |
 | extensions/scheduler | FR-210/211 | 本地 Skills/Hooks、只读计划任务 |
-| context/agent-core | FR-215/216/217/218/219/220 | 预算器、Ledger V2、语义摘要、Evidence、Observation、检索与验证警告 |
+| context/agent-core | FR-215/216/217/218/219/220 | 预算器、Ledger V2、语义摘要、Evidence、Observation、检索与验证状态 |
 
 ## 固定决策
 

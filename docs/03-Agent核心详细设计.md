@@ -256,7 +256,7 @@ ModelRequest 包含 purpose、messages、tools、model、temperature 和 maxOutp
 
 SSE 是 Server-Sent Events。服务端通过一个 HTTP 响应持续发送形如 data: JSON 的行。网络 reader.read 返回的是任意字节块，一个 JSON 行可能被拆成多块，多行也可能合并在一块，因此不能把每个 chunk 直接 JSON.parse。
 
-OpenAICompatibleProvider 使用 TextDecoder 和 buffer。每次收到字节后追加到 buffer，按换行分割，只处理完整行，把最后一个不完整片段留给下一次读取。data: [DONE] 表示流结束。parseJsonLine 忽略空行和非 data 行，解析失败的单行返回 null。当前实现对畸形 SSE 行采取跳过策略，没有累计协议错误阈值；若供应商持续返回损坏行，最终可能表现为没有内容。这是已知限制，Trace 中的 empty_response 或无输出诊断仍可继续加强。
+OpenAICompatibleProvider 使用 TextDecoder 和 buffer。每次收到字节后追加到 buffer，按换行分割，只处理完整行，把最后一个不完整片段留给下一次读取。data: [DONE] 表示流结束。parseJsonLine 忽略空行和非 data 行，解析失败的单行返回 null。当前实现对畸形 SSE 行采取跳过策略，没有累计协议错误阈值；若供应商持续返回损坏行，最终可能表现为没有内容。这是已知限制，后台日志中的 empty_response 或无输出诊断仍可继续加强。
 
 每个 SSE JSON 的 choices[0].delta.content 变成 textDelta。delta.tool_calls 可能只包含 index、可能后续才给 id 或 function.name，也可能把 arguments 拆成多个字符串片段。Provider 维护 index 到 callId 的 Map；若首个片段没有 id，暂用 call-index，后续收到真实 id 时更新。Core 再按 callId 聚合 name 与 argsDelta。
 
@@ -342,7 +342,7 @@ WorkspacePolicy 是每次真实文件工具的前置检查，不是一次性授�
 
 ## 24. 文件读取、搜索与目录遍历
 
-list_files 默认深度 2，最大深度 5，最多收集 200 个文件。遍历跳过 .git、node_modules、虚拟环境、缓存、构建输出等高噪声目录，也跳过符号链接和敏感文件。这样减少上下文污染与无意义 IO。
+list_files 默认深度 2，最大深度 5，最多收集 200 个文件。遍历采用广度优先：先返回请求目录的直属文件，再进入下一层目录，避免某个大型日志目录耗尽额度后把根目录 README 等高价值文件漏掉。结果不是裸数组，而是 `{ entries, count, truncated, limit }`；`truncated=true` 表示列表不完整，Agent 不得据此断言某个文件不存在，应对已知路径调用 read_file，或缩小 path 后重新列举。遍历仍跳过 .git、node_modules、虚拟环境、缓存、构建输出、符号链接和敏感文件。
 
 search_text 优先启动 rg。参数通过数组传入 spawn，不经过 Shell 字符串拼接；使用 -- 把 query 与选项分开，并添加敏感文件排除 glob。命中包含相对路径、行号和最多 300 字符文本。若系统没有 rg，则回退到 Node 遍历，最多扫描 1000 个文件，跳过二进制内容。
 
@@ -352,7 +352,7 @@ read_file 支持 startLine 与 endLine，单次最多 400 行。read_files 一�
 
 ## 25. write_file 与 apply_patch
 
-write_file 用于完整替换或创建文本文件。它先读取 before，写入同目录临时文件，再 rename 到目标。rename 在同一文件系统上通常是原子替换，避免目标只写入一半。成功返回 kind 为 changes 的 output，包含相对路径、before 和 after。
+write_file 用于完整替换或创建文本文件。它先读取 before，写入同目录临时文件，再 rename 到目标。rename 在同一文件系统上通常是原子替换，避免目标只写入一半。成功返回 kind 为 changes 的 output，包含相对路径、before 和 after。发送给模型的 Observation 额外提供 `operation=created|updated|deleted`，使模型能准确区分“新建文件”和“覆盖已有文件”，而不是从字符数自行猜测。
 
 apply_patch 自行解析标准 unified diff，或 SeeCoder 支持的 Begin Patch / Update File 格式。当前 Codex 风格解析只支持 Update File；新增文件可使用 write_file。补丁应用时，系统从 hunk 提取删除与上下文行，先在预期位置匹配；若不匹配，会在限定范围内寻找唯一候选。没有候选或多个候选都失败，防止补丁误贴到相似代码。
 
@@ -396,9 +396,9 @@ Auto 模式允许工作区内 write_file、合法 apply_patch 和策略认可的
 
 代码“改完”与“验证通过”是两件事。run_command 只有匹配验证命令模式时才写入 ValidationRecord，记录当时 changeRevision。每次新的 ChangeSet 都提高 revision，因此之前的成功测试自然过期。
 
-finish 是无副作用 Core 工具，参数包含 summary 和 verification 字符串数组。ToolDefinition 只确认数据结构；Core 在 finish 成功后读取 Ledger。如果从未修改文件，或当前 revision 存在 passed validation，则 verificationStatus 为 verified。若已修改但没有当前 revision 的成功验证，则仍允许结束，但输出 warning。
+finish 是无副作用 Core 工具，参数包含 summary 和 verification 字符串数组。ToolDefinition 只确认数据结构；Core 在 finish 成功后读取 Ledger。如果从未修改文件、当前 revision 只修改 Markdown/纯文本文档，或当前 revision 存在 passed validation，则记录为 verified。只有可执行代码或配置发生变化且没有当前 revision 的成功验证时才在内部 ToolResult 中记录 warning。该字段供质量统计和调试使用，不在普通对话界面显示独立提醒。
 
-SeeCoder 没有强制所有任务必须测试，因为有些请求只是解释代码、修改文档或项目没有测试环境。采用“允许完成但明确警告”比一律阻断更适合通用编程 Agent。UI 和最终摘要必须区分 verified 与 warning，不能把模型在 verification 字段里写的一条命令当成真实执行证据。
+SeeCoder 没有强制所有任务必须测试，因为有些请求只是解释代码、修改文档或项目没有测试环境。文档豁免只覆盖 `.md`、`.mdx`、`.txt`、`.rst` 和 `.adoc`；JSON、YAML、脚本和源码仍可能改变运行行为，不能豁免。内部状态必须区分 verified 与 warning，不能把模型在 verification 字段里写的一条命令当成真实执行证据；Renderer 对 finish 工具统一隐藏，避免在完成消息后重复显示验证提醒。
 
 finish 不是唯一完成路径。模型返回正常文本且没有 Tool Call 时，Core 也会结束 Turn。这支持纯问答与 Plan 模式。对于产生代码变更的任务，系统 Prompt 鼓励调用 finish，因为它能进行 revision 检查；当前 Core 尚未硬性要求“有变更必须调用 finish”，这是可进一步强化的规则。
 
@@ -507,7 +507,7 @@ hydrateSession 对 unfinished Turn 创建 failed 终态，code 为 interrupted�
 
 一次任务至少可关联 sessionId、turnId、Tool Call ID、事件 timestamp、duration、status 和 error code。model.requested 到 model.completed 给出模型耗时、usage、重试和 finish reason；tool.requested 到 tool.completed 给出工具耗时与结果；tool.output 提供实时 stdout/stderr；context.compacted 记录 beforeTokens、afterTokens、availableInput、summarySource、retrievedEntries 与 droppedEvidence。
 
-事件用于 UI 和 Session 轨迹，MainLogger 用于开发诊断。日志只记录事件类型、标识、耗时与错误码，不记录 API Key 和完整文件正文。普通用户默认看到“读取了几个文件、修改了几个文件、测试是否通过”，需要时在 Trace、Terminal 或 Details 展开技术信息。
+事件用于 UI 状态和 Session 恢复，MainLogger 用于开发诊断。日志只记录事件类型、标识、耗时与错误码，不记录 API Key 和完整文件正文。普通用户默认看到“读取了几个文件、修改了几个文件、测试是否通过”，需要时在 Terminal 或工具 Details 展开必要信息；原始事件不提供独立查看页面。
 
 可观测性不是把所有数据打印出来。模型请求正文可能包含源码和用户隐私，工具输出可能包含凭据。SeeCoder 优先记录可关联元数据，并对正文执行敏感路径限制与长度控制。
 
