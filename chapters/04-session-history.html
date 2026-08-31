@@ -1,0 +1,58 @@
+<span class="chapter-kicker">第二部分 · 理解核心机制</span>
+<h1>Session 与对话历史</h1>
+<p class="lead">Session 解决“长期任务怎样保存”，Turn 解决“一次请求怎样运行”，Item 解决“有哪些可恢复内容”，Event 解决“后台刚刚发生了什么”。四者分工后，历史、状态和界面不会混成一个数组。</p>
+
+<h2>Session 不是模型上下文</h2>
+<p>左侧栏的一条任务就是一个 Session。它保存标题、Workspace、创建时间、更新时间和历次执行记录。用户关闭应用再打开，Session 仍然存在。模型上下文则是某一次请求临时发送给模型的有限消息列表。Session 可以非常长，而 ModelRequest 必须受到 context window 限制。</p>
+<div class="callout"><span class="callout-title">最重要的区别</span><p>压缩上下文不会删除 Session 历史。完整事件仍保存在 JSONL；改变的只是模型下一轮能看到的视图。</p></div>
+
+<h2>四层数据模型</h2>
+<table class="data-table">
+  <thead><tr><th>概念</th><th>生命周期</th><th>主要内容</th></tr></thead>
+  <tbody>
+    <tr><td>Session</td><td>长期</td><td>一个工作区中的连续任务对话</td></tr>
+    <tr><td>Turn</td><td>一次用户请求</td><td>状态、迭代、取消信号、开始与结束时间</td></tr>
+    <tr><td>Item</td><td>可恢复内容</td><td>消息、Tool Call、Tool Result、计划、审批、变更和错误</td></tr>
+    <tr><td>AgentEvent</td><td>运行事实</td><td>模型开始、消息增量、工具输出、Turn 完成等事件</td></tr>
+  </tbody>
+</table>
+
+<p>同一个 Session 内只允许一个活动 Turn。Main 使用 <code>activeSessionTurns</code> 映射保证这一点。用户重复点击发送不会创建两个并行写入者，避免同一项目被两个主循环同时修改。Explore 和 Review 子 Agent 可以并发读取，但不能写入，仍然遵守单写者原则。</p>
+
+<h2>Turn 状态怎样统一前后端</h2>
+<p>当前稳定状态只有 <code>queued</code>、<code>running</code>、<code>waitingApproval</code>、<code>waitingInput</code>、<code>completed</code>、<code>failed</code>、<code>cancelled</code> 和 <code>limitReached</code>。模型请求中、工具执行中、正在压缩等更细阶段通过事件表达，而不是继续增加互相难以转换的状态。</p>
+<p>这种设计避免两个极端：状态太少会让 UI 只能显示模糊的“运行中”；状态太多会让每个模块维护不同枚举。稳定状态回答“Turn 目前能否继续以及在等待谁”，事件回答“后台具体正在做什么”。</p>
+
+<div class="diagram">
+  <div class="diagram-title">Turn 状态主路径</div>
+  <div class="flow-row">
+    <div class="flow-node">queued</div><div class="flow-arrow">→</div>
+    <div class="flow-node primary">running</div><div class="flow-arrow">⇄</div>
+    <div class="flow-node">waitingApproval<br/>waitingInput</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">completed</div>
+  </div>
+  <p style="margin:16px 0 0;color:var(--muted);font-size:13px">任何活动状态都可能在取消、不可恢复错误或迭代上限时进入 cancelled、failed 或 limitReached。</p>
+</div>
+
+<h2>历史怎样写入磁盘</h2>
+<p>Storage 使用 V3 事件信封追加写入 <code>events.jsonl</code>。每条事件具有 version、id、seq、type、sessionId、turnId、timestamp 和 payload。seq 在 Session 内单调增加，能够恢复真实顺序。不同 Session 使用独立追加队列，避免异步写入互相穿插。</p>
+<p>Session 的 meta 和当前 state 使用“临时文件写完后 rename”的原子替换。JSONL 最后一行如果因为断电而损坏，恢复时记录诊断并跳过该行；前面已经完整写入的事件仍可使用。重启只恢复事实，不会重放命令、补丁或网络请求，因此不会因为回放历史再次产生副作用。</p>
+
+<h2>工具消息为什么必须成组保存</h2>
+<p>一条 assistant 消息可能同时包含多个 Tool Call。SeeCoder 必须先保存完整 assistant 消息，再为每个 callId 保存对应 tool 消息。构建下一轮模型请求时，<code>sanitizeModelMessages</code> 检查这些协议组；如果历史因异常只剩一半，系统宁可丢弃不完整组，也不会把非法消息链发送给模型。</p>
+
+<pre class="code-block"><span class="code-label">消息协议</span>assistant: {
+  tool_calls: [
+    { id: "call_read", name: "read_file", arguments: "{...}" },
+    { id: "call_search", name: "search_text", arguments: "{...}" }
+  ]
+}
+tool: { tool_call_id: "call_read", content: "..." }
+tool: { tool_call_id: "call_search", content: "..." }</pre>
+
+<h2>SeeCoder 支持哪些 Session 操作</h2>
+<p>用户可以创建、选择、重命名、置顶、归档、删除、Fork 和导出 Session。选择操作只切换当前视图；重命名修改元数据；归档将会话移出默认列表但保留历史；删除会删除对应本地会话数据；Fork 复制可恢复历史并创建新的 Session，使后续尝试互不影响；导出生成脱敏 Markdown 或 JSON，不包含 API Key。</p>
+<p>Session 必须属于创建它的 Workspace。切换工作区后，列表、计划任务、恢复状态和活动 Turn 均按 Workspace 隔离，防止 A 项目的任务出现在 B 项目中。FileEvidence 和历史检索也不跨工作区复用。</p>
+
+<div class="defense"><h2>怎样讲清楚</h2><p>“Session 是长期容器，Turn 是一次执行，Item 是可恢复内容，Event 是运行事实。完整历史追加写入 JSONL，模型每轮只看到 ContextBuilder 生成的有限视图。重启恢复已发生的事实，不重放本地副作用。”</p></div>
+

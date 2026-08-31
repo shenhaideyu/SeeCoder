@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="SeeCoder 本地技术教程：从 Agent 基础到主循环、上下文、工具与错误处理。" />
+    <title>SeeCoder 技术教程</title>
+    <link rel="stylesheet" href="./assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="教程目录">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">&lt;/&gt;</div>
+          <div>
+            <strong>SeeCoder</strong>
+            <span>技术教程</span>
+          </div>
+        </div>
+
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="搜索概念、源码或问题" autocomplete="off" />
+          <kbd>Ctrl K</kbd>
+        </label>
+        <div class="search-results" id="searchResults" hidden></div>
+
+        <nav class="chapter-nav" id="chapterNav"></nav>
+
+        <div class="sidebar-footer">
+          <div class="progress-copy"><span>阅读进度</span><strong id="progressText">0 / 12</strong></div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+          <button class="ghost-button" id="themeToggle" type="button">切换深色主题</button>
+        </div>
+      </aside>
+
+      <main class="main-area">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="menuButton" type="button" aria-label="打开目录">☰</button>
+          <div class="breadcrumb"><span>SeeCoder 教程</span><b>/</b><strong id="chapterCrumb">初识 SeeCoder</strong></div>
+          <div class="topbar-actions">
+            <button class="icon-button" id="fontDown" type="button" aria-label="缩小正文字号">A−</button>
+            <button class="icon-button" id="fontUp" type="button" aria-label="放大正文字号">A+</button>
+          </div>
+        </header>
+
+        <div class="reading-progress"><span id="pageProgress"></span></div>
+
+        <article class="article" id="article" aria-live="polite">
+          <div class="loading">正在加载章节…</div>
+        </article>
+
+        <footer class="chapter-footer">
+          <button class="chapter-link" id="prevChapter" type="button"></button>
+          <button class="chapter-link next" id="nextChapter" type="button"></button>
+        </footer>
+      </main>
+
+      <aside class="page-outline" aria-label="本页目录">
+        <span class="outline-title">本章内容</span>
+        <nav id="pageOutline"></nav>
+        <div class="outline-note">
+          <strong>阅读建议</strong>
+          <p>第一次阅读按顺序进行；答辩复习可直接使用每章末尾的“怎样讲清楚”。</p>
+        </div>
+      </aside>
+    </div>
+    <div class="sidebar-mask" id="sidebarMask"></div>
+    <script type="module" src="./assets/app.js"></script>
+  </body>
+</html>

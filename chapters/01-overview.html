@@ -1,0 +1,42 @@
+<span class="chapter-kicker">第一部分 · 建立整体认识</span>
+<h1>初识 SeeCoder</h1>
+<p class="lead">先不要从类名、接口或算法开始。理解 SeeCoder 最有效的方法，是先回答三个问题：模型能做什么，模型不能做什么，程序怎样把模型变成一个能够安全操作本地项目的编程智能体。</p>
+
+<h2>从聊天模型到编程智能体</h2>
+<p>DeepSeek 这类大语言模型的基本能力是：接收一组消息，再生成文字或结构化的工具请求。它本身看不到你的磁盘，也不能直接启动 PowerShell。即使模型写出“我已经修改文件”，如果外部程序没有真正执行写入，磁盘上的代码仍然没有变化。</p>
+<p>编程智能体因此不是一个更长的提示词，而是一个持续运行的控制系统。这个控制系统把用户目标、项目证据和工具说明交给模型；接收模型返回的下一步动作；检查动作是否安全；执行本地工具；再把真实结果反馈给模型。模型负责提出决策，程序负责维护事实和边界。</p>
+
+<div class="diagram">
+  <div class="diagram-title">最小 Agent 闭环</div>
+  <div class="flow-row">
+    <div class="flow-node primary">用户目标</div><div class="flow-arrow">→</div>
+    <div class="flow-node">模型决策</div><div class="flow-arrow">→</div>
+    <div class="flow-node">工具请求</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">安全执行</div><div class="flow-arrow">→</div>
+    <div class="flow-node">真实结果</div><div class="flow-arrow">↺</div>
+  </div>
+</div>
+
+<p>包围模型的这套控制程序通常叫 <span class="term" title="模型之外负责循环、工具、状态、安全和恢复的程序">Agent Harness</span>。SeeCoder 的技术主体正是这个 Harness，而不是某个模型。更换兼容模型不会改变本地工具和状态机；模型给出错误建议时，Harness 也可以拒绝执行。</p>
+
+<h2>SeeCoder 的一句话定义</h2>
+<div class="callout"><span class="callout-title">项目定义</span><p>SeeCoder 是一个 Windows 本地 Electron 编程智能体。它使用自研 Agent Core 调用 OpenAI 兼容模型，在受控工作区内读取代码、修改文件、运行命令、验证结果，并用 Session、事件和快照保存完整过程。</p></div>
+<p>“本地”表示文件和命令在用户电脑执行，而不是上传到远程代码执行服务。“Electron”表示界面和可信后端打包在同一个桌面应用里，并不表示系统没有后端。React Renderer 是前端；Electron Main 是本机后端；Preload 是二者之间的最小权限桥。</p>
+
+<h2>一次真实任务包含什么</h2>
+<p>后续章节会一直使用同一个例子：用户要求“修复待办事项允许空标题提交的问题，并补充测试”。SeeCoder 不能只生成一段建议。它需要定位表单代码，查找现有测试，确认空白字符应当如何处理，修改实现，执行测试，读取失败结果，必要时继续修复，最后给出修改文件和验证证据。</p>
+<p>这段过程至少包含五类事实：用户真正想要什么；模型已经读过哪些文件；工具实际修改了什么；测试是否针对当前代码版本通过；任务为何结束。这些事实不能全部依赖模型记忆，否则对话一长就容易丢失或混淆。SeeCoder 因此分别使用 ContextLedger、FileEvidence、ChangeSet、ValidationRecord 和 Turn 状态保存它们。</p>
+
+<div class="split-grid">
+  <div class="concept-card"><h3>模型</h3><p>根据输入生成文本或 Tool Call。它是决策来源，不是可信执行边界。</p></div>
+  <div class="concept-card"><h3>Agent Core</h3><p>维护循环、状态、上下文、审批、终止与错误恢复，是项目核心。</p></div>
+  <div class="concept-card"><h3>工具运行时</h3><p>执行文件、搜索、补丁、命令和 Git 操作，并返回结构化结果。</p></div>
+  <div class="concept-card"><h3>SessionStore</h3><p>追加保存事件和状态，让关闭应用后的历史仍可恢复与审计。</p></div>
+</div>
+
+<h2>项目刻意不做什么</h2>
+<p>SeeCoder 没有封装 Codex、Claude Code 或其他现成 Agent，也没有使用 LangChain、OpenAI Agents SDK 等编排框架。对话历史、上下文、SSE 解析、工具协议、循环终止和错误处理均由项目代码实现。这使设计能够在答辩中从数据结构讲到运行过程，也避免关键逻辑隐藏在第三方框架内部。</p>
+<p>首版也不宣称拥有操作系统级沙箱。它提供的是应用层安全：路径不能越出 Workspace，危险动作需要审批，敏感文件被过滤，修改前创建恢复点。但被批准的命令仍以当前用户权限运行。明确能力边界比给出错误的安全承诺更重要。</p>
+
+<div class="defense"><h2>怎样讲清楚</h2><p>“大模型只能提出下一步，不能直接访问本机。SeeCoder 自研的 Agent Harness 把模型置于一个受控循环中：构建上下文、解析 Tool Call、执行受保护的本地工具、反馈结果，并通过状态机决定继续或停止。项目的重点不是聊天 UI，而是这套可恢复、可审计、可约束的执行系统。”</p></div>
+

@@ -1,0 +1,180 @@
+const chapters = [
+  { id: "01", group: "建立整体认识", title: "初识 SeeCoder", file: "01-overview.html" },
+  { id: "02", group: "建立整体认识", title: "一次任务怎样完成", file: "02-task-journey.html" },
+  { id: "03", group: "建立整体认识", title: "系统架构与信任边界", file: "03-architecture.html" },
+  { id: "04", group: "理解核心机制", title: "Session 与对话历史", file: "04-session-history.html" },
+  { id: "05", group: "理解核心机制", title: "上下文管理与压缩", file: "05-context.html" },
+  { id: "06", group: "理解核心机制", title: "Agent 主循环", file: "06-agent-loop.html" },
+  { id: "07", group: "理解核心机制", title: "模型输出解析", file: "07-model-parsing.html" },
+  { id: "08", group: "理解核心机制", title: "工具与本地执行", file: "08-tools.html" },
+  { id: "09", group: "保证正确运行", title: "终止条件与错误处理", file: "09-stop-errors.html" },
+  { id: "10", group: "保证正确运行", title: "安全、审批与恢复", file: "10-safety-recovery.html" },
+  { id: "11", group: "保证正确运行", title: "测试、评估与可观测性", file: "11-testing.html" },
+  { id: "12", group: "进入源码与答辩", title: "源码阅读与答辩路线", file: "12-defense.html" },
+];
+
+const state = {
+  current: 0,
+  contents: new Map(),
+  completed: new Set(JSON.parse(localStorage.getItem("seecoder-docs-completed") || "[]")),
+};
+
+const $ = (selector) => document.querySelector(selector);
+const article = $("#article");
+const chapterNav = $("#chapterNav");
+const searchInput = $("#searchInput");
+const searchResults = $("#searchResults");
+
+function renderNavigation() {
+  let group = "";
+  chapterNav.innerHTML = chapters.map((chapter, index) => {
+    const label = chapter.group !== group ? `<div class="nav-group-label">${chapter.group}</div>` : "";
+    group = chapter.group;
+    const checked = state.completed.has(chapter.id) ? "✓" : "";
+    return `${label}<button class="nav-item ${index === state.current ? "active" : ""}" data-index="${index}" type="button">
+      <span class="nav-number">${chapter.id}</span><span class="nav-title">${chapter.title}</span><span class="nav-check">${checked}</span>
+    </button>`;
+  }).join("");
+
+  chapterNav.querySelectorAll(".nav-item").forEach((button) => {
+    button.addEventListener("click", () => navigate(Number(button.dataset.index)));
+  });
+  const percentage = (state.completed.size / chapters.length) * 100;
+  $("#progressText").textContent = `${state.completed.size} / ${chapters.length}`;
+  $("#progressBar").style.width = `${percentage}%`;
+}
+
+async function loadChapter(index) {
+  const chapter = chapters[index];
+  if (!state.contents.has(chapter.id)) {
+    const response = await fetch(`./chapters/${chapter.file}`);
+    if (!response.ok) throw new Error(`无法加载章节：${response.status}`);
+    state.contents.set(chapter.id, await response.text());
+  }
+  return state.contents.get(chapter.id);
+}
+
+function buildOutline() {
+  const headings = [...article.querySelectorAll("h2")];
+  headings.forEach((heading, index) => { heading.id = `section-${index + 1}`; });
+  $("#pageOutline").innerHTML = headings.map((heading) =>
+    `<a class="outline-link" href="#${heading.id}">${heading.textContent}</a>`
+  ).join("");
+}
+
+async function navigate(index, updateHash = true) {
+  if (index < 0 || index >= chapters.length) return;
+  state.current = index;
+  article.innerHTML = '<div class="loading">正在加载章节…</div>';
+  try {
+    article.innerHTML = await loadChapter(index);
+    state.completed.add(chapters[index].id);
+    localStorage.setItem("seecoder-docs-completed", JSON.stringify([...state.completed]));
+    $("#chapterCrumb").textContent = chapters[index].title;
+    document.title = `${chapters[index].title} · SeeCoder 技术教程`;
+    configureChapterButtons();
+    buildOutline();
+    renderNavigation();
+    closeSidebar();
+    window.scrollTo({ top: 0, behavior: "instant" });
+    if (updateHash) history.replaceState(null, "", `#chapter-${chapters[index].id}`);
+  } catch (error) {
+    article.innerHTML = `<div class="callout danger"><span class="callout-title">章节加载失败</span><p>${error.message}</p><p>请使用 start.ps1 启动本地站点，不要直接双击 index.html。</p></div>`;
+  }
+}
+
+function configureChapterButtons() {
+  const prev = $("#prevChapter");
+  const next = $("#nextChapter");
+  prev.disabled = state.current === 0;
+  next.disabled = state.current === chapters.length - 1;
+  if (!prev.disabled) prev.innerHTML = `<small>← 上一章</small><strong>${chapters[state.current - 1].title}</strong>`;
+  if (!next.disabled) next.innerHTML = `<small>下一章 →</small><strong>${chapters[state.current + 1].title}</strong>`;
+}
+
+async function preloadForSearch() {
+  await Promise.all(chapters.map((_, index) => loadChapter(index)));
+}
+
+function plainText(html) {
+  const node = document.createElement("div");
+  node.innerHTML = html;
+  return node.textContent.replace(/\s+/g, " ").trim();
+}
+
+async function search(query) {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) { searchResults.hidden = true; return; }
+  searchResults.hidden = false;
+  searchResults.innerHTML = '<div class="search-empty">正在搜索…</div>';
+  await preloadForSearch();
+  const matches = chapters.map((chapter, index) => {
+    const text = plainText(state.contents.get(chapter.id));
+    const position = text.toLocaleLowerCase().indexOf(normalized);
+    if (position < 0 && !chapter.title.toLocaleLowerCase().includes(normalized)) return null;
+    const start = Math.max(0, position - 38);
+    const excerpt = position >= 0 ? text.slice(start, start + 110) : "章节标题匹配";
+    return { chapter, index, excerpt: `${start > 0 ? "…" : ""}${excerpt}${start + 110 < text.length ? "…" : ""}` };
+  }).filter(Boolean).slice(0, 8);
+
+  searchResults.innerHTML = matches.length ? matches.map((match) =>
+    `<button class="search-result" data-index="${match.index}" type="button"><strong>${match.chapter.id} · ${match.chapter.title}</strong><span>${match.excerpt}</span></button>`
+  ).join("") : '<div class="search-empty">没有找到相关内容</div>';
+  searchResults.querySelectorAll(".search-result").forEach((button) => {
+    button.addEventListener("click", () => {
+      navigate(Number(button.dataset.index));
+      searchInput.value = "";
+      searchResults.hidden = true;
+    });
+  });
+}
+
+function openSidebar() { $("#sidebar").classList.add("open"); $("#sidebarMask").classList.add("open"); }
+function closeSidebar() { $("#sidebar").classList.remove("open"); $("#sidebarMask").classList.remove("open"); }
+
+function updatePageProgress() {
+  const root = document.documentElement;
+  const height = root.scrollHeight - root.clientHeight;
+  $("#pageProgress").style.width = `${height > 0 ? (root.scrollTop / height) * 100 : 0}%`;
+}
+
+function initializeTheme() {
+  const stored = localStorage.getItem("seecoder-docs-theme");
+  const theme = stored || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = theme;
+  $("#themeToggle").textContent = theme === "dark" ? "切换浅色主题" : "切换深色主题";
+}
+
+$("#prevChapter").addEventListener("click", () => navigate(state.current - 1));
+$("#nextChapter").addEventListener("click", () => navigate(state.current + 1));
+$("#menuButton").addEventListener("click", openSidebar);
+$("#sidebarMask").addEventListener("click", closeSidebar);
+searchInput.addEventListener("input", (event) => search(event.target.value));
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".search-box") && !event.target.closest(".search-results")) searchResults.hidden = true;
+});
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); searchInput.focus(); searchInput.select(); }
+  if (event.key === "Escape") { searchResults.hidden = true; closeSidebar(); }
+});
+$("#themeToggle").addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("seecoder-docs-theme", theme);
+  $("#themeToggle").textContent = theme === "dark" ? "切换浅色主题" : "切换深色主题";
+});
+$("#fontDown").addEventListener("click", () => {
+  const size = Math.max(15, Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--article-size")) - 1);
+  document.documentElement.style.setProperty("--article-size", `${size}px`);
+});
+$("#fontUp").addEventListener("click", () => {
+  const size = Math.min(21, Number.parseInt(getComputedStyle(document.documentElement).getPropertyValue("--article-size")) + 1);
+  document.documentElement.style.setProperty("--article-size", `${size}px`);
+});
+window.addEventListener("scroll", updatePageProgress, { passive: true });
+
+initializeTheme();
+renderNavigation();
+const hashId = location.hash.match(/chapter-(\d+)/)?.[1];
+const initialIndex = Math.max(0, chapters.findIndex((chapter) => chapter.id === hashId));
+navigate(initialIndex, false);

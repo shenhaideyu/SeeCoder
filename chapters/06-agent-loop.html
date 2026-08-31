@@ -1,0 +1,236 @@
+<span class="chapter-kicker">第二部分 · 理解核心机制</span>
+<h1>Agent 主循环</h1>
+<p class="lead">Agent 主循环负责把一次用户请求持续推进到明确终态。每一轮先让模型根据当前事实选择动作，再由 SeeCoder 校验并执行工具，随后把真实结果放回上下文。循环不断重复，直到任务完成、失败、取消或达到上限。</p>
+
+<h2>为什么需要循环</h2>
+<p>用户说“修复待办事项允许空标题提交的问题，并补充测试”。模型在第一次请求时还不知道项目结构、提交函数位置和测试框架。它需要先搜索，看到搜索结果后读取文件，理解代码后提出修改，执行测试后才能判断修改是否正确。每一步的输入来自上一步的真实结果。</p>
+<p>一次模型请求只能根据已经提供的信息生成一次响应。真实编程任务包含未知信息和执行反馈，因此 SeeCoder 需要多次调用模型。这个连续过程称为 <strong>Agent Loop</strong>。Loop 的中文含义是“循环”，它把模型的决策能力和程序的执行能力连接起来。</p>
+
+<div class="diagram">
+  <div class="diagram-title">最小 Agent Loop</div>
+  <div class="flow-row">
+    <div class="flow-node primary">构建当前上下文</div><div class="flow-arrow">→</div>
+    <div class="flow-node">调用模型</div><div class="flow-arrow">→</div>
+    <div class="flow-node">解析下一步</div><div class="flow-arrow">→</div>
+    <div class="flow-node">执行工具</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">记录 Observation</div><div class="flow-arrow">↺</div>
+  </div>
+</div>
+
+<p>模型负责提出“下一步做什么”。Agent Core 负责“动作能否执行、结果如何保存、任务是否继续”。文件内容、命令输出和模型文本都作为数据进入 Core，无法直接改变循环规则。</p>
+
+<h2>先区分 Turn 和 iteration</h2>
+<p><strong>Turn</strong> 是一次用户请求从发送到结束的完整执行。例如用户发送“修复空标题并补测试”，对应一个 Turn。它可能持续几十秒，并包含多次模型请求和工具执行。</p>
+<p><strong>iteration</strong> 是 Turn 内的一轮模型决策。第一轮模型搜索代码，第二轮读取文件，第三轮修改，第四轮运行测试。每次 iteration 都会重新构建上下文并调用模型。当前主 Agent 最多运行 24 次 iteration。</p>
+<p>一个 Session 可以包含多个 Turn。用户在任务完成后继续追问，会创建新的 Turn，同时沿用 Session 的历史与 ContextLedger。这个层次让长期对话、单次任务和单轮模型调用各自具有清晰生命周期。</p>
+
+<h2>主循环从 startTurn 开始</h2>
+<p>Renderer 通过 <code>turn:start</code> IPC 把 sessionId、用户文本、附件和可选 Skill 交给 Electron Main。Main 校验参数后调用 <code>AgentCore.startTurn</code>。</p>
+<p><code>startTurn</code> 先从内存取得 Session；尚未加载时从磁盘恢复。Session 不存在会立即报错。同一个 Session 已经存在活动 Turn 时，新请求也会被拒绝，用户可以使用 Follow-up 追加要求，或者先取消旧 Turn。这保证每个 Session 只有一个主 Agent 写入者。</p>
+<p>随后 Core 创建 Turn：</p>
+<pre class="code-block"><span class="code-label">简化后的 Turn 初始化</span>const turn = {
+  id: randomUUID(),
+  sessionId,
+  status: "queued",
+  startedAt: now(),
+  iteration: 0
+};</pre>
+<p>Core 记录本轮 ExecutionMode，根据用户文本判断可见回复语言，将 Skill 内容限制到 20000 字符。附件最多四个；图片转换为 data URL，文本最多读取 40000 字符。所有附件先经过 WorkspacePolicy 路径校验。</p>
+<p>用户消息加入 Session 的模型消息列表，ContextLedger 的 goal 更新为当前任务，随后持久化 Ledger。Core 发出 <code>turn.started</code>、<code>message.user</code> 和可选的 <code>skill.activated</code> 事件。最后异步调用 <code>runTurn</code> 并立即返回 turnId，界面可以继续响应。</p>
+
+<h2>runTurn 开始前准备什么</h2>
+<p><code>runTurn</code> 创建 AbortController，并将它按 turnId 保存。AbortController 是统一取消入口，它的 signal 会传给模型请求、工具、子 Agent 和 Hook。Turn 状态从 queued 进入 running。</p>
+<p>循环还初始化几项计数：</p>
+<table class="data-table">
+  <thead><tr><th>变量</th><th>记录内容</th><th>用途</th></tr></thead>
+  <tbody>
+    <tr><td>noProgress</td><td>连续失败工具调用数量</td><td>达到 3 时停止无效循环</td></tr>
+    <tr><td>consecutiveReadOnlyIterations</td><td>连续只读探索轮数</td><td>提醒并限制重复读取</td></tr>
+    <tr><td>explorationReminderSent</td><td>是否已经发送探索提醒</td><td>避免每轮重复加入相同提示</td></tr>
+    <tr><td>convergenceReminderSent</td><td>是否已经发送收敛提醒</td><td>在最后三轮提醒模型结束</td></tr>
+    <tr><td>truncatedResponses</td><td>连续输出截断次数</td><td>三次后以 output_limit 失败</td></tr>
+    <tr><td>finished</td><td>是否已经满足完成条件</td><td>控制 for 循环退出</td></tr>
+  </tbody>
+</table>
+
+<h2>一轮 iteration 从哪里开始</h2>
+<p>for 循环从 1 运行到 24。每轮开头先检查 AbortSignal。已经取消时立即抛出 <code>cancelled</code>，后续不再调用模型。</p>
+<p>Core 将 iteration 写入 Turn，然后取得当前 Session 消息。运行期间收到的 Follow-up 保存在队列中，此时才按顺序追加为 <code>[用户追加要求]</code> 消息。Follow-up 只在模型调用边界注入，因此不会改写正在发送的请求，也不会拆开正在执行的工具组。</p>
+<p>连续只读探索达到四轮时，Core 加入一次执行约束提醒，要求模型使用已有证据实施最小修复，或者说明唯一缺失信息。iteration 达到 22 时加入预算提醒：只剩三轮，应停止扩大范围，完成必要验证并调用 finish。</p>
+
+<div class="diagram">
+  <div class="diagram-title">一次 iteration 的内部顺序</div>
+  <div class="layer-stack">
+    <div class="layer"><b>1 · 检查边界</b>取消信号、iteration、Follow-up、探索提醒和收敛提醒</div>
+    <div class="layer"><b>2 · 构建请求</b>ContextBuilder 生成受预算约束的消息；加入 system prompt 和工具 Schema</div>
+    <div class="layer"><b>3 · 调用模型</b>接收 textDelta、toolCallDelta、usage、retry 和 completed</div>
+    <div class="layer"><b>4 · 保存模型决策</b>完整保存 assistant 文本与 Tool Calls</div>
+    <div class="layer"><b>5 · 执行工具</b>按模型顺序逐个校验、审批、执行并保存 Tool Result</div>
+    <div class="layer"><b>6 · 更新控制量</b>处理 finish、压缩请求、失败次数与只读探索次数</div>
+    <div class="layer"><b>7 · 决定下一步</b>完成则退出；仍有工作则进入下一次 iteration</div>
+  </div>
+</div>
+
+<h2>系统提示怎样约束这一轮</h2>
+<p>每次请求都重新生成 system prompt。它包含 Workspace 路径、用户语言、ExecutionMode、Windows PowerShell 规则、24 轮上限、工具使用原则和项目 AGENTS.md。激活的 Skill 也会加入，但优先级低于固定安全规则。</p>
+<p>中文用户任务会设置 <code>zh-CN</code>，提示要求所有用户可见行动说明、计划、问题、错误解释和最终总结使用简体中文。代码、命令、路径和专有名词保留原文。这样模型不会因为项目文件使用英文而突然切换整段回答语言。</p>
+<p>Plan 模式提示只能读取、搜索、查看 Diff、更新计划、提问和委派只读子 Agent。Guided 提示写入、命令和 Git 副作用需要审批。Auto 提示只允许自动执行工作区内低风险动作，网络、安装、删除、提交和推送仍需审批。真正的权限检查还会在 executeCall 中执行。</p>
+
+<h2>ContextBuilder 为模型准备当前事实</h2>
+<p>Core 调用 <code>compactMessages</code>。它取得当前 Session 的 ContextLedger、FileEvidenceStore 和 MemoryIndex，构造方案 F 混合上下文。超过 75% 输入预算时进行语义压缩，目标降到 60%。</p>
+<p>最终 ModelRequest 由 system prompt、混合历史和工具 Schema 组成。request 的 purpose 为 agent，模型、temperature 和 maxOutputTokens 取当前设置。Core 发出 <code>model.requested</code>，Trace 开始记录本轮模型耗时。</p>
+
+<h2>模型流式输出如何进入循环</h2>
+<p>Provider 返回一个异步 ModelEvent 流。runTurn 使用 <code>for await</code> 逐个处理事件。textDelta 追加到本轮 text，并立即发出 <code>message.delta</code> 供 Renderer 流式展示。toolCallDelta 按 callId 放入 Map，工具名更新，argsDelta 持续拼接。</p>
+<p>usage 记录 inputTokens 和 outputTokens，并发出 <code>usage.updated</code>。retry 保存最大的尝试次数。completed 提供 finishReason。error 暂存模型错误，等待流结束后统一转成 AgentRunError。</p>
+<p>流结束时 Core 再检查取消信号，然后发出 <code>model.completed</code>，其中包含 iteration、duration、finishReason、token 和 retries。模型错误在此处结束当前 Turn，retryable 信息保留给界面与日志。</p>
+
+<h2>为什么先保存 assistant Tool Calls</h2>
+<p>Tool Call 参数聚合完成后，Core 生成 <code>parsedCalls</code>。每个调用包含 id、name 和完整 arguments 字符串。只要本轮有文本或工具调用，Core 就先把完整 assistant 消息加入 Session 历史。</p>
+<p>OpenAI Tool Calling 协议要求 Tool Result 能通过 toolCallId 找到之前的 assistant Tool Call。保存顺序固定为：</p>
+<pre class="code-block"><span class="code-label">协议顺序</span>assistant {
+  content: "我将读取实现和测试",
+  toolCalls: [callA, callB]
+}
+tool { toolCallId: callA, content: resultA }
+tool { toolCallId: callB, content: resultB }</pre>
+<p>Core 保存完 assistant 后才执行工具。应用在工具执行中途退出时，恢复器能够识别不完整组并在下次请求前清理。若先保存结果，消息链会缺少请求来源。</p>
+
+<h2>模型没有调用工具时会发生什么</h2>
+<p>本轮 Tool Call Map 为空，并且 finishReason 正常时，Core 将文本作为最终回答，设置 <code>finished=true</code>，退出循环。模型可以通过普通文本自然结束。</p>
+<p>如果 finishReason 为 <code>length</code>，说明文本被输出上限截断。Core 不会完成任务。它增加 truncatedResponses，加入恢复提示，主动压缩上下文，然后进入下一轮。连续三次截断时抛出 <code>output_limit</code>，避免无限请求。</p>
+
+<h2>多个 Tool Call 怎样执行</h2>
+<p>模型可以在同一轮请求多个工具，例如同时读取组件和测试。主 Agent 按响应中的顺序逐个执行。顺序执行让 ChangeSet、事件 seq、Ledger revision 和 Observation 保持确定，也遵守主 Agent 单写者规则。</p>
+<p>只读子 Agent可以并发运行，主 Agent 工具执行仍采用顺序。未来若并行执行独立只读调用，需要额外处理事件顺序和取消汇合；当前实现优先保证轨迹可解释。</p>
+<p>每个调用先通过 <code>parseArgs</code>。合法 JSON 转成对象；非法 JSON 包装为 <code>__invalid</code>，随后 Zod 校验会生成 invalid_args Tool Result。单个错误 Tool Call 通常不会直接破坏 Turn，模型可以在下一轮修正参数。</p>
+
+<h2>executeCall 的执行管线</h2>
+<p><code>executeCall</code> 是模型请求进入本地能力的统一入口。它先取得当前 Turn 已执行 callId 的 Map。相同 callId 已有结果时直接返回旧 Tool Result，副作用不会再次执行。</p>
+<p>新调用先发出 <code>tool.requested</code>。ToolRegistry 中找不到名称时返回 unknown_tool；Zod 校验失败返回 invalid_args。Plan 模式遇到 sideEffect 工具时返回 plan_read_only。其余调用交给 WorkspacePolicy 判断是否可以自动批准。</p>
+
+<div class="diagram">
+  <div class="diagram-title">executeCall 决策管线</div>
+  <div class="flow-row">
+    <div class="flow-node primary">Tool Call</div><div class="flow-arrow">→</div>
+    <div class="flow-node">callId 去重</div><div class="flow-arrow">→</div>
+    <div class="flow-node">工具与 Zod</div><div class="flow-arrow">→</div>
+    <div class="flow-node">模式与风险</div><div class="flow-arrow">→</div>
+    <div class="flow-node">审批 / Hook</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">执行并 complete</div>
+  </div>
+</div>
+
+<p>允许执行前还会运行 preToolUse Hook。Hook 失败返回 hook_blocked。真正的 ToolContext 包含 Workspace、AbortSignal 和 onOutput。命令输出通过 onOutput 转成 <code>tool.output</code> 事件，Terminal 可以实时显示 stdout 和 stderr。</p>
+<p>工具结束后统一进入 complete。complete 保存 callId 结果并发出 <code>tool.completed</code>。文件修改会调用 recordChanges，创建 ChangeSet、Snapshot 和 Checkpoint，增加 Ledger revision，并使旧 Evidence 失效。验证命令会形成 ValidationRecord。失败工具会把错误加入 Ledger。</p>
+
+<h2>Guided 审批如何暂停循环</h2>
+<p>Guided 模式下，写入或命令需要用户确认。executeCall 创建 Approval，把 Turn 状态改为 <code>waitingApproval</code>，发出 <code>approval.requested</code>，随后等待一个 Promise。</p>
+<p>Renderer 显示审批卡。用户允许时，Main 调用 <code>resolveApproval</code>，Promise 返回 allow=true，Turn 恢复 running 并继续执行。用户拒绝时返回 approval_denied Tool Result，模型在下一轮可以选择其他方案。</p>
+<p>等待过程没有定时轮询，也不会占用新的模型请求。用户取消 Turn 时，cancelTurn 会解决待处理 Approval，并给出“用户取消了任务”的原因。</p>
+
+<h2>ask_user 如何等待用户补充信息</h2>
+<p>模型缺少关键选择时可以调用 <code>ask_user</code>。Core 发出结构化问题，将 Turn 状态设为 <code>waitingInput</code>，等待 Renderer 回传答案。用户输入经过 Main 的 <code>input:resolve</code> 交给 Core，工具结果随后加入上下文。</p>
+<p>ask_user 用于会明显改变实现方向的信息。例如“空标题应显示行内错误还是通知提示”。模型已经能够从代码确定答案时，应直接采用现有模式，减少不必要打断。</p>
+
+<h2>compact_context 为什么延后执行</h2>
+<p>模型调用 <code>compact_context</code> 时，executeCall 返回“将在当前工具组完成后压缩”。Core 先执行并保存这一轮所有 Tool Results，然后才调用 <code>compactMessages(force=true)</code>。</p>
+<p>延后执行保护当前 assistant/tool 协议组。如果在同一组的第一个工具之后立即压缩，后面的 Tool Result 尚未写入，消息组可能只剩一部分。等工具组完整后压缩，下一轮请求始终合法。</p>
+
+<h2>只读探索怎样收敛</h2>
+<p>搜索、列目录、读取文件和查看 Diff 属于探索调用。每轮结束时，Core判断本轮是否有探索动作和实际行动。连续只读成功会增加 <code>consecutiveReadOnlyIterations</code>；出现修改、命令或其他行动时重置为 0。</p>
+<p>达到四轮时 system 消息提醒模型使用已有证据。达到七轮后，新的探索调用不进入 Runtime，Core 强制返回 exploration_budget_exhausted。该错误用于行为控制，不增加 noProgress。模型应当实施最小修改、运行验证、提出唯一阻塞问题或结束。</p>
+
+<h2>无进展怎样判定</h2>
+<p>每个工具成功时 <code>hadSuccess=true</code> 且 noProgress 清零。普通工具失败会使 noProgress 增加。当前实现统计连续失败次数，没有比较工具名称和参数是否完全相同。达到三次时抛出“连续三次工具调用失败，判定为无进展”。</p>
+<p>这个边界防止模型在路径错误、权限拒绝或命令失败后持续消耗。exploration_budget_exhausted 属于主动约束，不计入普通失败。审批拒绝会作为失败 Observation 返回，连续多次仍然可能触发无进展。</p>
+
+<h2>finish 工具怎样结束任务</h2>
+<p>模型完成修改和验证后调用 <code>finish</code>，参数包含 summary 和 verification。executeCall 正常校验并执行 finish，然后检查 ContextLedger。</p>
+<p>Ledger 记录过文件变化但当前 revision 没有成功验证时，finish 仍然成功，同时返回 verificationStatus=warning 和“未验证或验证已过期”提示。当前 revision 有成功验证时返回 verified。</p>
+<p>finish 的 Tool Result 写回消息历史，<code>finished=true</code>。本轮如果还有其他 Tool Call，Core 仍会按顺序保存完整结果，然后退出循环。普通无工具最终文本也能够完成 Turn，finish 提供了更结构化的总结与验证状态。</p>
+
+<h2>子 Agent 怎样进入主循环</h2>
+<p>模型调用 <code>delegate</code>，选择 explore 或 review。Core 创建独立 SubagentState 和独立消息上下文，最多并发两个，每个最多六轮。子 Agent 只允许 list_files、read_file、search_text 和 git_diff，不能写文件、运行命令或再次 delegate。</p>
+<p>子 Agent 的结果以 Tool Result 返回主 Agent，包括 summary 和 evidence。主 Agent 继续依据这些证据决定修改。父 Turn 取消时，所有对应 child controller 同时 abort。</p>
+
+<div class="diagram">
+  <div class="diagram-title">主 Agent 与只读子 Agent</div>
+  <div class="layer-stack">
+    <div class="layer"><b>主 Agent</b>维护 Turn、审批、写入、命令、ChangeSet、验证和最终完成</div>
+    <div class="layer"><b>Explore 子 Agent</b>独立上下文；定位入口、依赖和测试；仅调用只读文件工具</div>
+    <div class="layer"><b>Review 子 Agent</b>独立上下文；检查当前 Diff、测试缺口和风险；仅调用只读工具</div>
+    <div class="layer"><b>结果汇合</b>子 Agent summary 和 evidence 作为 delegate Tool Result 回到主循环</div>
+  </div>
+</div>
+
+<h2>用户取消如何穿过整条链路</h2>
+<p>Renderer 调用 <code>turn.cancel</code>，Main 转给 <code>cancelTurn</code>。Core 调用当前 Turn 的 controller.abort，并取消所有 parentTurnId 相同的子 Agent。待审批 Promise 返回拒绝，待输入 Promise 返回取消文本。</p>
+<p>模型 fetch、工具 Runtime 和命令子进程都收到同一个 signal。runTurn 在迭代开头、模型流结束和每个工具完成后检查 signal。检测到取消会抛出 cancelled，Turn 进入 <code>cancelled</code>，发出终态事件并清理资源。</p>
+
+<h2>循环达到 24 轮时发生什么</h2>
+<p>for 循环最多进入 24 次。第 22 轮已经发送收敛提醒。如果第 24 轮结束后 finished 仍为 false，Core 抛出 <code>iteration_limit</code>。catch 将 Turn 状态设为 <code>limitReached</code>。</p>
+<p>迭代上限用于控制最坏成本和失控风险。任务停在 limitReached 时，用户仍能查看已经完成的 ChangeSet、测试与 Trace，也可以在新 Turn 中缩小目标继续。</p>
+
+<h2>成功、失败和取消如何收尾</h2>
+<p>正常退出循环后，Turn 状态设为 completed，记录 completedAt，并运行 turnEnd Hook。Core 先从 activeSessionTurns 释放 Session，再发出 <code>turn.completed</code>。Renderer 收到完成事件后可以立即开始下一个 Turn。</p>
+<p>catch 根据错误设置 cancelled、limitReached 或 failed。失败会归一化 code、message 和 retryable，写入 Ledger 并发出 <code>turn.failed</code>。取消发出 <code>turn.cancelled</code>。所有终态都运行 turnEnd Hook。</p>
+<p>finally 负责最后清理：删除 AbortController、活动 Session 占用、Turn 模式、Skill、语言设置和 callId 结果缓存；仍未处理的审批会以“Turn 已结束”被解决。这一步保证异常路径也不会留下永久 loading 或等待对象。</p>
+
+<div class="diagram">
+  <div class="diagram-title">主循环的主要终态分支</div>
+  <div class="flow-row">
+    <div class="flow-node primary">running</div><div class="flow-arrow">→</div>
+    <div class="flow-node safe">completed<br/>文本或 finish</div><div class="flow-arrow">／</div>
+    <div class="flow-node">cancelled<br/>AbortSignal</div><div class="flow-arrow">／</div>
+    <div class="flow-node">failed<br/>模型/工具/系统错误</div><div class="flow-arrow">／</div>
+    <div class="flow-node">limitReached<br/>24 轮</div>
+  </div>
+</div>
+
+<h2>把空标题修复任务完整放进循环</h2>
+<p>iteration 1：ContextBuilder 放入用户目标，模型调用 search_text。搜索成功，Observation 返回 TodoForm.tsx 与测试路径。</p>
+<p>iteration 2：模型调用 read_files。Core 保存 assistant Tool Calls，工具读取两个文件，建立 FileEvidence，Tool Results 返回代码。</p>
+<p>iteration 3：模型调用 set_plan 和 apply_patch。set_plan 更新 Ledger 与 UI。apply_patch 在 Guided 模式等待审批；用户允许后修改代码，创建 ChangeSet、Checkpoint，revision 变为 1。</p>
+<p>iteration 4：模型调用 run_command。测试失败，Tool Result 保存 exitCode 和诊断，Ledger 添加 revision 1 的失败 ValidationRecord。</p>
+<p>iteration 5：模型根据诊断读取类型并应用更小补丁。revision 变为 2，旧 Evidence 失效。</p>
+<p>iteration 6：模型再次运行测试。测试通过，Ledger 添加 revision 2 的成功 ValidationRecord。</p>
+<p>iteration 7：模型调用 review_changes，Review 子 Agent 只读检查 Diff 并返回结果。</p>
+<p>iteration 8：模型调用 finish。Core 确认当前 revision 有成功验证，设置 finished=true，运行 turnEnd Hook，释放 Session 并发布 completed。</p>
+
+<h2>用概念代码记住主干</h2>
+<pre class="code-block"><span class="code-label">简化主循环</span>async function runTurn(turn) {
+  const controller = new AbortController();
+
+  for (let iteration = 1; iteration &lt;= 24; iteration++) {
+    checkCancelled(controller.signal);
+    injectFollowUps();
+
+    const context = await buildContext();
+    const modelResult = await streamModel(context, controller.signal);
+    await saveAssistantMessage(modelResult);
+
+    if (modelResult.wasTruncated) {
+      await compactAndRetry();
+      continue;
+    }
+
+    if (modelResult.toolCalls.length === 0) {
+      return completeTurn();
+    }
+
+    for (const call of modelResult.toolCalls) {
+      const result = await executeCall(call, controller.signal);
+      await saveToolObservation(call.id, result);
+      if (call.name === "finish" && result.ok) return completeTurn();
+    }
+  }
+
+  return limitReached();
+}</pre>
+<p>真实实现增加了审批、Hook、子 Agent、上下文压缩、收敛控制和错误归一化。主干始终保持稳定：构建事实、调用模型、执行动作、反馈结果、判断终态。</p>
+
+<h2>最后记住六个控制点</h2>
+<p><strong>Session 单写者</strong>防止两个主 Turn 并行修改。<strong>AbortSignal</strong>负责真实取消。<strong>消息协议组</strong>保证 Tool Call 与结果配对。<strong>执行策略</strong>限制模型副作用。<strong>收敛计数</strong>限制重复探索和连续失败。<strong>明确终态</strong>让 Renderer 与后台保持一致。</p>
+
+<div class="defense"><h2>怎样讲清楚</h2><p>“一次 Turn 最多包含 24 次 iteration。每轮先注入 Follow-up 和约束提醒，再用 ContextBuilder构建当前事实，流式调用模型。模型返回 Tool Calls 时，Core 先保存完整 assistant 请求，然后按顺序经过 callId 去重、Zod、模式、审批和 Hook 执行工具，把 Observation 写回 Session。测试失败会进入下一轮修复，finish 或无工具最终文本完成任务。取消、连续失败、输出截断和迭代上限都有独立分支，finally 统一清理资源。”</p></div>
