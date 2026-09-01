@@ -6,17 +6,11 @@
 <p>Agent 每推进一步，都可能同时涉及模型流、工具校验、审批、Session 事件、文件恢复和界面更新。如果这些代码都放在 AgentCore 中，一个工具超时的改动可能影响 Turn 终态，一个分支恢复的改动也可能碰到模型循环。文件变大只是表面问题，真正的问题是多个变化原因混在同一处。</p>
 <p>拆分遵循一个简单原则：每个组件只回答一个稳定问题。SessionLifecycle 回答“长期会话如何创建和恢复”；TurnRunner 回答“一次用户任务如何推进”；ToolCallExecutor 回答“一个工具请求如何安全落地”；AgentCore 只回答“外部应该调用哪个入口，以及这些组件如何连接”。</p>
 
-<h2>先看整体依赖方向</h2>
-<pre class="code-block"><span class="code-label">从外到内</span>Desktop Main
-  → AgentCore                  对外门面
-      → SessionLifecycle       长期会话
-      → TurnRunner             一轮任务
-          → Context            模型输入
-          → ModelProvider      模型流
-          → ToolCallExecutor   工具执行
-              → Tools          本地能力
-              → ChangeManager  修改与恢复
-      → SessionStore           持久化事实</pre>
+<h2>先看项目框架和依赖方向</h2>
+<figure class="visual">
+  <img data-doc-asset="diagrams/project-framework.svg" alt="SeeCoder 从桌面应用到 AgentCore、运行组件和基础包的项目框架" />
+  <figcaption>从上向下依次是桌面入口、AgentCore 门面、运行组件和基础包。箭头只表示源码依赖方向。</figcaption>
+</figure>
 <p>依赖方向很重要。界面只知道 AgentCore 的公共能力，不直接拼接上下文，也不直接实例化工具执行器。TurnRunner 可以使用上下文和工具执行器，但工具执行器不反过来控制 Turn。底层结果通过统一回调或事件回到 AgentCore，再由 AgentCore 保存并广播。</p>
 
 <h2>AgentCore：门面和依赖装配层</h2>
@@ -105,7 +99,8 @@
 <p>上下文压缩的目标是减少一次模型请求的输入，不是抹掉审计记录。ContextBuilder 从完整事件、任务账本、文件证据和记忆索引生成一个模型视图；即使旧对话被摘要，原始事件仍保留。压缩事件只记录摘要和有效下界，后续分支不得回到缺少有效摘要的位置。</p>
 <p>这种分离让两个需求同时成立：系统可以长期保存真实过程，模型又不会因为历史无限增长而超过输入窗口。若把摘要直接覆盖历史，就无法可靠恢复工具配对、分支位置和变更证据。</p>
 
-<h2>目录结构与阅读入口</h2>
+<h2>项目目录与源码入口</h2>
+<p>上图负责建立整体认识，下面的源码地图用于实际定位文件。先从共同协议理解数据，再进入 AgentCore 查看装配关系，最后按问题选择运行组件或基础包。</p>
 <div class="source-map">
 <div class="source-row"><code>packages/protocol</code><span>先看共同类型，理解其它模块传递什么数据。</span></div>
 <div class="source-row"><code>packages/agent-core</code><span><code>index.ts</code> 是门面；<code>runtime/</code> 放 Session、Turn、工具、修改和干预组件。</span></div>

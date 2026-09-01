@@ -22,7 +22,7 @@
 <h2>先区分 Turn 和 iteration</h2>
 <figure class="visual"><img data-doc-asset="diagrams/turn-state.svg" alt="Turn 从 queued 进入 running，可等待审批或输入，最后进入四种终态之一" /><figcaption>Turn 只有一个运行入口；完成、失败、取消和达到限制都是明确终态。</figcaption></figure>
 <p><strong>Turn</strong> 是一次用户请求从发送到结束的完整执行。例如用户发送“修复空标题并补测试”，对应一个 Turn。它可能持续几十秒，并包含多次模型请求和工具执行。</p>
-<p><strong>iteration</strong> 是 Turn 内的一轮模型决策。第一轮模型搜索代码，第二轮读取文件，第三轮修改，第四轮运行测试。每次 iteration 都会重新构建上下文并调用模型。当前主 Agent 最多运行 24 次 iteration。</p>
+<p><strong>iteration</strong> 是 Turn 内的一轮模型决策。第一轮模型搜索代码，第二轮读取文件，第三轮修改，第四轮运行测试。每次 iteration 都会重新构建上下文并调用模型。当前主 Agent 最多运行 50 次 iteration。</p>
 <p>一个 Session 可以包含多个 Turn。用户在任务完成后继续追问，会创建新的 Turn，同时沿用 Session 的历史与 ContextLedger。这个层次让长期对话、单次任务和单轮模型调用各自具有清晰生命周期。</p>
 
 <h2>主循环从 startTurn 开始</h2>
@@ -48,17 +48,17 @@
     <tr><td>noProgress</td><td>连续失败工具调用数量</td><td>达到 3 时停止无效循环</td></tr>
     <tr><td>consecutiveReadOnlyIterations</td><td>连续只读探索轮数</td><td>提醒并限制重复读取</td></tr>
     <tr><td>explorationReminderSent</td><td>是否已经发送探索提醒</td><td>避免每轮重复加入相同提示</td></tr>
-    <tr><td>convergenceReminderSent</td><td>是否已经发送收敛提醒</td><td>在最后三轮提醒模型结束</td></tr>
+    <tr><td>convergenceReminderSent</td><td>是否已经发送收敛提醒</td><td>在最后五轮提醒模型结束</td></tr>
     <tr><td>truncatedResponses</td><td>连续输出截断次数</td><td>三次后以 output_limit 失败</td></tr>
     <tr><td>finished</td><td>是否已经满足完成条件</td><td>控制 for 循环退出</td></tr>
   </tbody>
 </table>
 
 <h2>一轮 iteration 从哪里开始</h2>
-<p>for 循环从 1 运行到 24。每轮开头先检查 AbortSignal。已经取消时立即抛出 <code>cancelled</code>，后续不再调用模型。</p>
+<p>for 循环从 1 运行到 50。每轮开头先检查 AbortSignal。已经取消时立即抛出 <code>cancelled</code>，后续不再调用模型。</p>
 <p>TurnRunner 将 iteration 写入 Turn，然后取得当前 Session 消息。运行期间收到的 Steering 保存在队列中，此时才按顺序追加为 <code>[用户动态调整]</code> 消息。Steering 只在模型协议组边界注入，因此不会改写正在发送的请求，也不会拆开正在执行的工具组。</p>
 <p>Follow-up 不进入当前循环。当前 Turn 正常完成后，TurnRunner 才按到达顺序消费 Follow-up，把内容合并成新的用户请求，并通过 <code>start()</code> 建立下一个 Turn。这样追加任务拥有独立状态、预算和终态。</p>
-<p>连续只读探索达到四轮时，TurnRunner 加入一次执行约束提醒，要求模型使用已有证据实施最小修复，或者说明唯一缺失信息。iteration 达到 22 时加入预算提醒：只剩三轮，应停止扩大范围，完成必要验证并调用 finish。</p>
+<p>连续只读探索达到四轮时，TurnRunner 加入一次执行约束提醒，要求模型使用已有证据实施最小修复，或者说明唯一缺失信息。iteration 达到 46 时加入预算提醒：只剩五轮，应停止扩大范围，完成必要验证并调用 finish。</p>
 
 <div class="diagram">
   <div class="diagram-title">一次 iteration 的内部顺序</div>
@@ -74,7 +74,7 @@
 </div>
 
 <h2>系统提示怎样约束这一轮</h2>
-<p>每次请求都重新生成 system prompt。它包含 Workspace 路径、用户语言、ExecutionMode、Windows PowerShell 规则、24 轮上限、工具使用原则和项目 AGENTS.md。激活的 Skill 也会加入，但优先级低于固定安全规则。</p>
+<p>每次请求都重新生成 system prompt。它包含 Workspace 路径、用户语言、ExecutionMode、Windows PowerShell 规则、50 轮上限、工具使用原则和项目 AGENTS.md。激活的 Skill 也会加入，但优先级低于固定安全规则。</p>
 <p>中文用户任务会设置 <code>zh-CN</code>，提示要求所有用户可见行动说明、计划、问题、错误解释和最终总结使用简体中文。代码、命令、路径和专有名词保留原文。这样模型不会因为项目文件使用英文而突然切换整段回答语言。</p>
 <p>Plan 模式提示只能读取、搜索、查看 Diff、更新计划、提问和委派只读子 Agent。Guided 提示写入、命令和 Git 副作用需要审批。Auto 提示只允许自动执行工作区内低风险动作，网络、安装、删除、提交和推送仍需审批。真正的权限检查还会在 <code>ToolCallExecutor.execute()</code> 中执行。</p>
 
@@ -171,8 +171,8 @@ tool { toolCallId: callB, content: resultB }</pre>
 <p>Renderer 调用 <code>turn.cancel</code>，Main 转给 <code>cancelTurn</code>。Core 调用当前 Turn 的 controller.abort，并取消所有 parentTurnId 相同的子 Agent。待审批 Promise 返回拒绝，待输入 Promise 返回取消文本。</p>
 <p>模型 fetch、工具 Runtime 和命令子进程都收到同一个 signal。<code>run()</code> 在迭代开头、模型流结束和每个工具完成后检查 signal。检测到取消会抛出 cancelled，Turn 进入 <code>cancelled</code>，发出终态事件并清理资源。</p>
 
-<h2>循环达到 24 轮时发生什么</h2>
-<p>for 循环最多进入 24 次。第 22 轮已经发送收敛提醒。如果第 24 轮结束后 finished 仍为 false，Core 抛出 <code>iteration_limit</code>。catch 将 Turn 状态设为 <code>limitReached</code>。</p>
+<h2>循环达到 50 轮时发生什么</h2>
+<p>for 循环最多进入 50 次。第 46 轮开始发送收敛提醒。如果第 50 轮结束后 finished 仍为 false，Core 抛出 <code>iteration_limit</code>。catch 将 Turn 状态设为 <code>limitReached</code>。</p>
 <p>迭代上限用于控制最坏成本和失控风险。任务停在 limitReached 时，用户仍能查看已经完成的 ChangeSet、测试与 Trace，也可以在新 Turn 中缩小目标继续。</p>
 
 <h2>成功、失败和取消如何收尾</h2>
@@ -187,7 +187,7 @@ tool { toolCallId: callB, content: resultB }</pre>
     <div class="flow-node safe">completed<br/>文本或 finish</div><div class="flow-arrow">／</div>
     <div class="flow-node">cancelled<br/>AbortSignal</div><div class="flow-arrow">／</div>
     <div class="flow-node">failed<br/>模型/工具/系统错误</div><div class="flow-arrow">／</div>
-    <div class="flow-node">limitReached<br/>24 轮</div>
+    <div class="flow-node">limitReached<br/>50 轮</div>
   </div>
 </div>
 
@@ -205,7 +205,7 @@ tool { toolCallId: callB, content: resultB }</pre>
 <pre class="code-block"><span class="code-label">简化主循环</span>async function run(turn) {
   const controller = new AbortController();
 
-  for (let iteration = 1; iteration &lt;= 24; iteration++) {
+  for (let iteration = 1; iteration &lt;= 50; iteration++) {
     checkCancelled(controller.signal);
     consumeSteering();
 
@@ -236,4 +236,4 @@ tool { toolCallId: callB, content: resultB }</pre>
 <h2>最后记住六个控制点</h2>
 <p><strong>Session 单写者</strong>防止两个主 Turn 并行修改。<strong>AbortSignal</strong>负责真实取消。<strong>消息协议组</strong>保证 Tool Call 与结果配对。<strong>执行策略</strong>限制模型副作用。<strong>收敛计数</strong>限制重复探索和连续失败。<strong>明确终态</strong>让 Renderer 与后台保持一致。</p>
 
-<div class="callout"><span class="callout-title">本章结论</span><p>一次 Turn 最多包含 24 次 iteration。每轮先消费 Steering 并构建上下文，再流式调用模型。工具请求由 ToolCallExecutor 成批调度，只有全部并行安全时才并行，结果仍按原顺序写回。当前 Turn 完成后，Follow-up 才启动新的 Turn。取消、连续失败、输出截断和迭代上限都有独立分支，finally 统一清理资源。</p></div>
+<div class="callout"><span class="callout-title">本章结论</span><p>一次 Turn 最多包含 50 次 iteration。每轮先消费 Steering 并构建上下文，再流式调用模型。工具请求由 ToolCallExecutor 成批调度，只有全部并行安全时才并行，结果仍按原顺序写回。当前 Turn 完成后，Follow-up 才启动新的 Turn。取消、连续失败、输出截断和迭代上限都有独立分支，finally 统一清理资源。</p></div>

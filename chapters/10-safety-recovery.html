@@ -20,7 +20,7 @@
 <h2>先区分 Session、Turn 和 iteration</h2>
 <p><strong>Session</strong> 是用户在左侧看到的一条长期会话，保存目标、消息、变更和历史事件。用户完成一个任务后可以继续追问，所以 Session 本身不会在一次回答后结束。</p>
 <p><strong>Turn</strong> 从一条用户请求开始，到本次任务完成、失败或取消为止。一个 Session 可以包含多个 Turn，同一 Session 同一时刻只允许一个活动 Turn。用户在运行中追加的 Follow-up 仍属于当前 Turn，并在下一次模型调用前注入。</p>
-<p><strong>iteration</strong> 是 Turn 内部的一次模型决策轮。一次 iteration 可以返回文本、一个 Tool Call 或多个 Tool Calls。工具结果写回后，下一次模型请求进入新的 iteration。主 Agent 每个 Turn 最多 24 次 iteration。</p>
+<p><strong>iteration</strong> 是 Turn 内部的一次模型决策轮。一次 iteration 可以返回文本、一个 Tool Call 或多个 Tool Calls。工具结果写回后，下一次模型请求进入新的 iteration。主 Agent 每个 Turn 最多 50 次 iteration。</p>
 
 <pre class="code-block"><span class="code-label">三层关系</span>Session：修复待办项目
 ├─ Turn 1：空标题不应提交
@@ -42,7 +42,7 @@
     <tr><td>completed</td><td>Core 接受了正常结束</td><td>最终文本或 finish 成功</td></tr>
     <tr><td>failed</td><td>错误使 Turn 无法可靠继续</td><td>模型错误、无进展或其他异常</td></tr>
     <tr><td>cancelled</td><td>取消信号已终止本次执行</td><td>用户停止、切换工作区或关闭执行环境</td></tr>
-    <tr><td>limitReached</td><td>达到主循环硬上限</td><td>24 次 iteration 后仍未结束</td></tr>
+    <tr><td>limitReached</td><td>达到主循环硬上限</td><td>50 次 iteration 后仍未结束</td></tr>
   </tbody>
 </table>
 <p>queued 通常持续时间很短。<code>TurnRunner.start()</code> 发出的 <code>turn.started</code> 已向 UI 提供 running 状态，后台 <code>run()</code> 随即把内存 Turn 设为 running。Renderer 还维护“调用模型”“执行工具”“等待确认”等更细的 RunPhase，这些只服务界面提示，不替代持久化 TurnStatus。</p>
@@ -62,7 +62,7 @@
 <h2>一个 iteration 怎样走到停止判断</h2>
 <p>循环开头先检查 AbortSignal，再设置 iteration 编号。TurnRunner 消费排队的 Steering，必要时加入收敛提醒，然后构建模型请求。模型流结束后，它保存完整 assistant 文本与 Tool Calls。Follow-up 要等当前 Turn 正常完成后才建立新 Turn。</p>
 <p>接着分三种情况。纯文本达到输出上限时进入截断恢复；没有 Tool Call 时接受自然结束；存在 Tool Calls 时逐个执行，并把结构化结果写回上下文。工具组完成后再检查 finish、失败次数和迭代预算。</p>
-<pre class="code-block"><span class="code-label">主循环的停止骨架</span>for iteration in 1..24:
+<pre class="code-block"><span class="code-label">主循环的停止骨架</span>for iteration in 1..50:
   if cancelled: throw cancelled
   response = callModel(context)
   saveAssistantMessage(response)
@@ -83,7 +83,7 @@
   if failuresWithoutSuccess &gt;= 3:
     fail("no progress")
 
-if not finished after iteration 24:
+if not finished after iteration 50:
   fail("iteration_limit")</pre>
 
 <h2>正常文本为什么可以结束 Turn</h2>
@@ -111,9 +111,9 @@ if not finished after iteration 24:
   </div>
 </div>
 
-<h2>24 次迭代上限怎样工作</h2>
-<p>主循环固定为 1 到 24。第 22 次开始前，Core 注入一次迭代预算提醒：只剩最后三轮，停止扩大范围，使用已有证据完成必要验证并立即 finish。提醒只发送一次。</p>
-<p>第 24 次结束后 finished 仍为 false，Core 抛出 <code>AgentRunError('iteration_limit')</code>。Turn.status 设为 <code>limitReached</code>，对外发出的终态事件仍是 <code>turn.failed</code>，其中 error.code 为 iteration_limit。这样 UI 可以使用统一失败入口，同时从 Turn 状态识别预算耗尽。</p>
+<h2>50 次迭代上限怎样工作</h2>
+<p>主循环固定为 1 到 50。第 46 次开始前，Core 注入一次迭代预算提醒：只剩最后五轮，停止扩大范围，使用已有证据完成必要验证并立即 finish。提醒只发送一次。</p>
+<p>第 50 次结束后 finished 仍为 false，Core 抛出 <code>AgentRunError('iteration_limit')</code>。Turn.status 设为 <code>limitReached</code>，对外发出的终态事件仍是 <code>turn.failed</code>，其中 error.code 为 iteration_limit。这样 UI 可以使用统一失败入口，同时从 Turn 状态识别预算耗尽。</p>
 <p>子 Agent 有独立上限，每个最多 6 次 iteration。子 Agent达到循环末尾后按当前已收集 summary 完成；模型或执行异常则返回 subagent_failed 给主 Agent。子 Agent失败通常是一个 Tool Result，主 Turn仍可选择其他方案。</p>
 
 <h2>SeeCoder 怎样抑制无价值探索</h2>
@@ -257,7 +257,7 @@ if not finished after iteration 24:
 → 有 Tool Call 则执行并把局部错误反馈给模型
 → finish 成功后结束，并检查当前 revision 的验证
 → 连续三次工具失败判定无进展
-→ 24 轮仍未收敛标记 limitReached
+→ 50 轮仍未收敛标记 limitReached
 → 任何终态都运行收尾、释放 Session 占用并清理资源</pre>
 <figure class="visual"><img data-doc-asset="diagrams/recovery-flow.svg" alt="单次工具失败留在循环内恢复，无法继续和用户取消进入统一收尾" /><figcaption>先判断故障影响范围，再由 TurnRunner 写入唯一终态并统一清理。</figcaption></figure>
 <p>一句话概括：工具错误尽量留在循环内恢复，模型与系统错误由 TurnRunner 结束 Turn，取消通过同一个信号到达全部后台工作，所有终态都写入事件并释放资源。</p>

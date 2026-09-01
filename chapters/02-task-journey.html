@@ -141,7 +141,7 @@
 <h2>第十三步：Core 判断任务能否结束</h2>
 <p>测试通过后，模型可以调用 <code>finish</code>，提交修改摘要和验证说明；也可以返回一段没有 Tool Call 的最终文本。Core 接到 finish 时检查 Ledger：当前 revision 是 2，成功验证也属于 revision 2，因此验证有效。Turn 状态进入 <code>completed</code>。</p>
 <p>如果模型修改文件后没有重新测试，Core 会发现最新成功验证属于旧 revision。任务仍可完成，因为有些任务只需要分析或文档修改，但最终结果会明确显示“当前修改未验证”或“验证已过期”。用户可以据此决定是否继续。</p>
-<p>Core 还有其他终止分支。用户取消进入 <code>cancelled</code>；达到 24 次模型迭代进入 <code>limitReached</code>；不可恢复的认证或协议错误进入 <code>failed</code>；连续三次工具失败会判定缺乏进展并停止。每条路径都会产生对应终态事件。</p>
+<p>Core 还有其他终止分支。用户取消进入 <code>cancelled</code>；达到 50 次模型迭代进入 <code>limitReached</code>；不可恢复的认证或协议错误进入 <code>failed</code>；连续三次工具失败会判定缺乏进展并停止。每条路径都会产生对应终态事件。</p>
 
 <h2>第十四步：界面如何得到最终结果</h2>
 <p>执行过程中，Renderer 一直订阅 Main 推送的 AgentEvent。它依据事件类型更新不同区域：<code>message.delta</code> 追加模型文字，<code>plan.updated</code> 更新计划卡，<code>tool.output</code> 写入 Terminal，<code>changes.created</code> 更新 Diff，<code>turn.completed</code> 显示完成摘要。</p>
@@ -159,20 +159,12 @@
 <p>用户点击停止时，Renderer 调用 <code>turn.cancel</code>。Core 触发 AbortController。正在请求 DeepSeek 时，fetch 收到取消；正在运行命令时，Runtime 终止进程树；正在等待审批或输入时，等待 Promise 被结束；子 Agent 也收到父 signal。最后 Core 清理 <code>activeSessionTurns</code> 并发送 <code>turn.cancelled</code>，界面停止加载。</p>
 
 <h2>把完整调用链连起来</h2>
-<div class="diagram">
-  <div class="diagram-title">从用户输入到任务完成</div>
-  <div class="layer-stack">
-    <div class="layer"><b>1 · 用户与 Renderer</b>选择 Workspace 和 Session，输入任务，点击发送</div>
-    <div class="layer"><b>2 · Preload</b>把 turn.start 转换成受控 IPC；不暴露 Node.js 权限</div>
-    <div class="layer"><b>3 · Electron Main</b>校验参数、读取配置，把任务交给 Agent Core</div>
-    <div class="layer"><b>4 · TurnRunner</b>创建 Turn、建立取消信号、构建上下文、启动主循环</div>
-    <div class="layer"><b>5 · ModelProvider</b>请求 DeepSeek，解析 SSE 文本和 Tool Call</div>
-    <div class="layer"><b>6 · Tool Runtime</b>校验路径与权限，读取代码、修改文件、运行测试</div>
-    <div class="layer"><b>7 · Agent Core</b>保存 Observation，按真实结果继续、修复或终止</div>
-    <div class="layer"><b>8 · Storage 与 Main</b>保存事件、Ledger、ChangeSet 和 Checkpoint，向界面推送事件</div>
-    <div class="layer"><b>9 · Renderer</b>显示最终回答、Diff、验证证据和执行轨迹</div>
-  </div>
-</div>
+<p>完整流程不是一条单向直线，而是三条同时工作的通道：请求向本地能力深入，工具结果回到模型，公开事件先落盘再更新界面。</p>
+<figure class="visual">
+  <img data-doc-asset="diagrams/agent-data-flow.svg" alt="SeeCoder Agent 数据从用户请求进入主循环，工具结果返回下一轮，运行事件持久化后更新界面" />
+  <figcaption>紫色表示请求与控制，绿色表示工具结果回流，蓝色表示事件持久化与界面投影。箭头表示数据方向。</figcaption>
+</figure>
+<p>最关键的闭环是 <code>ModelRequest → Tool Call → ToolResult → Observation → 下一轮 ModelRequest</code>。SessionStore 保存已经发生的完整公开事实，Renderer 再根据同一批事件显示回答、工具卡片、Diff 和终态。只有用于打字效果的 <code>message.delta</code> 不写入 JSONL；流结束后的完整消息才持久化。</p>
 
 <h2>最后记住四个职责</h2>
 <p><strong>Renderer 负责交互。</strong>它收集用户操作并显示后台事件。<strong>Preload 负责限制通信。</strong>它只开放经过设计的 SeeCoder API。<strong>Electron Main 负责可信本地能力。</strong>它管理配置、文件、命令、存储和 Agent Core。<strong>Agent Core 负责完成任务。</strong>它让模型与工具形成循环，并处理状态、上下文、审批、取消、终止和错误。</p>

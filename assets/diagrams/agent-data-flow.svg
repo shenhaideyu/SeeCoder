@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder Agent 数据流转</title>
+  <desc id="desc">用户请求经桌面边界进入 AgentCore。TurnRunner 构建上下文并调用模型，工具结果转换成 Observation 后进入下一轮。运行事件先写入 SessionStore，再推送给界面。</desc>
+  <style>
+    .bg{fill:#fbf9fd}.lane{fill:#fff;stroke:#e7e2ea;stroke-width:2}.request{fill:#f1e8fb;stroke:#8247d6;stroke-width:2}.result{fill:#eefaf6;stroke:#31a77c;stroke-width:2}.event{fill:#eef6ff;stroke:#5d94d6;stroke-width:2}.neutral{fill:#fff;stroke:#d8cfe0;stroke-width:2}
+    .title{font:700 27px 'Microsoft YaHei',sans-serif;fill:#252127}.subtitle{font:15px 'Microsoft YaHei',sans-serif;fill:#746d79}.lane-title{font:700 16px 'Microsoft YaHei',sans-serif;fill:#252127}.name{font:700 18px 'Microsoft YaHei',sans-serif;fill:#252127}.small{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.tiny{font:13px 'Microsoft YaHei',sans-serif;fill:#746d79}.label{font:700 13px 'Microsoft YaHei',sans-serif;fill:#4d0099}.result-text{fill:#117457}.event-text{fill:#356fae}
+    .request-line{stroke:#8247d6;stroke-width:4;fill:none}.result-line{stroke:#239a73;stroke-width:4;fill:none}.event-line{stroke:#5d94d6;stroke-width:3;fill:none}.event-dash{stroke:#5d94d6;stroke-width:2;stroke-dasharray:7 7;fill:none}
+  </style>
+  <rect class="bg" width="1200" height="800" rx="28"/>
+  <text class="title" x="50" y="48">Agent 数据怎样从请求变成可验证结果</text>
+  <text class="subtitle" x="50" y="77">紫色是请求与控制，绿色是工具结果回流，蓝色是持久化事件。</text>
+
+  <rect class="lane" x="34" y="102" width="1132" height="148" rx="20"/>
+  <text class="lane-title" x="54" y="130">① 进入可信本地边界</text>
+  <rect class="neutral" x="50" y="147" width="190" height="78" rx="14"/>
+  <text class="name" x="145" y="180" text-anchor="middle">Renderer</text><text class="small" x="145" y="205" text-anchor="middle">用户目标与操作</text>
+  <rect class="request" x="300" y="147" width="170" height="78" rx="14"/>
+  <text class="name" x="385" y="180" text-anchor="middle">Preload</text><text class="small" x="385" y="205" text-anchor="middle">类型化 IPC</text>
+  <rect class="neutral" x="530" y="147" width="210" height="78" rx="14"/>
+  <text class="name" x="635" y="180" text-anchor="middle">Electron Main</text><text class="small" x="635" y="205" text-anchor="middle">校验并调用核心</text>
+  <rect class="request" x="800" y="147" width="330" height="78" rx="14"/>
+  <text class="name" x="965" y="180" text-anchor="middle">AgentCore</text><text class="small" x="965" y="205" text-anchor="middle">统一入口与依赖装配</text>
+  <path class="request-line" d="M240 186H286"/><polygon fill="#8247d6" points="286,178 300,186 286,194"/>
+  <path class="request-line" d="M470 186H516"/><polygon fill="#8247d6" points="516,178 530,186 516,194"/>
+  <path class="request-line" d="M740 186H786"/><polygon fill="#8247d6" points="786,178 800,186 786,194"/>
+
+  <rect class="lane" x="34" y="268" width="1132" height="312" rx="20"/>
+  <text class="lane-title" x="54" y="298">② Agent 主循环：右侧提出动作，左侧执行，结果再回到右侧</text>
+  <rect class="result" x="50" y="326" width="180" height="92" rx="14"/>
+  <text class="name" x="140" y="360" text-anchor="middle">Local Tools</text><text class="small" x="140" y="385" text-anchor="middle">文件、补丁、命令</text>
+  <rect class="request" x="280" y="326" width="230" height="92" rx="14"/>
+  <text class="name" x="395" y="360" text-anchor="middle">ToolCallExecutor</text><text class="small" x="395" y="385" text-anchor="middle">校验、审批、Hook、锁</text>
+  <rect class="request" x="560" y="326" width="190" height="92" rx="14"/>
+  <text class="name" x="655" y="360" text-anchor="middle">ModelProvider</text><text class="small" x="655" y="385" text-anchor="middle">文本与 Tool Call</text>
+  <rect class="request" x="800" y="326" width="170" height="92" rx="14"/>
+  <text class="name" x="885" y="360" text-anchor="middle">Context</text><text class="small" x="885" y="385" text-anchor="middle">构建 ModelRequest</text>
+  <rect class="request" x="1020" y="326" width="130" height="92" rx="14"/>
+  <text class="name" x="1085" y="360" text-anchor="middle">TurnRunner</text><text class="small" x="1085" y="385" text-anchor="middle">推进状态机</text>
+  <path class="request-line" d="M965 225V264H1085V312"/><polygon fill="#8247d6" points="1077,312 1085,326 1093,312"/>
+  <path class="request-line" d="M1020 372H984"/><polygon fill="#8247d6" points="984,364 970,372 984,380"/>
+  <path class="request-line" d="M800 372H764"/><polygon fill="#8247d6" points="764,364 750,372 764,380"/>
+  <path class="request-line" d="M560 372H524"/><polygon fill="#8247d6" points="524,364 510,372 524,380"/>
+  <path class="request-line" d="M280 372H244"/><polygon fill="#8247d6" points="244,364 230,372 244,380"/>
+
+  <rect class="result" x="50" y="468" width="180" height="82" rx="14"/>
+  <text class="name result-text" x="140" y="501" text-anchor="middle">ToolResult</text><text class="small" x="140" y="526" text-anchor="middle">真实执行结果</text>
+  <rect class="result" x="300" y="468" width="220" height="82" rx="14"/>
+  <text class="name result-text" x="410" y="501" text-anchor="middle">Observation</text><text class="small" x="410" y="526" text-anchor="middle">压缩成模型可用事实</text>
+  <rect class="result" x="600" y="468" width="230" height="82" rx="14"/>
+  <text class="name result-text" x="715" y="501" text-anchor="middle">更新 Context</text><text class="small" x="715" y="526" text-anchor="middle">进入下一轮或结束</text>
+  <path class="result-line" d="M140 418V454"/><polygon fill="#239a73" points="132,454 140,468 148,454"/>
+  <path class="result-line" d="M230 509H286"/><polygon fill="#239a73" points="286,501 300,509 286,517"/>
+  <path class="result-line" d="M520 509H586"/><polygon fill="#239a73" points="586,501 600,509 586,517"/>
+  <path class="result-line" d="M830 509H1142V432"/><polygon fill="#239a73" points="1134,432 1142,418 1150,432"/>
+  <text class="tiny result-text" x="973" y="499">未完成：带着新事实继续</text>
+
+  <rect class="lane" x="34" y="598" width="1132" height="166" rx="20"/>
+  <text class="lane-title" x="54" y="627">③ 事实通道：非流式事件先记录，再更新界面</text>
+  <rect class="event" x="50" y="651" width="205" height="78" rx="14"/>
+  <text class="name event-text" x="152" y="683" text-anchor="middle">完整运行事件</text><text class="small" x="152" y="708" text-anchor="middle">消息、工具、状态、修改</text>
+  <rect class="event" x="310" y="651" width="190" height="78" rx="14"/>
+  <text class="name event-text" x="405" y="683" text-anchor="middle">AgentCore.emit</text><text class="small" x="405" y="708" text-anchor="middle">统一事件出口</text>
+  <rect class="event" x="555" y="651" width="190" height="78" rx="14"/>
+  <text class="name event-text" x="650" y="683" text-anchor="middle">SessionStore</text><text class="small" x="650" y="708" text-anchor="middle">追加 JSONL</text>
+  <rect class="event" x="800" y="651" width="145" height="78" rx="14"/>
+  <text class="name event-text" x="872" y="683" text-anchor="middle">Main IPC</text><text class="small" x="872" y="708" text-anchor="middle">广播事件</text>
+  <rect class="event" x="1000" y="651" width="150" height="78" rx="14"/>
+  <text class="name event-text" x="1075" y="683" text-anchor="middle">Renderer</text><text class="small" x="1075" y="708" text-anchor="middle">投影成界面</text>
+  <path class="event-line" d="M255 690H296"/><polygon fill="#5d94d6" points="296,682 310,690 296,698"/>
+  <path class="event-line" d="M500 690H541"/><polygon fill="#5d94d6" points="541,682 555,690 541,698"/>
+  <path class="event-line" d="M745 690H786"/><polygon fill="#5d94d6" points="786,682 800,690 786,698"/>
+  <path class="event-line" d="M945 690H986"/><polygon fill="#5d94d6" points="986,682 1000,690 986,698"/>
+  <path class="event-dash" d="M395 418V444H270V626"/>
+  <circle cx="270" cy="626" r="5" fill="#5d94d6"/>
+  <text class="tiny" x="282" y="612">工具与 Turn 事件进入同一出口</text>
+  <text class="tiny event-text" x="600" y="752" text-anchor="middle">例外：message.delta 只实时推送打字效果；完整 message.completed 才写入 JSONL。</text>
+</svg>

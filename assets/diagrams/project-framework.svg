@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="840" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 项目框架</title>
+  <desc id="desc">桌面应用通过 Electron Main 调用 AgentCore。AgentCore 装配 SessionLifecycle、TurnRunner、Context、ToolCallExecutor 和 ChangeManager；运行组件依赖 Model、Tools、Storage 与 Protocol 基础包。</desc>
+  <style>
+    .bg{fill:#fbf9fd}.band{fill:#fff;stroke:#e7e2ea;stroke-width:2}.desktop{fill:#fff;stroke:#d8cfe0;stroke-width:2}.bridge{fill:#eefaf6;stroke:#31a77c;stroke-width:2}.core{fill:#f1e8fb;stroke:#8247d6;stroke-width:3}.runtime{fill:#fff;stroke:#b88ae5;stroke-width:2}.base{fill:#eef6ff;stroke:#5d94d6;stroke-width:2}
+    .title{font:700 27px 'Microsoft YaHei',sans-serif;fill:#252127}.subtitle{font:15px 'Microsoft YaHei',sans-serif;fill:#746d79}.band-title{font:700 15px 'Microsoft YaHei',sans-serif;fill:#4d0099}.name{font:700 18px 'Microsoft YaHei',sans-serif;fill:#252127}.core-name{font:700 23px 'Microsoft YaHei',sans-serif;fill:#4d0099}.path{font:13px 'Cascadia Code','Microsoft YaHei',sans-serif;fill:#675e6d}.small{font:14px 'Microsoft YaHei',sans-serif;fill:#675e6d}.note{font:13px 'Microsoft YaHei',sans-serif;fill:#746d79}
+    .arrow{stroke:#8247d6;stroke-width:4;fill:none}.branch{stroke:#9d65d1;stroke-width:3;fill:none}.down{stroke:#5d94d6;stroke-width:4;fill:none}
+  </style>
+  <rect class="bg" width="1200" height="840" rx="28"/>
+  <text class="title" x="50" y="48">项目框架：依赖只向核心与基础能力深入</text>
+  <text class="subtitle" x="50" y="78">框内显示稳定源码入口；箭头表示依赖方向，不表示运行先后。</text>
+
+  <rect class="band" x="34" y="104" width="1132" height="146" rx="20"/>
+  <text class="band-title" x="54" y="132">桌面应用 · apps/desktop</text>
+  <rect class="desktop" x="90" y="151" width="220" height="74" rx="14"/>
+  <text class="name" x="200" y="181" text-anchor="middle">Renderer</text><text class="path" x="200" y="205" text-anchor="middle">src/renderer · 界面</text>
+  <rect class="bridge" x="390" y="151" width="220" height="74" rx="14"/>
+  <text class="name" x="500" y="181" text-anchor="middle">Preload</text><text class="path" x="500" y="205" text-anchor="middle">src/preload · 类型化 IPC</text>
+  <rect class="desktop" x="690" y="151" width="220" height="74" rx="14"/>
+  <text class="name" x="800" y="181" text-anchor="middle">Electron Main</text><text class="path" x="800" y="205" text-anchor="middle">src/main · 可信后端</text>
+  <path class="arrow" d="M310 188H376"/><polygon fill="#8247d6" points="376,180 390,188 376,196"/>
+  <path class="arrow" d="M610 188H676"/><polygon fill="#8247d6" points="676,180 690,188 676,196"/>
+
+  <rect class="core" x="500" y="292" width="600" height="92" rx="18"/>
+  <text class="core-name" x="800" y="329" text-anchor="middle">AgentCore</text>
+  <text class="path" x="800" y="356" text-anchor="middle">packages/agent-core/src/index.ts · 对外门面与依赖装配</text>
+  <path class="arrow" d="M800 225V278"/><polygon fill="#8247d6" points="792,278 800,292 808,278"/>
+  <text class="note" x="816" y="270">只调用公共入口</text>
+
+  <rect class="band" x="34" y="420" width="1132" height="188" rx="20"/>
+  <text class="band-title" x="54" y="448">Agent 运行组件 · packages/agent-core/src/runtime</text>
+  <path class="branch" d="M800 384V431M140 431H1060"/>
+  <path class="branch" d="M140 431V468"/><polygon fill="#9d65d1" points="132,468 140,482 148,468"/>
+  <path class="branch" d="M370 431V468"/><polygon fill="#9d65d1" points="362,468 370,482 378,468"/>
+  <path class="branch" d="M600 431V468"/><polygon fill="#9d65d1" points="592,468 600,482 608,468"/>
+  <path class="branch" d="M830 431V468"/><polygon fill="#9d65d1" points="822,468 830,482 838,468"/>
+  <path class="branch" d="M1060 431V468"/><polygon fill="#9d65d1" points="1052,468 1060,482 1068,468"/>
+  <rect class="runtime" x="40" y="482" width="200" height="100" rx="14"/>
+  <text class="name" x="140" y="516" text-anchor="middle">SessionLifecycle</text><text class="path" x="140" y="541" text-anchor="middle">session-lifecycle.ts</text><text class="small" x="140" y="565" text-anchor="middle">会话、分支、回放</text>
+  <rect class="runtime" x="270" y="482" width="200" height="100" rx="14"/>
+  <text class="name" x="370" y="516" text-anchor="middle">TurnRunner</text><text class="path" x="370" y="541" text-anchor="middle">turn-runner.ts</text><text class="small" x="370" y="565" text-anchor="middle">主循环与唯一终态</text>
+  <rect class="runtime" x="500" y="482" width="200" height="100" rx="14"/>
+  <text class="name" x="600" y="516" text-anchor="middle">Context</text><text class="path" x="600" y="541" text-anchor="middle">../context.ts</text><text class="small" x="600" y="565" text-anchor="middle">本轮模型视图</text>
+  <rect class="runtime" x="730" y="482" width="200" height="100" rx="14"/>
+  <text class="name" x="830" y="516" text-anchor="middle">ToolCallExecutor</text><text class="path" x="830" y="541" text-anchor="middle">tool-call-executor.ts</text><text class="small" x="830" y="565" text-anchor="middle">校验、审批、执行</text>
+  <rect class="runtime" x="960" y="482" width="200" height="100" rx="14"/>
+  <text class="name" x="1060" y="516" text-anchor="middle">ChangeManager</text><text class="path" x="1060" y="541" text-anchor="middle">change-manager.ts</text><text class="small" x="1060" y="565" text-anchor="middle">修改记录与恢复</text>
+
+  <rect class="band" x="34" y="644" width="1132" height="154" rx="20"/>
+  <text class="band-title" x="54" y="672">基础包 · packages</text>
+  <path class="down" d="M600 608V630"/><polygon fill="#5d94d6" points="592,630 600,644 608,630"/>
+  <text class="note" x="616" y="632">稳定能力与共享协议</text>
+  <rect class="base" x="50" y="696" width="245" height="76" rx="14"/>
+  <text class="name" x="172" y="727" text-anchor="middle">model</text><text class="small" x="172" y="751" text-anchor="middle">模型请求、SSE、Tool Call 聚合</text>
+  <rect class="base" x="335" y="696" width="245" height="76" rx="14"/>
+  <text class="name" x="457" y="727" text-anchor="middle">tools</text><text class="small" x="457" y="751" text-anchor="middle">文件、补丁、命令与 Git</text>
+  <rect class="base" x="620" y="696" width="245" height="76" rx="14"/>
+  <text class="name" x="742" y="727" text-anchor="middle">storage</text><text class="small" x="742" y="751" text-anchor="middle">JSONL、分支、快照、Artifact</text>
+  <rect class="base" x="905" y="696" width="245" height="76" rx="14"/>
+  <text class="name" x="1027" y="727" text-anchor="middle">protocol</text><text class="small" x="1027" y="751" text-anchor="middle">跨包与 IPC 的共同数据结构</text>
+  <text class="note" x="600" y="821" text-anchor="middle">TurnRunner → model　·　ToolCallExecutor → tools　·　SessionLifecycle / ChangeManager → storage　·　所有模块 → protocol</text>
+</svg>
