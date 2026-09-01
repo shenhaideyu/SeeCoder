@@ -21,7 +21,7 @@
 
 SeeCoder 是运行在 Windows 上的 Electron Coding Agent。用户选择本地项目并描述目标后，系统会建立一次 Turn，准备上下文，调用大模型，解析 Tool Call，在权限边界内执行本地工具，再把结果交给模型继续判断，直到任务完成或进入明确终态。
 
-[![SeeCoder 顶层工作方式](docs/assets/seecoder-overview.svg)](docs/assets/seecoder-overview.svg)
+[![SeeCoder 顶层工作方式](docs/assets/seecoder-overview-v2.svg)](docs/assets/seecoder-overview-v2.svg)
 
 ### 特色功能
 
@@ -53,7 +53,7 @@ pnpm dev
 
 SeeCoder 是本地模块化单体，不需要额外启动 Web 后端、数据库、Redis 或消息队列。
 
-[![SeeCoder 系统组件架构](docs/assets/seecoder-system-architecture.svg)](docs/assets/seecoder-system-architecture.svg)
+[![SeeCoder 系统组件架构](docs/assets/seecoder-system-architecture-v2.svg)](docs/assets/seecoder-system-architecture-v2.svg)
 
 | 层次 | 核心职责 |
 | --- | --- |
@@ -69,7 +69,7 @@ SeeCoder 是本地模块化单体，不需要额外启动 Web 后端、数据库
 
 ## 一次任务怎样完成
 
-[![SeeCoder 单次任务时序](docs/assets/seecoder-task-sequence.svg)](docs/assets/seecoder-task-sequence.svg)
+[![SeeCoder 单次任务时序](docs/assets/seecoder-task-sequence-v2.svg)](docs/assets/seecoder-task-sequence-v2.svg)
 
 1. Renderer 通过类型化 IPC 提交用户目标。
 2. AgentCore 创建 Turn，TurnRunner 进入 `running`。
@@ -84,13 +84,13 @@ SeeCoder 是本地模块化单体，不需要额外启动 Web 后端、数据库
 
 ### Agent 主循环
 
-[![SeeCoder Agent 主循环](docs/assets/seecoder-agent-loop.svg)](docs/assets/seecoder-agent-loop.svg)
+[![SeeCoder Agent 主循环](docs/assets/seecoder-agent-loop-v2.svg)](docs/assets/seecoder-agent-loop-v2.svg)
 
 TurnRunner 每轮做六件事：检查取消和动态干预、构建上下文、调用模型、聚合输出、执行本轮工具、判断是否继续。只读探索、连续失败、输出截断和迭代预算均有独立计数，避免循环无限运行。
 
 ### Session、事件与分支
 
-[![SeeCoder Session 与分支历史](docs/assets/seecoder-session-history.svg)](docs/assets/seecoder-session-history.svg)
+[![SeeCoder Session 与分支历史](docs/assets/seecoder-session-history-v2.svg)](docs/assets/seecoder-session-history-v2.svg)
 
 - Workspace 是用户选择的本地项目。
 - Session 是可长期追问、恢复和分支的任务容器。
@@ -101,7 +101,7 @@ TurnRunner 每轮做六件事：检查取消和动态干预、构建上下文、
 
 ### 混合上下文管理
 
-[![SeeCoder 混合上下文管理](docs/assets/seecoder-context-management.svg)](docs/assets/seecoder-context-management.svg)
+[![SeeCoder 混合上下文管理](docs/assets/seecoder-context-management-v2.svg)](docs/assets/seecoder-context-management-v2.svg)
 
 完整 Session 历史用于恢复，模型每轮只接收有限工作视图：
 
@@ -115,13 +115,13 @@ TurnRunner 每轮做六件事：检查取消和动态干预、构建上下文、
 
 ### 模型流解析
 
-[![SeeCoder 模型流解析](docs/assets/seecoder-model-parser.svg)](docs/assets/seecoder-model-parser.svg)
+[![SeeCoder 模型流解析](docs/assets/seecoder-model-parser-v2.svg)](docs/assets/seecoder-model-parser-v2.svg)
 
 ModelProvider 使用 `fetch` 接收 OpenAI 兼容 SSE。网络字节先经过 TextDecoder 和 SSE 缓冲，再转成统一 ModelEvent。Tool Call 参数可能跨多个分片到达，因此 TurnRunner 按 `callId` 聚合名称和参数；只有完整 JSON 才会进入工具 Schema 校验。
 
 ### 工具与本地执行
 
-[![SeeCoder 工具执行管线](docs/assets/seecoder-tool-execution.svg)](docs/assets/seecoder-tool-execution.svg)
+[![SeeCoder 工具执行管线](docs/assets/seecoder-tool-execution-v2.svg)](docs/assets/seecoder-tool-execution-v2.svg)
 
 一次 Tool Call 依次经过：工具查找、Zod 参数校验、模式与风险判断、必要审批、`preToolUse` Hook、写入协调、真实执行、结构化收尾和 `postFileEdit` Hook。
 
@@ -129,7 +129,7 @@ ModelProvider 使用 `fetch` 接收 OpenAI 兼容 SSE。网络字节先经过 Te
 
 ### 终止与错误处理
 
-[![SeeCoder 终止条件与错误处理](docs/assets/seecoder-termination-errors.svg)](docs/assets/seecoder-termination-errors.svg)
+[![SeeCoder 终止条件与错误处理](docs/assets/seecoder-termination-errors-v2.svg)](docs/assets/seecoder-termination-errors-v2.svg)
 
 | 情况 | 处理方式 |
 | --- | --- |
