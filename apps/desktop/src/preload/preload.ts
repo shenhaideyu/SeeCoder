@@ -10,9 +10,9 @@ const api = {
   },
   session: {
     create: (title?: string) => ipcRenderer.invoke('session:create', title), list: () => ipcRenderer.invoke('session:list'), hydrate: (sessionId: string) => ipcRenderer.invoke('session:hydrate', sessionId), history: (sessionId: string) => ipcRenderer.invoke('session:history', sessionId),
-    rename: (sessionId: string, title: string) => ipcRenderer.invoke('session:rename', sessionId, title), flag: (sessionId: string, flag: 'pinned' | 'archived') => ipcRenderer.invoke('session:flag', sessionId, flag), delete: (sessionId: string) => ipcRenderer.invoke('session:delete', sessionId), fork: (sessionId: string) => ipcRenderer.invoke('session:fork', sessionId), search: (query: string) => ipcRenderer.invoke('session:search', query), export: (sessionId: string, format: 'markdown' | 'json') => ipcRenderer.invoke('session:export', sessionId, format),
+    rename: (sessionId: string, title: string) => ipcRenderer.invoke('session:rename', sessionId, title), flag: (sessionId: string, flag: 'pinned' | 'archived') => ipcRenderer.invoke('session:flag', sessionId, flag), delete: (sessionId: string) => ipcRenderer.invoke('session:delete', sessionId), fork: (sessionId: string, eventSeq?: number) => ipcRenderer.invoke('session:fork', sessionId, eventSeq), rewind: (sessionId: string, eventSeq: number) => ipcRenderer.invoke('session:rewind', sessionId, eventSeq), switchBranch: (sessionId: string) => ipcRenderer.invoke('session:switchBranch', sessionId), search: (query: string) => ipcRenderer.invoke('session:search', query), export: (sessionId: string, format: 'markdown' | 'json') => ipcRenderer.invoke('session:export', sessionId, format),
   },
-  turn: { start: (sessionId: string, text: string, attachments?: AttachmentRef[], skillId?: string) => ipcRenderer.invoke('turn:start', sessionId, text, attachments, skillId), followUp: (turnId: string, text: string) => ipcRenderer.invoke('turn:followUp', turnId, text), cancel: (turnId: string) => ipcRenderer.invoke('turn:cancel', turnId) },
+  turn: { start: (sessionId: string, text: string, attachments?: AttachmentRef[], skillId?: string) => ipcRenderer.invoke('turn:start', sessionId, text, attachments, skillId), steer: (turnId: string, text: string) => ipcRenderer.invoke('turn:steer', turnId, text), followUp: (turnId: string, text: string) => ipcRenderer.invoke('turn:followUp', turnId, text), cancel: (turnId: string) => ipcRenderer.invoke('turn:cancel', turnId) },
   approval: { resolve: (approvalId: string, decision: 'allow' | 'deny', reason?: string) => ipcRenderer.invoke('approval:resolve', approvalId, decision, reason) },
   input: { resolve: (requestId: string, answer: string) => ipcRenderer.invoke('input:resolve', requestId, answer) },
   plan: { approve: () => ipcRenderer.invoke('plan:approve') },
@@ -24,8 +24,6 @@ const api = {
     status: () => ipcRenderer.invoke('git:status'), diff: (scope?: 'unstaged' | 'staged' | 'branch' | 'last-turn') => ipcRenderer.invoke('git:diff', scope), branches: () => ipcRenderer.invoke('git:branches'), checkout: (branch: string) => ipcRenderer.invoke('git:checkout', branch),
     stage: (path?: string) => ipcRenderer.invoke('git:stage', path), unstage: (path?: string) => ipcRenderer.invoke('git:unstage', path), revert: (path: string) => ipcRenderer.invoke('git:revert', path), commit: (message: string) => ipcRenderer.invoke('git:commit', message), push: () => ipcRenderer.invoke('git:push'), prStatus: (): Promise<PullRequestStatus> => ipcRenderer.invoke('git:prStatus'),
   },
-  terminal: { run: (command: string, cwd?: string) => ipcRenderer.invoke('terminal:run', command, cwd) },
-  preview: { open: (url: string) => ipcRenderer.invoke('preview:open', url) },
   extension: {
     list: () => ipcRenderer.invoke('extension:list'),
     import: () => ipcRenderer.invoke('extension:import'),

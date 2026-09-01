@@ -29,7 +29,7 @@ Agent Harness 是包围模型的工程运行环境。它负责状态、权限、
   ↓
 本地执行工具并生成 Tool Result
   ↓
-保存事件、ChangeSet、Checkpoint、Observation
+保存事件、ChangeSet、Observation；Turn 结束时汇总一个 Checkpoint
   ↓
 把结果加入下一轮上下文，再次调用模型
 ~~~
@@ -40,7 +40,7 @@ Agent Harness 是包围模型的工程运行环境。它负责状态、权限、
 
 Agent Core 的第一目标不是让模型“看起来聪明”，而是保证任务状态不会因为模型输出不稳定而损坏。系统必须允许模型犯错，同时把错误限制在可观察、可恢复的范围内。例如模型可能请求不存在的工具，Core 返回 unknown_tool；模型可能给出不完整 JSON，Core 返回 invalid_args；模型可能连续探索，Core 通过探索预算迫使它收敛；模型可能请求危险命令，Core 进入审批或拒绝。
 
-当前设计追求五项性质。第一，确定性边界：同一 Tool Call ID 不重复产生副作用。第二，协议完整性：Assistant Tool Calls 与对应 Tool Result 成组保存和发送。第三，工作区隔离：文件路径必须留在当前 Workspace。第四，状态可恢复：应用重启后能够从 JSONL 和状态文件重建 Session。第五，成本有上界：主 Agent 最多 24 次模型迭代，子 Agent 最多 6 次，模型重试最多 3 次，命令有超时。
+当前设计追求五项性质。第一，确定性边界：同一 Tool Call ID 不重复产生副作用。第二，协议完整性：Assistant Tool Calls 与对应 Tool Result 成组保存和发送。第三，工作区隔离：文件路径必须留在当前 Workspace。第四，状态可恢复：应用重启后能够从 JSONL 和状态文件重建 Session。第五，成本有上界：主 Agent 最多 30 次模型迭代，子 Agent 最多 6 次，模型重试最多 3 次，命令有超时。
 
 以下规则是实现中的核心不变量：
 
@@ -127,7 +127,7 @@ startTurn 是一次任务的入口。它确认 Session 存在且属于当前 Wor
 
 用户消息同时进入三个位置。第一，加入 Session 的 ModelMessage 历史，为下一次模型请求提供原文；第二，作为 user_message Item 写入 JSONL，支持重启恢复；第三，写入 ContextLedger.goal，成为当前权威目标。随后 Core 发布 turn.started 和 message.user，并以异步方式进入 runTurn。
 
-runTurn 为本轮创建 AbortController，将状态设为 running，初始化无进展计数、只读探索计数、收敛提醒标记和输出截断计数，然后进入最多 24 次的 for 循环。每轮不是简单地把上轮文本继续发送，而是重新读取 Session 当前消息、注入 Follow-up、根据预算构建上下文、重新计算模型请求并处理所有工具结果。
+runTurn 为本轮创建 AbortController，将状态设为 running，初始化无进展计数、只读探索计数、收敛提醒标记和输出截断计数，然后进入最多 30 次的 for 循环。每轮不是简单地把上轮文本继续发送，而是重新读取 Session 当前消息、注入 Follow-up、根据预算构建上下文、重新计算模型请求并处理所有工具结果。
 
 选择“每轮重建上下文”是因为状态一直在变：文件修改会增加 revision，测试会新增 validation，用户可能追加要求，旧 Evidence 可能失效，历史可能达到压缩阈值。如果把第一次构建的请求对象不断追加，权威状态、预算和消息配对都容易失真。
 
@@ -135,13 +135,13 @@ runTurn 为本轮创建 AbortController，将状态设为 running，初始化无
 
 每轮开始先检查 AbortSignal。若已经取消，立即抛出 code 为 cancelled 的 AgentRunError。随后取出 Follow-up 队列，把每条追加要求变成新的 user 消息和 message.user 事件。Follow-up 只在模型调用边界注入，因为模型请求已经发出后无法修改其输入，在 Assistant Tool Calls 与 Tool Result 之间插入 user 消息也会破坏工具协议。
 
-Core 接着检查探索预算。连续四轮只有只读探索时，会加入一条执行约束提醒，要求基于已有证据实施最小修复或指出唯一阻塞点。第 22 轮会加入迭代预算提醒，告诉模型只剩三轮。提醒属于引导，不是硬保证；第七个连续只读探索轮以后，新的探索型工具会直接得到 exploration_budget_exhausted，才是硬限制。
+Core 接着检查探索预算。连续四轮只有只读探索时，会加入一条执行约束提醒，要求基于已有证据实施最小修复或指出唯一阻塞点。第 26 轮会加入迭代预算提醒，告诉模型只剩五轮。第 30 轮进入最终收尾模式：系统注入强制收尾指令，模型只能看到 finish 工具，也可以直接返回无工具的最终文本。提醒属于引导，最终工具过滤属于硬限制；第七个连续只读探索轮以后，新的探索型工具会直接得到 exploration_budget_exhausted，同样是硬限制。
 
 compactMessages 调用混合 ContextBuilder。它计算系统提示、工具 Schema、Ledger、Evidence、检索和历史的估算 token，必要时生成摘要，最终返回合法 ModelMessage。Core 在前面加入动态系统提示，然后构造 purpose 为 agent 的 ModelRequest。
 
 模型响应通过 AsyncIterable 持续到达。textDelta 追加到本轮文本并实时发布 message.delta；toolCallDelta 按 callId 合并工具名和参数字符串；usage 更新 token；retry 更新重试次数；completed 保存 finishReason；error 暂存结构化错误。流结束后发布 model.completed。若有模型错误，Core 抛出 AgentRunError，不执行不完整工具。
 
-接着把所有聚合后的 Tool Calls 与文本组成一条 Assistant 消息。关键顺序是先将完整 Assistant Tool Calls 加入模型历史并持久化，再执行工具。工具逐个按模型给出的顺序运行，每个结果形成 tool 消息并引用原 callId。顺序执行保证写入、ChangeSet、Checkpoint、revision 与事件 seq 的因果关系确定。
+接着把所有聚合后的 Tool Calls 与文本组成一条 Assistant 消息。关键顺序是先将完整 Assistant Tool Calls 加入模型历史并持久化，再执行工具。工具逐个按模型给出的顺序运行，每个结果形成 tool 消息并引用原 callId。顺序执行保证写入、ChangeSet、revision 与事件 seq 的因果关系确定；同一 Turn 的全部 ChangeSet 会在终态前汇总为一个 Checkpoint。
 
 如果模型没有 Tool Call，正常情况下 Turn 结束。若 finishReason 是 length 且没有工具，表示文本达到输出上限，不能视为成功。Core 注入恢复提示、主动压缩并重试；连续三次被截断则以 output_limit 失败。若有工具，Core 依次调用 executeCall；finish 成功会设置 finished，当前工具组处理完成后退出循环。
 
@@ -159,7 +159,7 @@ SeeCoder 因此保留三层数据。events.jsonl 是不可变事实轨迹；Cont
 
 Context Window 是一次模型请求可接收的输入与输出总容量。模型不是把整个硬盘装进记忆，而是只能看到本次请求中的 system、user、assistant、tool 消息和工具 Schema。Token 是模型处理文本的单位，不等于字符。英文短词可能接近一个 token，中文字符通常消耗更多；不同模型 tokenizer 不同。
 
-SeeCoder 没有绑定供应商 tokenizer，而使用保守 Unicode 估算：ASCII 字符约计 0.25 token，非 ASCII 字符约计 1 token，每条消息再加固定开销。它不是精确计费值，作用是提前触发压缩，避免在服务端才发现超限。真实 usage 仍以模型 SSE 返回的 prompt_tokens 与 completion_tokens 为准。
+SeeCoder 没有绑定供应商 tokenizer，而使用保守 Unicode 估算：ASCII 字符约计 0.25 token，非 ASCII 字符约计 1 token，每条消息再加固定开销。首次请求使用该估算；模型返回真实 prompt usage 后，Core 按 Provider 与 Model 记录“实际值/估算值”的指数移动平均，后续上下文预算使用校准系数。真实 usage 仍是计费与审计依据，校准只用于更准确地决定何时压缩。
 
 可用输入预算按下式计算：
 
@@ -202,6 +202,8 @@ read_file 最多返回 400 行，read_files 每个文件最多 400 行且一次�
 
 ToolResult 是完整的程序结果，Observation 是发送给模型的压缩表达。两者分离的原因是命令可能输出 1 MiB，Diff 可能很大，模型只需要退出码、关键错误和相关片段。完整结果用于事件、UI 或调试，Observation 用于下一轮决策。
 
+当完整 ToolResult 超过通用阈值时，Core 还会把它原子写入 Session 的 Artifact 目录，记录 hash、大小、Tool Call 和媒体类型。Observation 保留头尾、诊断与 `artifactRef`；模型需要更多内容时通过只读 `read_artifact` 按 offset/limit 分段取回。Artifact id 和 Session 必须同时匹配，不能跨 Session 读取，也不能把任意文件路径当作 ref。
+
 serializeObservation 按工具类型处理。read_file 和 read_files 记录 Evidence；重复读取改为 evidenceRef。search_text 对完全相同条目去重，最多保留 50 条，并记录 total 与 truncated。run_command 保留 command、exitCode、stdout 头尾、stderr 尾部、诊断行以及是否裁剪。诊断行通过 error、failed、exception、warning 和常见源码后缀筛选。git_diff 保留受预算限制的 Diff 头尾与 stderr。
 
 write_file 与 apply_patch 不把 before 和 after 全文再次发给模型，只返回文件路径和修改前后字符数。完整变更已经保存在 ChangeSet。未知工具先 JSON 序列化；小于 16000 字符原样返回，过长则保留前 10000 和后 4000 字符，并明确说明完整结果在轨迹中。
@@ -226,7 +228,23 @@ buildHybridContext 先调用 sanitizeModelMessages 清除不完整工具组，�
 
 若估算未超过 75% 且用户没有强制压缩，最终上下文为临时消息加当前安全历史。若需要压缩，构建器先把消息按协议组划分。普通 user 或 assistant 文本各自成组；带 Tool Calls 的 assistant 与随后引用其 callId 的全部 tool 消息组成一个不可拆分组。孤立 tool 消息会被丢弃。
 
-压缩时默认保护最后一个消息组、最近一个完整工具组和最近六组。其他旧消息交给 summarizeContext。语义摘要只覆盖旧的 user 与 assistant 叙事，不拥有 Ledger、验证和错误的写权限。摘要结构包括 userIntent、requirements、activeDecisions、supersededDecisions、completedWork、unresolvedQuestions 和 narrative。
+压缩采用廉价操作优先。第一层由 Observation 外置大 ToolResult；第二层折叠已在 Evidence 区重新注入的正文和旧 Tool Result；第三层按完整协议组移除较旧低价值原文；只有仍超过预算时才调用 summarizeContext。压缩始终保护最后一个消息组、最近一个完整工具组和最近六组。语义摘要只覆盖旧的 user 与 assistant 叙事，不拥有 Ledger、验证和错误的写权限。
+
+每次真正压缩都会生成 ContextSnapshot，记录 snapshot id、覆盖到的事件 seq、保留消息组标识、Ledger revision、校准系数和创建时间。它与压缩后的合法 ModelMessage 一起进入 Compaction Item；原始 JSONL 不删除。回放使用 snapshot 的消息视图，审计时仍可根据 coveredEventSeq 定位摘要覆盖边界。
+
+### 8.5 Workspace 级写入协调
+
+同一进程中的所有 AgentCore 按规范化 workspace 路径共享一个 `WorkspaceMutationCoordinator`。文件写入按目标相对路径加锁；`apply_patch` 同时锁定补丁涉及的全部文件；无法预先确定写入范围的 `run_command` 和未知副作用工具使用 workspace 独占锁。锁请求先排序、去重后进入公平队列，冲突请求等待，互不冲突的文件写入仍可并行。工具抛错、超时或取消时必须在 `finally` 中释放锁。ChangeSet 撤销与 Checkpoint 恢复也经过同一个协调器，避免它们和正在执行的工具互相覆盖。
+
+### 8.6 Session 分支与事件边界
+
+Session 元数据通过 `lineage` 记录 `rootSessionId`、`parentSessionId`、`forkedFromSeq` 和 `compactionFloor`。分支只保存父分支引用和自己的增量事件，不再复制父 Session 的整段 JSONL。读取分支时，存储层递归读取父分支在 `forkedFromSeq` 之前的可见事件，再拼接当前分支增量；当前分支事件序号从分叉点之后继续递增。
+
+`forkFrom(sessionId, eventSeq)` 从指定事件位置建立子分支；`rewind(sessionId, eventSeq)` 不破坏原分支，而是建立标题带 Rewind 的子分支；`switchBranch(sessionId)` 恢复并返回目标分支。最新压缩 Item 所在事件序号成为 `compactionFloor`，禁止分叉或回退到更早位置，确保新分支一定包含替代旧模型上下文的摘要。存在子分支的父 Session 不允许直接删除，以免留下悬空引用。
+
+Renderer 加载历史时保留每条事件的 `seq`，而不是只取得裸 `AgentEvent`。同一 Turn 的最后一条终态事件决定底部操作区的位置：中间迭代消息不显示操作按钮；Turn 完成、失败或取消后，操作区提供复制最终答案、从该终态序号创建分支，以及一个独立的“已编辑 N 个文件”结果卡。结果卡不在对话底部展开差异，而是打开默认收起的右侧变更面板，并按 turnId 过滤对应 ChangeSet。这样历史 Turn 的分支按钮调用 `forkFrom(sessionId, terminalSeq)`，不会错误地从 Session 最新位置分叉。
+
+恢复入口属于用户发起的整个 Turn，不属于某一次文件工具。每个 Turn 最多只有一个 Checkpoint；Renderer 不再把 `checkpoint.created` 显示成工具活动白条，而是把复制和回退按钮放在对应用户消息下方。点击回退先显示确认对话框，只有用户明确确认才执行。成功后恢复到该用户消息发出前的文件状态，并发布 `turn.reverted` 撤销事件；Renderer、历史读取和模型上下文会过滤该 Turn 的用户消息、助手消息、工具活动与 ChangeSet。“任务完成”横幅不再重复显示，是否产生源码结果由“已编辑 N 个文件”卡表达。
 
 若摘要模型成功且 JSON 通过 Zod 校验，summarySource 为 model；若网络失败、超时、取消或 JSON 非法，则使用 deterministicSummary。确定性摘要把 Ledger 与旧消息片段按固定规则拼接，质量较低但不会让主 Turn 失败。摘要是派生数据，失败不能比主任务更重要。
 
@@ -306,7 +324,19 @@ tool:
 
 Core 先保存 Assistant，再执行 call-A 和 call-B，结果分别保存。messageGroups 扫描历史时，遇到带 Tool Calls 的 Assistant 就收集后续 tool 消息，只有所有 callId 都出现才保留该组。孤立 tool 被跳过。sanitizeModelMessages 在恢复、压缩前后都会运行。
 
-同一模型响应中的工具在主 Agent 内顺序执行。这样做牺牲一部分只读调用速度，但换来事件 seq、ChangeSet、revision 和错误观察的确定顺序。只读分析的并行性通过最多两个独立子 Agent 实现，避免主写链并发。
+同一模型响应中的工具先由批调度器判断安全性。只有整组工具都显式声明 `parallelSafe=true` 时才并行执行；只要包含写文件、命令、审批、用户输入或其他非并行安全工具，整组就保持串行。并行结果仍按模型原始 Tool Call 顺序写回上下文，ChangeSet 与 revision 的主写链始终只有一个写者。
+
+### 动态干预队列
+
+运行中的用户消息分为两种语义。`steering` 修改当前 Turn 的执行方向，在模型调用前、工具批次结束后和自然完成判定前的安全点消费；`followUp` 不污染当前 Turn，在当前 Turn 到达终态后自动创建后续 Turn。队列条目具有唯一 id、创建时间和 pending/consumed/discarded 状态。取消 Turn 会丢弃尚未消费的 steering；follow-up 只有在正常完成后才自动启动，失败或取消时不会静默执行。
+
+### 可干预生命周期
+
+Agent Core 将只读事件观察与可改变控制流的 Interceptor 分离。Interceptor 支持 `userInput`、`beforeTurn`、`beforeModelCall`、`messageDelta`、`beforeToolCall` 和 `afterToolCall`。每个阶段只能返回 continue、replace 或 block；异常和超时被转换为受控 block，不允许越过 TurnRunner。`beforeModelCall` 只修改本次请求的临时消息视图，除非后续产生正式 Item，否则不得直接改写 Session 权威历史。
+
+### 工具执行边界
+
+ToolCallExecutor 是工具异常边界。参数错误、未知工具、审批拒绝、Hook 阻止、Interceptor 阻止、普通异常、超时和取消都转换为结构化 ToolResult，并走相同的 tool.completed 与 callId 幂等收尾流程。普通工具异常不得直接击穿 TurnRunner；只有 Agent Core 自身不变量损坏才允许 Turn 级失败。
 
 ## 21. ToolDefinition：工具不是一段 Prompt
 
@@ -384,13 +414,15 @@ Auto 模式允许工作区内 write_file、合法 apply_patch 和策略认可的
 
 ## 28. ChangeSet、Snapshot 与 Checkpoint
 
-文件工具成功返回 changes 后，recordChanges 创建 ChangeSet，记录 Session、Turn、文件 before、after 和时间。Ledger 增加 revision，Evidence 按路径失效，before 内容写入 SeeCoder 数据目录的 Snapshot。随后发布 changes.created。
+文件工具成功返回 changes 后，recordChanges 创建 ChangeSet，记录 Session、Turn、文件 before、after 和时间。Ledger 增加 revision，Evidence 按路径失效，before 内容写入 SeeCoder 数据目录的 Snapshot。随后发布 changes.created。一次 Turn 可以有多个 ChangeSet，因为模型可能分几步修改，也可能连续修改同一文件。
 
-系统还自动创建 Checkpoint，记录 ChangeSet ID，以及每个文件修改前后内容的 SHA-256。Checkpoint 不是 Git commit，也不修改项目历史。它是针对 SeeCoder 本轮修改的恢复点。
+系统不会在每个 ChangeSet 后创建恢复点。Turn 进入 completed、failed、cancelled 或 limitReached 前，ChangeManager 收集该 Turn 的全部 ChangeSet，只创建一个 Checkpoint。每个文件的 beforeHash 取本轮第一次修改前的内容，afterHash 取本轮最后一次修改后的内容；changeSetIds 保留实际修改顺序。Checkpoint 不是 Git commit，也不修改项目历史。它表示“回到本轮用户消息发出前”。没有文件修改的 Turn 不创建空恢复点。
 
-恢复 Checkpoint 前，系统重新读取每个目标并计算当前哈希。只有当前哈希等于 checkpoint.afterHash，才说明文件仍保持 Agent 修改后的版本。若用户、IDE 或其他进程改过文件，返回 checkpoint_conflict，不覆盖新内容。通过检查后，按 ChangeSet 恢复 before，并使 Evidence 失效、更新 Ledger。
+恢复 Checkpoint 前，系统重新读取每个目标并计算当前哈希。只有当前哈希等于 checkpoint.afterHash，才说明文件仍保持 Agent 本轮最后修改后的版本。若用户、IDE 或其他进程改过文件，返回 checkpoint_conflict，不覆盖新内容。通过检查后，系统按 ChangeSet 的相反顺序恢复 before；因此同一文件在一轮内被修改多次时，也能从最终版本依次退回最初版本。恢复完成后使 Evidence 失效，发布 `checkpoint.restored` 与 `turn.reverted`，再根据过滤后的可见事件重建 Ledger、Memory、模型消息、ChangeSet 和 Checkpoint 索引。
 
-撤销 ChangeSet 同样调用 restoreChangeSet，以事务写入恢复 before。当前 Checkpoint 的 changeSetIds 通常只有自动创建时的一个变更集，手动 checkpoint 可以为空。该机制适合演示和单 Agent 修改，不替代 Git 分支与提交。
+`turn.reverted` 是追加式撤销标记，不物理改写 events.jsonl。回放器先收集全部撤销标记，再从可见历史中排除目标 turnId 的旧事件和 Item，因此应用重启后该 Turn 也不会重新出现，后续模型请求不会再次读取已经回退的对话或工具结果。原始事件仍保留在磁盘中，便于审计和诊断。右侧“当前任务”只读取可见 ChangeSet，所以回退后立即清空；上方“工作区 Git”显示的是整个项目的真实 Git 状态，其他 Turn 或用户原有修改仍可能继续显示。
+
+撤销单个 ChangeSet 仍调用 restoreChangeSet，以事务写入恢复该次工具调用的 before；Turn 回退则使用聚合 Checkpoint。模型调用 checkpoint 工具只登记“本轮结束时建立恢复点”的意图，不会在一轮中额外生成第二个恢复点。加载旧历史时，ChangeManager 会按 turnId 合并旧版逐 ChangeSet 检查点，使恢复入口仍保持一轮一个。该机制适合本地 Agent 修改，不替代 Git 分支与提交。
 
 ## 29. 验证新鲜度与 finish
 
@@ -404,22 +436,22 @@ finish 不是唯一完成路径。模型返回正常文本且没有 Tool Call �
 
 ## 30. 循环终止条件
 
-终止设计要回答两个问题：什么时候认为正常完成，什么时候必须停止继续消耗资源。SeeCoder 的正常终止包括模型返回无工具的自然文本，以及 finish 工具成功。异常终止包括用户取消、24 轮上限、连续工具失败、连续输出截断和不可恢复模型或内部错误。
+终止设计要回答两个问题：什么时候认为正常完成，什么时候必须停止继续消耗资源。SeeCoder 的正常终止包括模型返回无工具的自然文本，以及 finish 工具成功。异常终止包括用户取消、30 轮上限、连续工具失败、连续输出截断和不可恢复模型或内部错误。
 
 | 条件 | Turn 终态 | 设计原因 |
 | --- | --- | --- |
 | 无 Tool Call 的正常模型响应 | completed | 纯问答和计划无需强制工具 |
 | finish 成功 | completed | 生成完成摘要并检查验证新鲜度 |
 | AbortSignal 已触发 | cancelled | 用户意图优先，阻止继续副作用 |
-| 循环达到 24 次 | limitReached | 控制成本和无限循环 |
+| 循环达到 30 次 | limitReached | 控制成本和无限循环；最后一轮专门用于收尾 |
 | 连续三次工具失败 | failed | 说明当前策略没有进展 |
 | 连续三次 length 且无工具 | failed | 防止无限生成长文本 |
 | Provider 返回不可继续错误 | failed | 无法获得下一步决策 |
 | 未知内部异常 | failed | 统一收口并保留错误证据 |
 
-第 24 轮结束后若仍未 finished，Core 抛出 iteration_limit 并把状态映射为 limitReached。模型服务自己的 finishReason 不能直接决定 Turn 成功；length 明确进入恢复流程，error 明确失败，tool_calls 必须执行完工具。
+第 30 轮结束后若仍未 finished，Core 抛出 iteration_limit 并把状态映射为 limitReached。第 30 轮不再暴露读取、修改和 set_plan 等工具，防止模型把最后一次机会用于继续工作而来不及调用 finish。模型服务自己的 finishReason 不能直接决定 Turn 成功；length 明确进入恢复流程，error 明确失败，tool_calls 必须执行完工具。
 
-终止判断全部在 Core，而不是只写在 Prompt。Prompt 说“最多 24 轮”只帮助模型收敛，for 循环才是硬上限。探索提醒同理：提醒属于软约束，exploration_budget_exhausted 才是硬约束。
+终止判断全部在 Core，而不是只写在 Prompt。Prompt 说“最多 30 轮”只帮助模型收敛，for 循环才是硬上限；最后一轮的工具过滤进一步保证模型不能继续扩大任务范围。探索提醒同理：提醒属于软约束，exploration_budget_exhausted 才是硬约束。
 
 ## 31. 错误模型：Tool Error 与 Turn Error
 
@@ -545,7 +577,7 @@ hydrateSession 对 unfinished Turn 创建 failed 终态，code 为 interrupted�
 
 Renderer 如果直接读取 Core 内部 Map，就必须理解所有状态转移，也容易在页面刷新或多 Session 切换时拿到过期引用。事件流把后台发生的事实变成稳定协议：Core 发布，Main 路由，Renderer 归并展示。
 
-事件信封显式携带 sessionId，使 UI 能丢弃不属于当前 Session 的事件；turnId 区分同一 Session 的多次执行；seq 用于重放顺序；event id 用于诊断重复。Renderer 的 Zustand 只保存视图状态，不复制工具权限和 Agent 状态机。
+事件信封显式携带 sessionId，使 UI 能丢弃不属于当前 Session 的事件；turnId 区分同一 Session 的多次执行；seq 用于重放顺序和定位历史 Turn 分支点；event id 用于诊断重复。实时事件尚未落盘时可以没有 seq，历史加载后使用持久化记录中的真实 seq。Renderer 的 Zustand 只保存视图状态，不复制工具权限和 Agent 状态机。
 
 缺点是 UI 需要正确处理乱序、恢复和未知事件。V3 协议通过显式版本和稳定 type 降低风险，Renderer 对新增字段应安全忽略。业务真相仍在 Main/Core 与 Storage，不以页面当前显示为准。
 

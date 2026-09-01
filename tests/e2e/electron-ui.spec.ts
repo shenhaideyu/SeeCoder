@@ -21,36 +21,20 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page).toHaveTitle('SeeCoder');
     await expect(page.locator('[data-action="new-task"]')).toBeVisible();
     await expect(page.locator('[data-action="permission-mode"]')).toBeVisible();
+    await expect(page.locator('[data-action="toggle-inspector"]')).toBeVisible();
+    await page.locator('[data-action="toggle-inspector"]').click();
     await expect(page.locator('[data-action="inspector-changes"]')).toBeVisible();
     await expect(page.locator('[data-action="inspector-changes"]')).toHaveText('变更');
-    await expect(page.locator('[data-action="inspector-terminal"]')).toHaveText('终端');
+    await expect(page.locator('[data-action="inspector-terminal"]')).toHaveCount(0);
+    await expect(page.locator('[data-action="inspector-preview"]')).toHaveCount(0);
     await expect(page.locator('[data-action="inspector-files"]')).toHaveCount(0);
     await expect(page.locator('[data-action="inspector-trace"]')).toHaveCount(0);
-    await expect(page.locator('.inspector-tabs button')).toHaveCount(3);
+    await expect(page.locator('.inspector-tabs')).toHaveCount(0);
     await expect(page.locator('[aria-label="工作区 Git 变更"]')).toBeVisible();
     await expect(page.locator('[aria-label="当前任务改动"]')).toContainText('本任务没有修改文件');
-    expect(await page.locator('.inspector-tabs').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-    const realPrStatus = await page.evaluate(() => window.seecoder.git.prStatus());
-    expect(['ready', 'setup_required', 'error']).toContain(realPrStatus.status);
-    expect(JSON.stringify(realPrStatus)).not.toMatch(/stderr|exitCode|CommandNotFoundException|�/);
-    await app.evaluate(({ ipcMain }) => {
-      ipcMain.removeHandler('git:prStatus');
-      ipcMain.handle('git:prStatus', () => ({ status: 'setup_required', reason: 'gh_not_installed', message: '未检测到 GitHub CLI', command: 'winget install --id GitHub.cli' }));
-    });
-    await page.locator('[data-action="nav-pulls"]').click();
-    await expect(page.getByText('SeeCoder 不伪造远程数据')).toHaveCount(0);
-    await page.locator('[data-action="check-pr-status"]').click();
-    await expect(page.getByText('未检测到 GitHub CLI')).toBeVisible();
-    await expect(page.getByText('winget install --id GitHub.cli')).toBeVisible();
-    await expect(page.locator('.toast')).toHaveCount(0);
-    await app.evaluate(({ ipcMain }) => {
-      ipcMain.removeHandler('git:prStatus');
-      ipcMain.handle('git:prStatus', () => ({ status: 'ready', pullRequests: [{ number: 42, title: 'Improve agent loop', state: 'OPEN', url: 'https://github.com/example/repo/pull/42', headRefName: 'agent-loop', isDraft: false }] }));
-    });
-    await page.locator('[data-action="check-pr-status"]').click();
-    await expect(page.locator('.pr-row')).toContainText('#42');
-    await expect(page.locator('.pr-row')).toContainText('Improve agent loop');
-    await expect(page.locator('.pr-row')).toContainText('开放');
+    for (const action of ['nav-pulls', 'nav-sites', 'nav-scheduled']) {
+      await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(0);
+    }
     const initialModel = await page.evaluate(() => window.seecoder.settings.read().then((value) => value.model as string));
     const testApiKey = 'e2e-api-key-1234';
     await page.locator('[data-action="settings"]').click();
@@ -158,7 +142,6 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
         files: [{ path: 'package.json', before: '{"name":"before"}', after: '{"name":"after"}' }],
       },
     });
-    await page.locator('[data-action="inspector-changes"]').click();
     await expect(page.locator('.diff-file')).toBeVisible();
     await page.locator('[data-action="expand-change-diff"]').click();
     const changeDialog = page.locator('.diff-dialog');
@@ -193,13 +176,6 @@ test('Electron UI exposes interactive Codex-style workbench actions', async () =
     await expect(page.locator('[data-action="toggle-inspector"]')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await page.setViewportSize({ width: 1480, height: 900 });
-
-    await page.locator('[data-action="inspector-terminal"]').click();
-    const terminal = page.locator('[data-action="terminal-input"]');
-    await terminal.fill('Get-ChildItem -Name');
-    await terminal.press('Enter');
-    await expect(page.locator('.terminal-output')).toContainText('Get-ChildItem -Name');
-    await expect(page.locator('.terminal-output')).toContainText('package.json');
 
     await page.locator('[data-action="nav-plugins"]').click();
     await expect(page.getByText('远程插件市场和 MCP 未启用')).toHaveCount(0);

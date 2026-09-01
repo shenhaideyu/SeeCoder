@@ -21,6 +21,25 @@ describe('SessionStore V3 JSONL', () => {
     expect(replay.diagnostics.map((item) => item.code)).toEqual(expect.arrayContaining(['out_of_order_seq', 'orphan_tool_result', 'cross_session_event']));
   });
 
+  it('uses turn.reverted as a tombstone for records, model items and changes', () => {
+    // 被撤销 Turn 的全部事件位于 tombstone 之前，模拟真实追加式日志。
+    const records: SessionEvent[] = [
+      { seq: 1, event: { type: 'message.user', timestamp: '2026-01-01', sessionId: 'session-1', turnId: 'turn-1', text: '需要删除' }, item: { kind: 'user_message', id: 'user-1', text: '需要删除', createdAt: '2026-01-01' } },
+      { seq: 2, event: { type: 'message.completed', timestamp: '2026-01-01', sessionId: 'session-1', turnId: 'turn-1', text: '旧回答' }, item: { kind: 'assistant_message', id: 'assistant-1', text: '旧回答', createdAt: '2026-01-01' } },
+      { seq: 3, event: { type: 'changes.created', timestamp: '2026-01-01', sessionId: 'session-1', changeSet: { id: 'change-1', sessionId: 'session-1', turnId: 'turn-1', files: [{ path: 'a.txt', before: 'a', after: 'b' }], createdAt: '2026-01-01' } } },
+      { seq: 4, event: { type: 'message.user', timestamp: '2026-01-02', sessionId: 'session-1', turnId: 'turn-2', text: '保留内容' }, item: { kind: 'user_message', id: 'user-2', text: '保留内容', createdAt: '2026-01-02' } },
+      { seq: 5, event: { type: 'turn.reverted', timestamp: '2026-01-03', sessionId: 'session-1', turnId: 'turn-1', checkpointId: 'checkpoint-1' } },
+    ];
+    // 回放器先预扫描 tombstone，再处理前面的旧事件。
+    const replay = replaySessionEvents('session-1', records);
+    // 可见轨迹只保留其他 Turn 和撤销事实本身。
+    expect(replay.records.map((record) => record.seq)).toEqual([4, 5]);
+    // 被撤销 Turn 的用户与助手 Item 不得进入后续模型上下文。
+    expect(replay.modelItems).toEqual([{ kind: 'user_message', id: 'user-2', text: '保留内容', createdAt: '2026-01-02' }]);
+    // 右侧变更索引不再包含目标 Turn 的 ChangeSet。
+    expect(replay.changeSets).toEqual([]);
+  });
+
   it('reads V3 records and ignores a damaged trailing line', async () => {
     const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-'));
     try {
@@ -89,6 +108,57 @@ describe('SessionStore V3 JSONL', () => {
       expect(await store.readSession('session-one')).toBeNull();
       expect(await store.readSession('session-two')).not.toBeNull();
       await expect(store.deleteSession('../outside')).rejects.toThrow('sessionId 参数无效');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('reads a branch as parent history through fork point plus local increments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-branch-'));
+    try {
+      const store = new SessionStore(root);
+      const base = { id: 'parent', title: '父分支', workspacePath: root, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+      await store.saveSession(base);
+      for (const text of ['one', 'two', 'three']) {
+        await store.append('parent', { event: { type: 'message.user', timestamp: '2026-01-01', turnId: text, text, sessionId: 'parent' } });
+      }
+      await store.saveSession({
+        ...base,
+        id: 'child',
+        title: '子分支',
+        lineage: { rootSessionId: 'parent', parentSessionId: 'parent', forkedFromSeq: 2, compactionFloor: 0 },
+      });
+      store.initializeSequence('child', 2);
+      await store.append('child', { event: { type: 'message.user', timestamp: '2026-01-02', turnId: 'child', text: 'child', sessionId: 'child' } });
+      await store.append('parent', { event: { type: 'message.user', timestamp: '2026-01-03', turnId: 'four', text: 'four', sessionId: 'parent' } });
+
+      const child = await store.readEvents('child');
+      expect(child.map((record) => record.seq)).toEqual([1, 2, 3]);
+      expect(child.map((record) => record.event.type === 'message.user' ? record.event.text : '')).toEqual(['one', 'two', 'child']);
+      expect(child.every((record) => record.event.sessionId === 'child')).toBe(true);
+      expect(await store.hasChildBranches('parent')).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects cyclic branch metadata instead of recursing forever', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-cycle-'));
+    try {
+      const store = new SessionStore(root);
+      const common = { title: '循环', workspacePath: root, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+      await store.saveSession({ ...common, id: 'a', lineage: { rootSessionId: 'a', parentSessionId: 'b', forkedFromSeq: 0, compactionFloor: 0 } });
+      await store.saveSession({ ...common, id: 'b', lineage: { rootSessionId: 'a', parentSessionId: 'a', forkedFromSeq: 0, compactionFloor: 0 } });
+      await expect(store.readEvents('a')).rejects.toThrow('循环引用');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('allows a branch to read an artifact visible before its fork point', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'seecoder-storage-branch-artifact-'));
+    try {
+      const store = new SessionStore(root);
+      const common = { title: 'Artifact', workspacePath: root, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+      await store.saveSession({ ...common, id: 'artifact-parent' });
+      const artifact = await store.writeArtifact('artifact-parent', 'call-1', 'read_file', '{"value":1}');
+      await store.append('artifact-parent', { event: { type: 'artifact.created', timestamp: '2026-01-01', turnId: 'turn-1', artifact, sessionId: 'artifact-parent' } });
+      await store.saveSession({ ...common, id: 'artifact-child', lineage: { rootSessionId: 'artifact-parent', parentSessionId: 'artifact-parent', forkedFromSeq: 1, compactionFloor: 0 } });
+      await expect(store.readArtifact('artifact-child', artifact.id)).resolves.toMatchObject({ text: '{"value":1}' });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

@@ -1,32 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="390" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 模型输出解析</title>
-  <desc id="desc">ModelProvider 将流式响应解析成文本和 Tool Call，完成聚合与校验后交给 AgentCore。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 模型流解析</title>
+  <desc id="desc">网络字节经过字符解码、SSE 缓冲和 JSON 解析形成 ModelEvent，文本直接流式展示，工具分片按 callId 聚合。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0L10 5L0 10Z" fill="#70488d"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0L10 5L0 10Z" fill="#239474"/></marker>
   </defs>
-  <rect width="1200" height="390" rx="28" fill="#f8f7fa"/>
-  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
-    <rect x="45" y="115" width="190" height="120" rx="21" fill="#eef5ff" stroke="#79a9ed" stroke-width="2" filter="url(#shadow)"/>
-    <text x="140" y="165" text-anchor="middle" font-size="22" font-weight="700" fill="#243a63">ModelProvider</text><text x="140" y="200" text-anchor="middle" font-size="16" fill="#5d6980">接收模型流</text>
-    <path d="M235 175H285" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="295" y="115" width="180" height="120" rx="21" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
-    <text x="385" y="165" text-anchor="middle" font-size="23" font-weight="700" fill="#241b2b">SSE 解析</text><text x="385" y="200" text-anchor="middle" font-size="16" fill="#746d79">连续事件</text>
-    <path d="M475 175H525" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
+  <rect width="1200" height="520" rx="28" fill="#faf9fc"/>
+  <text x="40" y="43" fill="#251d2b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700">从网络分片恢复完整模型语义</text>
+  <text x="40" y="71" fill="#786d80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">网络块、字符、SSE 行和 Tool Call 参数分别在不同层恢复完整</text>
 
-    <rect x="535" y="65" width="190" height="100" rx="20" fill="#f0e7fa" stroke="#b38add" stroke-width="2"/>
-    <text x="630" y="108" text-anchor="middle" font-size="22" font-weight="700" fill="#4d0099">文本增量</text><text x="630" y="138" text-anchor="middle" font-size="15" fill="#675774">实时显示</text>
-    <rect x="535" y="205" width="190" height="100" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2"/>
-    <text x="630" y="248" text-anchor="middle" font-size="22" font-weight="700" fill="#5c4119">Tool Call</text><text x="630" y="278" text-anchor="middle" font-size="15" fill="#725d3b">按 callId 聚合</text>
-    <path d="M725 255H785" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="795" y="205" width="180" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
-    <text x="885" y="248" text-anchor="middle" font-size="22" font-weight="700" fill="#241b2b">完整校验</text><text x="885" y="278" text-anchor="middle" font-size="15" fill="#746d79">名称与参数</text>
-    <path d="M725 115H1005V175" fill="none" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#arrow)"/>
-    <path d="M975 255H1005V205" fill="none" stroke="#7c3aed" stroke-width="2.5" marker-end="url(#arrow)"/>
-    <rect x="1015" y="115" width="145" height="120" rx="21" fill="url(#brand)" filter="url(#shadow)"/>
-    <text x="1087" y="165" text-anchor="middle" font-size="22" font-weight="700" fill="#fff">AgentCore</text><text x="1087" y="200" text-anchor="middle" font-size="15" fill="#f4eefe">统一事件</text>
-    <rect x="340" y="335" width="520" height="38" rx="19" fill="#edf8f4" stroke="#63b89b"/>
-    <text x="600" y="360" text-anchor="middle" font-size="15" fill="#185b49">未完整结束的 Tool Call 不会进入本地执行</text>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <rect x="30" y="130" width="150" height="82" rx="16" fill="#eef6ff" stroke="#8bb9df" stroke-width="2"/><text x="105" y="164" text-anchor="middle" fill="#285378" font-size="16" font-weight="700">HTTP 字节块</text><text x="105" y="188" text-anchor="middle" fill="#61788c" font-size="12">fetch response.body</text>
+    <rect x="230" y="130" width="150" height="82" rx="16" fill="#fff" stroke="#d8cfdf" stroke-width="2"/><text x="305" y="164" text-anchor="middle" fill="#251d2b" font-size="16" font-weight="700">TextDecoder</text><text x="305" y="188" text-anchor="middle" fill="#867b8d" font-size="12">恢复完整字符</text>
+    <rect x="430" y="130" width="150" height="82" rx="16" fill="#fff" stroke="#d8cfdf" stroke-width="2"/><text x="505" y="164" text-anchor="middle" fill="#251d2b" font-size="16" font-weight="700">SSE Buffer</text><text x="505" y="188" text-anchor="middle" fill="#867b8d" font-size="12">拼接 data 行</text>
+    <rect x="630" y="130" width="150" height="82" rx="16" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/><text x="705" y="164" text-anchor="middle" fill="#4d176f" font-size="16" font-weight="700">JSON 解析</text><text x="705" y="188" text-anchor="middle" fill="#796488" font-size="12">读取 choices 与 usage</text>
+    <rect x="830" y="115" width="190" height="112" rx="18" fill="#f4edfb" stroke="#7c3aed" stroke-width="2.5"/><text x="925" y="151" text-anchor="middle" fill="#4d176f" font-size="18" font-weight="700">ModelEvent</text><text x="925" y="176" text-anchor="middle" fill="#796488" font-size="12">textDelta / toolCallDelta</text><text x="925" y="197" text-anchor="middle" fill="#796488" font-size="12">usage / completed / error</text>
   </g>
+  <path d="M180 171H218" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M380 171H418" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M580 171H618" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M780 171H818" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+
+  <path d="M925 227V270H270V305" fill="none" stroke="#239474" stroke-width="2.6" marker-end="url(#arrowGreen)"/>
+  <path d="M925 227V270H600V305" fill="none" stroke="#70488d" stroke-width="2.6" marker-end="url(#arrow)"/>
+  <path d="M925 227V305" fill="none" stroke="#70488d" stroke-width="2.6" marker-end="url(#arrow)"/>
+
+  <rect x="150" y="318" width="240" height="82" rx="17" fill="#f1fbf8" stroke="#79c7b2" stroke-width="2"/>
+  <text x="270" y="350" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">textDelta</text>
+  <text x="270" y="376" text-anchor="middle" fill="#5f8177" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">实时 message.delta → Renderer</text>
+
+  <rect x="465" y="318" width="270" height="82" rx="17" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/>
+  <text x="600" y="350" text-anchor="middle" fill="#6a5014" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">toolCallDelta</text>
+  <text x="600" y="376" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">按 callId 聚合 name 与 argsDelta</text>
+
+  <rect x="800" y="318" width="250" height="82" rx="17" fill="#fff" stroke="#b685dd" stroke-width="2"/>
+  <text x="925" y="350" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">usage / completed</text>
+  <text x="925" y="376" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">校准 Token 与记录 finishReason</text>
+
+  <path d="M600 400V437" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <rect x="445" y="449" width="310" height="48" rx="14" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/>
+  <text x="600" y="478" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700">完整 Tool Call → JSON 解析 → Zod 校验</text>
+  <rect x="805" y="448" width="330" height="50" rx="14" fill="#edf8f5" stroke="#9bd0c0"/>
+  <text x="970" y="478" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">未完整结束的 Tool Call 不会进入本地执行</text>
 </svg>

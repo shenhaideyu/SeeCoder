@@ -1,33 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
   <title id="title">SeeCoder 终止条件与错误处理</title>
-  <desc id="desc">每轮由 AgentCore 判断继续、完成、恢复或终止，并保证只发布一次明确终态。</desc>
+  <desc id="desc">TurnRunner 根据本轮结果选择完成、继续下一轮或结束任务。可恢复错误返回循环，失败、取消和达到限制进入终态。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#70488d"/></marker>
+    <marker id="arrowGreen" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#239474"/></marker>
+    <marker id="arrowGold" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#c28a20"/></marker>
+    <marker id="arrowRed" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#c84b62"/></marker>
   </defs>
-  <rect width="1200" height="440" rx="28" fill="#f8f7fa"/>
-  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
-    <rect x="55" y="150" width="190" height="120" rx="22" fill="url(#brand)" filter="url(#shadow)"/>
-    <text x="150" y="200" text-anchor="middle" font-size="25" font-weight="700" fill="#fff">AgentCore</text><text x="150" y="237" text-anchor="middle" font-size="16" fill="#f4eefe">每轮判断状态</text>
-    <path d="M245 210H330" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <path d="M350 120L500 210L350 300L200 210Z" transform="translate(150 0)" fill="#fff" stroke="#7c3aed" stroke-width="2.5" filter="url(#shadow)"/>
-    <text x="500" y="202" text-anchor="middle" font-size="22" font-weight="700" fill="#4d0099">本轮结果</text><text x="500" y="235" text-anchor="middle" font-size="15" fill="#746d79">继续还是结束？</text>
 
-    <path d="M500 120V72H735" fill="none" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="745" y="35" width="400" height="82" rx="20" fill="#edf8f4" stroke="#63b89b" stroke-width="2"/>
-    <text x="945" y="70" text-anchor="middle" font-size="21" font-weight="700" fill="#185b49">完成</text><text x="945" y="97" text-anchor="middle" font-size="15" fill="#477366">目标满足并记录验证状态</text>
+  <rect width="1200" height="640" rx="28" fill="#faf9fc"/>
+  <text x="40" y="43" fill="#251d2b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700">每轮只做一次去向判断</text>
+  <text x="40" y="71" fill="#786d80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">完成则结束，可恢复问题进入下一轮，取消、严重错误和预算上限进入终态</text>
 
-    <path d="M650 210H735" stroke="#e5ad45" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="745" y="165" width="400" height="90" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2"/>
-    <text x="945" y="202" text-anchor="middle" font-size="21" font-weight="700" fill="#5c4119">可恢复错误</text><text x="945" y="232" text-anchor="middle" font-size="15" fill="#725d3b">结构化反馈模型，允许调整方案</text>
-    <path d="M745 230H690V345H500V310" fill="none" stroke="#e5ad45" stroke-width="2.5" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+  <!-- 可恢复分支绕到节点上方，再返回 TurnRunner；线路不穿过任何节点。 -->
+  <path d="M1130 290H1160V92H130V238" fill="none" stroke="#c28a20" stroke-width="2.6" marker-end="url(#arrowGold)"/>
+  <text x="645" y="84" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">Observation → 进入下一轮</text>
 
-    <path d="M500 300V345H735" fill="none" stroke="#d25565" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="745" y="305" width="400" height="100" rx="20" fill="#fff1f2" stroke="#e46a78" stroke-width="2"/>
-    <text x="945" y="345" text-anchor="middle" font-size="21" font-weight="700" fill="#9c2635">终止</text><text x="945" y="375" text-anchor="middle" font-size="15" fill="#8a5360">不可恢复错误 · 用户取消 · 迭代上限</text>
+  <rect x="35" y="250" width="190" height="86" rx="18" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/>
+  <text x="130" y="284" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">TurnRunner</text>
+  <text x="130" y="310" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">检查文本、工具与运行状态</text>
+  <path d="M225 293H288" fill="none" stroke="#70488d" stroke-width="2.8" marker-end="url(#arrow)"/>
 
-    <rect x="55" y="345" width="410" height="60" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
-    <text x="260" y="382" text-anchor="middle" font-size="16" fill="#746d79">统一清理请求、审批和子进程；终态只发布一次</text>
-  </g>
+  <path d="M455 190L610 290L455 390L300 290Z" fill="#fff" stroke="#7c3aed" stroke-width="2.5"/>
+  <text x="455" y="282" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">本轮结果</text>
+  <text x="455" y="309" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">完成、重试，还是停止？</text>
+
+  <!-- 完成分支。 -->
+  <path d="M455 190V150H688" fill="none" stroke="#239474" stroke-width="2.8" marker-end="url(#arrowGreen)"/>
+  <rect x="700" y="110" width="430" height="80" rx="17" fill="#f1fbf8" stroke="#79c7b2" stroke-width="2"/>
+  <text x="915" y="142" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">completed</text>
+  <text x="915" y="168" text-anchor="middle" fill="#5f8177" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">保存最终回答、摘要和验证状态</text>
+
+  <!-- 可恢复分支。 -->
+  <path d="M610 290H688" fill="none" stroke="#c28a20" stroke-width="2.8" marker-end="url(#arrowGold)"/>
+  <rect x="700" y="235" width="430" height="110" rx="17" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/>
+  <text x="915" y="268" text-anchor="middle" fill="#6a5014" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">继续下一轮</text>
+  <text x="915" y="294" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">参数错误、测试失败或普通命令错误 → Observation</text>
+  <text x="915" y="317" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">输出截断 → 压缩上下文后重试</text>
+
+  <!-- 不可继续的结果汇聚到同一个终态区域。 -->
+  <path d="M455 390V475H688" fill="none" stroke="#c84b62" stroke-width="2.8" marker-end="url(#arrowRed)"/>
+  <rect x="700" y="415" width="430" height="120" rx="18" fill="#fff7f8" stroke="#d96b7f" stroke-width="2"/>
+  <text x="915" y="445" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700">结束本次 Turn</text>
+
+  <rect x="720" y="460" width="120" height="54" rx="12" fill="#fff" stroke="#efb0bc"/>
+  <text x="780" y="482" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">failed</text>
+  <text x="780" y="501" text-anchor="middle" fill="#99606b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10">不可恢复错误</text>
+
+  <rect x="855" y="460" width="120" height="54" rx="12" fill="#fff" stroke="#efb0bc"/>
+  <text x="915" y="482" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">cancelled</text>
+  <text x="915" y="501" text-anchor="middle" fill="#99606b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10">用户取消</text>
+
+  <rect x="990" y="460" width="120" height="54" rx="12" fill="#fff" stroke="#efb0bc"/>
+  <text x="1050" y="482" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">limitReached</text>
+  <text x="1050" y="501" text-anchor="middle" fill="#99606b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10">达到迭代上限</text>
+
+  <rect x="70" y="570" width="1060" height="44" rx="14" fill="#fff" stroke="#d8cfdf"/>
+  <text x="600" y="597" text-anchor="middle" fill="#4f4456" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">所有终态统一执行 turnEnd Hook、释放资源、持久化状态并通知界面</text>
 </svg>

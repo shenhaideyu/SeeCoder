@@ -17,6 +17,10 @@ export interface ToolDefinition {
   description: string;
   parameters: ZodTypeAny;
   sideEffect: boolean;
+  /** 只有显式为 true 的工具才允许与同批其他安全工具并行。 */
+  parallelSafe?: boolean;
+  /** Core 层通用执行上限；0 表示该交互型工具不使用固定超时。 */
+  timeoutMs?: number;
   risk: 'low' | 'medium' | 'high';
   execute(args: unknown, context: ToolContext): Promise<ToolResult>;
 }
@@ -67,7 +71,7 @@ export class WorkspacePolicy {
   }
 
   canAutoApprove(call: ToolCall, mode: PermissionMode): boolean {
-    const readOnly = ['list_files', 'read_file', 'read_files', 'search_text', 'git_diff', 'set_plan', 'finish', 'delegate', 'ask_user', 'checkpoint', 'review_changes', 'compact_context'];
+    const readOnly = ['list_files', 'read_file', 'read_files', 'read_artifact', 'search_text', 'git_diff', 'set_plan', 'finish', 'delegate', 'ask_user', 'checkpoint', 'review_changes', 'compact_context'];
     if (readOnly.includes(call.name)) return true;
     if (mode === 'guided') return false;
     if (!['write_file', 'apply_patch', 'run_command', 'set_plan'].includes(call.name)) return true;
@@ -205,10 +209,10 @@ interface PatchFile {
   hunks: string[];
 }
 
-function extractPatchPaths(patch: string): string[] {
+export function extractPatchPaths(patch: string): string[] {
   const paths = new Set<string>();
   for (const match of patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File:\s*(.+)$/gm)) paths.add(match[1]!.trim());
-  for (const match of patch.matchAll(/^\+\+\+\s+(?:b\/)?([^\t\r\n]+)$/gm)) {
+  for (const match of patch.matchAll(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\t\r\n]+)$/gm)) {
     if (match[1] !== '/dev/null') paths.add(match[1]!.trim());
   }
   return [...paths];
@@ -433,7 +437,7 @@ export function commandRunner(command: string, cwd: string, context: ToolContext
 export function createToolDefinitions(): ToolDefinition[] {
   return [
     {
-      name: 'list_files', description: '广度优先列出工作区文件；truncated=true 时结果不完整，不能据此判断文件不存在', sideEffect: false, risk: 'low',
+      name: 'list_files', description: '广度优先列出工作区文件；truncated=true 时结果不完整，不能据此判断文件不存在', sideEffect: false, parallelSafe: true, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({ path: z.string().optional(), depth: z.number().int().min(0).max(5).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path?: string; depth?: number };
@@ -448,7 +452,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'read_file', description: '读取工作区内文本文件，可按行截断', sideEffect: false, risk: 'low',
+      name: 'read_file', description: '读取工作区内文本文件，可按行截断', sideEffect: false, parallelSafe: true, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({ path: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path: string; startLine?: number; endLine?: number };
@@ -457,7 +461,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'read_files', description: '一次批量读取多个已知文本文件；已定位多个文件时优先于重复 read_file', sideEffect: false, risk: 'low',
+      name: 'read_files', description: '一次批量读取多个已知文本文件；已定位多个文件时优先于重复 read_file', sideEffect: false, parallelSafe: true, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({ paths: z.array(z.string().min(1)).min(1).max(30) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { paths: string[] }; const outputs: Array<{ path: string; text?: string; error?: string }> = [];
@@ -470,7 +474,12 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'search_text', description: '先按字符串或正则定位相关文件和行，再按需读取命中片段', sideEffect: false, risk: 'low',
+      name: 'read_artifact', description: '按字符范围读取当前 Session 中被外置的大型工具结果', sideEffect: false, parallelSafe: true, timeoutMs: 30_000, risk: 'low',
+      parameters: z.object({ artifactRef: z.string().uuid(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(50_000).optional() }),
+      async execute() { return result(false, undefined, 0, { code: 'artifact_unhandled', message: 'read_artifact 必须由 Agent Core 调度' }); },
+    },
+    {
+      name: 'search_text', description: '先按字符串或正则定位相关文件和行，再按需读取命中片段', sideEffect: false, parallelSafe: true, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({ query: z.string().min(1), path: z.string().optional(), glob: z.string().optional(), maxResults: z.number().int().min(1).max(100).optional() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { query: string; path?: string; glob?: string; maxResults?: number }; const max = args.maxResults ?? 50;
@@ -493,7 +502,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'write_file', description: '原子写入工作区内文本文件', sideEffect: true, risk: 'medium',
+      name: 'write_file', description: '原子写入工作区内文本文件', sideEffect: true, parallelSafe: false, timeoutMs: 30_000, risk: 'medium',
       parameters: z.object({ path: z.string(), content: z.string() }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { path: string; content: string };
@@ -502,7 +511,7 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'apply_patch', description: '应用标准 unified diff 或 *** Begin Patch / *** Update File 补丁；所有旧内容校验通过后原子写入', sideEffect: true, risk: 'medium',
+      name: 'apply_patch', description: '应用标准 unified diff 或 *** Begin Patch / *** Update File 补丁；所有旧内容校验通过后原子写入', sideEffect: true, parallelSafe: false, timeoutMs: 30_000, risk: 'medium',
       parameters: z.object({ patch: z.string().min(1) }),
       async execute(raw, context) {
         const started = Date.now(); const args = raw as { patch: string };
@@ -511,47 +520,47 @@ export function createToolDefinitions(): ToolDefinition[] {
       },
     },
     {
-      name: 'run_command', description: '在工作区内运行构建、测试或版本控制命令并流式返回输出；文件定位请优先使用 list_files、search_text 和 read_files', sideEffect: true, risk: 'high',
+      name: 'run_command', description: '在工作区内运行构建、测试或版本控制命令并流式返回输出；文件定位请优先使用 list_files、search_text 和 read_files', sideEffect: true, parallelSafe: false, timeoutMs: 125_000, risk: 'high',
       parameters: z.object({ command: z.string().min(1), cwd: z.string().optional(), timeoutMs: z.number().int().min(1000).max(120000).optional() }),
       async execute(raw, context) { const args = raw as { command: string; cwd?: string; timeoutMs?: number }; try { const cwd = await new WorkspacePolicy(context.workspace).path(args.cwd); return await commandRunner(args.command, cwd, context, args.timeoutMs); } catch (error) { return result(false, undefined, 0, { code: 'command_denied', message: error instanceof Error ? error.message : '命令目录无效' }); } },
     },
     {
-      name: 'git_diff', description: '查看当前工作区 Git Diff', sideEffect: false, risk: 'low',
+      name: 'git_diff', description: '查看当前工作区 Git Diff', sideEffect: false, parallelSafe: true, timeoutMs: 35_000, risk: 'low',
       parameters: z.object({ path: z.string().optional() }),
       async execute(raw, context) { const args = raw as { path?: string }; const cwd = await new WorkspacePolicy(context.workspace).path('.'); const command = args.path ? `git diff -- ${JSON.stringify(args.path)}` : 'git diff -- .'; return commandRunner(command, cwd, context, 30_000); },
     },
     {
-      name: 'set_plan', description: '更新用户可见的执行计划', sideEffect: false, risk: 'low',
+      name: 'set_plan', description: '更新用户可见的执行计划', sideEffect: false, parallelSafe: false, timeoutMs: 10_000, risk: 'low',
       parameters: z.object({ steps: z.array(z.object({ id: z.string(), label: z.string(), status: z.preprocess((value) => value === 'in_progress' ? 'running' : value, z.enum(['pending', 'running', 'completed', 'failed'])) })) }),
       async execute(raw) { return result(true, raw, 0); },
     },
     {
-      name: 'finish', description: '提交任务完成摘要和验证证据', sideEffect: false, risk: 'low',
+      name: 'finish', description: '提交任务完成摘要和验证证据', sideEffect: false, parallelSafe: false, timeoutMs: 10_000, risk: 'low',
       parameters: z.object({ summary: z.string(), verification: z.array(z.string()).default([]) }),
       async execute(raw) { return result(true, raw, 0); },
     },
     {
-      name: 'delegate', description: '委派只读 Explore 或 Review 子 Agent（由 Core 调度）', sideEffect: false, risk: 'low',
+      name: 'delegate', description: '委派只读 Explore 或 Review 子 Agent（由 Core 调度）', sideEffect: false, parallelSafe: false, timeoutMs: 120_000, risk: 'low',
       parameters: z.object({ role: z.enum(['explore', 'review']), task: z.string(), focusPaths: z.array(z.string()).optional() }),
       async execute() { return result(false, undefined, 0, { code: 'delegate_unhandled', message: 'delegate 必须由 Agent Core 调度' }); },
     },
     {
-      name: 'ask_user', description: '向用户提出一个结构化问题并暂停当前任务', sideEffect: false, risk: 'low',
+      name: 'ask_user', description: '向用户提出一个结构化问题并暂停当前任务', sideEffect: false, parallelSafe: false, timeoutMs: 0, risk: 'low',
       parameters: z.object({ question: z.string().min(1).max(2000), choices: z.array(z.string().min(1).max(200)).max(8).optional() }),
       async execute() { return result(false, undefined, 0, { code: 'ask_user_unhandled', message: 'ask_user 必须由 Agent Core 调度' }); },
     },
     {
-      name: 'checkpoint', description: '创建一个用户可恢复的检查点', sideEffect: false, risk: 'low',
+      name: 'checkpoint', description: '创建一个用户可恢复的检查点', sideEffect: false, parallelSafe: false, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({}),
       async execute() { return result(false, undefined, 0, { code: 'checkpoint_unhandled', message: 'checkpoint 必须由 Agent Core 调度' }); },
     },
     {
-      name: 'review_changes', description: '启动只读代码变更审查', sideEffect: false, risk: 'low',
+      name: 'review_changes', description: '启动只读代码变更审查', sideEffect: false, parallelSafe: false, timeoutMs: 120_000, risk: 'low',
       parameters: z.object({ scope: z.string().max(100).optional() }),
       async execute() { return result(false, undefined, 0, { code: 'review_unhandled', message: 'review_changes 必须由 Agent Core 调度' }); },
     },
     {
-      name: 'compact_context', description: '主动压缩历史上下文并保留任务摘要', sideEffect: false, risk: 'low',
+      name: 'compact_context', description: '主动压缩历史上下文并保留任务摘要', sideEffect: false, parallelSafe: false, timeoutMs: 30_000, risk: 'low',
       parameters: z.object({}),
       async execute() { return result(true, { compacted: true }, 0); },
     },

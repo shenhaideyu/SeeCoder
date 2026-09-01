@@ -10,22 +10,29 @@ test('Electron workbench renders navigable pages and stable actions', async () =
   try {
     const page = await app.firstWindow();
     await expect(page).toHaveTitle('SeeCoder');
-    for (const action of ['brand-menu', 'search', 'notifications', 'new-task', 'nav-pulls', 'nav-sites', 'nav-scheduled', 'nav-plugins', 'history', 'settings', 'theme']) {
+    for (const action of ['brand-menu', 'search', 'notifications', 'new-task', 'nav-plugins', 'history', 'settings', 'theme']) {
       await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(1);
+    }
+    for (const action of ['nav-pulls', 'nav-sites', 'nav-scheduled']) {
+      await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(0);
     }
     await page.locator('[data-action="workspace-menu"]').click();
     await expect(page.locator('[data-action="switch-workspace"]')).toHaveCount(1);
     await expect(page.locator('[data-action="choose-workspace"]')).toBeVisible();
     await page.locator('[data-action="workspace-menu"]').click();
-    for (const [action, heading] of [['nav-pulls', '拉取请求'], ['nav-sites', '站点 / Preview'], ['nav-scheduled', '已安排'], ['nav-plugins', '插件与 Skills']] as const) {
+    for (const [action, heading] of [['nav-plugins', '插件与 Skills']] as const) {
       await page.locator(`[data-action="${action}"]`).click();
       await expect(page.locator('h1')).toContainText(heading);
     }
     await page.locator('[data-action="new-task"]').click();
     await expect(page.locator('[data-action="composer"]')).toBeVisible();
-    for (const action of ['attach', 'permission-mode', 'model-settings', 'voice', 'send-turn', 'inspector-changes', 'inspector-terminal', 'inspector-preview']) {
+    for (const action of ['attach', 'permission-mode', 'model-settings', 'voice', 'send-turn']) {
       await expect(page.locator(`[data-action="${action}"]`)).toHaveCount(1);
     }
+    await page.locator('[data-action="toggle-inspector"]').click();
+    await expect(page.locator('[data-action="inspector-changes"]')).toHaveCount(1);
+    await expect(page.locator('[data-action="inspector-terminal"]')).toHaveCount(0);
+    await expect(page.locator('[data-action="inspector-preview"]')).toHaveCount(0);
     await expect(page.locator('[data-action="plan-toggle"]')).toHaveCount(0);
     await page.locator('[data-action="permission-mode"]').click();
     await expect(page.locator('[data-action="mode-plan"]')).toBeVisible();

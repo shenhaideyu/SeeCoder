@@ -76,6 +76,15 @@ export interface Session {
   archived?: boolean;
   unread?: boolean;
   branch?: string;
+  /** 事件分支谱系；旧 Session 没有该字段时视为自己的根分支。 */
+  lineage?: SessionLineage;
+}
+
+export interface SessionLineage {
+  rootSessionId: string;
+  parentSessionId: string;
+  forkedFromSeq: number;
+  compactionFloor: number;
 }
 
 export interface Turn {
@@ -106,6 +115,15 @@ export interface ToolResult {
   durationMs: number;
 }
 
+export interface InterventionEventEntry {
+  id: string;
+  turnId: string;
+  kind: 'steering' | 'followUp';
+  text: string;
+  createdAt: string;
+  status: 'pending' | 'consumed' | 'discarded';
+}
+
 export interface SemanticSummary {
   userIntent: string;
   requirements: string[];
@@ -124,6 +142,31 @@ export interface ContextCompactionMetrics {
   summarySource?: 'model' | 'deterministic-fallback';
   retrievedEntries: number;
   droppedEvidence: number;
+  tokenScale?: number;
+  cheapPrunedGroups?: number;
+  summaryUsed?: boolean;
+}
+
+export interface ContextSnapshot {
+  id: string;
+  sessionId: string;
+  coveredEventSeq: number;
+  retainedGroupIds: string[];
+  ledgerRevision: number;
+  modelKey: string;
+  tokenScale: number;
+  createdAt: string;
+}
+
+export interface ToolArtifact {
+  id: string;
+  sessionId: string;
+  toolCallId: string;
+  toolName: string;
+  mediaType: 'application/json';
+  size: number;
+  sha256: string;
+  createdAt: string;
 }
 
 export interface Approval {
@@ -234,7 +277,7 @@ export type Item =
   | { kind: 'approval'; id: string; approval: Approval; createdAt: string }
   | { kind: 'changes'; id: string; changeSet: ChangeSet; createdAt: string }
   | { kind: 'subagent'; id: string; state: SubagentState; createdAt: string }
-  | { kind: 'compaction'; id: string; summary: string; messages?: ModelMessage[]; semanticSummary?: SemanticSummary; ledgerVersion?: 2; metrics?: ContextCompactionMetrics; createdAt: string }
+  | { kind: 'compaction'; id: string; summary: string; messages?: ModelMessage[]; semanticSummary?: SemanticSummary; snapshot?: ContextSnapshot; ledgerVersion?: 2; metrics?: ContextCompactionMetrics; createdAt: string }
   | { kind: 'error'; id: string; error: AgentError; createdAt: string };
 
 export type AgentEventPayload =
@@ -243,6 +286,9 @@ export type AgentEventPayload =
   | { type: 'message.user'; timestamp: string; turnId: string; text: string }
   | { type: 'message.delta'; timestamp: string; turnId: string; text: string }
   | { type: 'message.completed'; timestamp: string; turnId: string; text: string }
+  | { type: 'intervention.queued'; timestamp: string; turnId: string; intervention: InterventionEventEntry }
+  | { type: 'intervention.consumed'; timestamp: string; turnId: string; intervention: InterventionEventEntry }
+  | { type: 'intervention.discarded'; timestamp: string; turnId: string; intervention: InterventionEventEntry; reason: string }
   | { type: 'assistant.tool_calls'; timestamp: string; turnId: string; calls: ModelToolCall[] }
   | { type: 'plan.updated'; timestamp: string; turnId: string; steps: PlanStep[] }
   | { type: 'tool.requested'; timestamp: string; turnId: string; call: ToolCall }
@@ -250,6 +296,7 @@ export type AgentEventPayload =
   | { type: 'approval.resolved'; timestamp: string; approvalId: string; decision: 'allow' | 'deny'; reason?: string }
   | { type: 'tool.output'; timestamp: string; callId: string; stream: 'stdout' | 'stderr'; text: string }
   | { type: 'tool.completed'; timestamp: string; turnId: string; callId: string; result: ToolResult }
+  | { type: 'artifact.created'; timestamp: string; turnId: string; artifact: ToolArtifact }
   | { type: 'changes.created'; timestamp: string; changeSet: ChangeSet }
   | { type: 'changes.reverted'; timestamp: string; changeSetId: string }
   | { type: 'subagent.updated'; timestamp: string; child: SubagentState }
@@ -264,6 +311,7 @@ export type AgentEventPayload =
   | { type: 'turn.completed'; timestamp: string; turn: Turn }
   | { type: 'turn.failed'; timestamp: string; turn: Turn; error: AgentError }
   | { type: 'turn.cancelled'; timestamp: string; turn: Turn }
+  | { type: 'turn.reverted'; timestamp: string; turnId: string; checkpointId: string }
   | { type: 'mode.changed'; timestamp: string; mode: ExecutionMode }
   | { type: 'user.input.requested'; timestamp: string; turnId: string; requestId: string; question: string; choices?: string[] }
   | { type: 'user.input.resolved'; timestamp: string; turnId: string; requestId: string; answer: string }

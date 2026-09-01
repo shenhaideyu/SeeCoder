@@ -1,36 +1,49 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 单次任务流程</title>
-  <desc id="desc">用户请求从 Renderer 进入 AgentCore，经过上下文构建、模型决策、本地工具和验证后形成事件与结果。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 单次任务时序</title>
+  <desc id="desc">Renderer、AgentCore、TurnRunner、ModelProvider 和 ToolCallExecutor 之间从用户输入到最终事件的调用顺序。</desc>
   <defs>
-    <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0L10 5L0 10Z" fill="#70488d"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0L10 5L0 10Z" fill="#239474"/></marker>
   </defs>
-  <rect width="1200" height="430" rx="28" fill="#f8f7fa"/>
+  <rect width="1200" height="560" rx="28" fill="#faf9fc"/>
+  <text x="40" y="42" fill="#251d2b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700">一次任务从输入到完成</text>
+  <text x="40" y="70" fill="#786d80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">Assistant Tool Calls 与 Tool Result 始终按 callId 成组保存</text>
+
   <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
-    <rect x="50" y="135" width="175" height="110" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2" filter="url(#shadow)"/>
-    <text x="137" y="185" text-anchor="middle" font-size="23" font-weight="700" fill="#241b2b">Renderer</text><text x="137" y="218" text-anchor="middle" font-size="16" fill="#746d79">提交用户目标</text>
-    <path d="M225 190H285" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-
-    <rect x="295" y="118" width="190" height="144" rx="22" fill="url(#brand)" filter="url(#shadow)"/>
-    <text x="390" y="180" text-anchor="middle" font-size="25" font-weight="700" fill="#fff">AgentCore</text><text x="390" y="216" text-anchor="middle" font-size="16" fill="#f4eefe">创建 Turn · 控制循环</text>
-    <rect x="305" y="302" width="170" height="82" rx="18" fill="#f0e7fa" stroke="#b38add" stroke-width="2"/>
-    <text x="390" y="338" text-anchor="middle" font-size="20" font-weight="700" fill="#4d0099">ContextBuilder</text><text x="390" y="366" text-anchor="middle" font-size="15" fill="#675774">构建工作视图</text>
-    <path d="M390 262V294" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
-
-    <path d="M485 190H545" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="555" y="135" width="180" height="110" rx="20" fill="#eef5ff" stroke="#79a9ed" stroke-width="2" filter="url(#shadow)"/>
-    <text x="645" y="185" text-anchor="middle" font-size="22" font-weight="700" fill="#243a63">ModelProvider</text><text x="645" y="218" text-anchor="middle" font-size="16" fill="#5d6980">生成文本或 Tool Call</text>
-
-    <path d="M735 190H795" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="805" y="135" width="170" height="110" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2" filter="url(#shadow)"/>
-    <text x="890" y="185" text-anchor="middle" font-size="22" font-weight="700" fill="#5c4119">ToolRuntime</text><text x="890" y="218" text-anchor="middle" font-size="16" fill="#725d3b">执行并返回结果</text>
-
-    <path d="M975 190H1030" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="1040" y="118" width="120" height="144" rx="22" fill="#edf8f4" stroke="#63b89b" stroke-width="2" filter="url(#shadow)"/>
-    <text x="1100" y="180" text-anchor="middle" font-size="21" font-weight="700" fill="#185b49">验证完成</text><text x="1100" y="215" text-anchor="middle" font-size="15" fill="#477366">AgentEvent</text>
-
-    <path d="M890 260V340H495" fill="none" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
-    <text x="700" y="330" text-anchor="middle" font-size="16" fill="#18775d">Observation 返回下一轮</text>
+    <rect x="35" y="95" width="170" height="56" rx="13" fill="#fff" stroke="#d8cfdf" stroke-width="2"/><text x="120" y="130" text-anchor="middle" fill="#251d2b" font-size="16" font-weight="700">Renderer</text>
+    <rect x="270" y="95" width="170" height="56" rx="13" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/><text x="355" y="130" text-anchor="middle" fill="#4d176f" font-size="16" font-weight="700">AgentCore</text>
+    <rect x="505" y="95" width="170" height="56" rx="13" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/><text x="590" y="130" text-anchor="middle" fill="#4d176f" font-size="16" font-weight="700">TurnRunner</text>
+    <rect x="740" y="95" width="170" height="56" rx="13" fill="#eef6ff" stroke="#8bb9df" stroke-width="2"/><text x="825" y="130" text-anchor="middle" fill="#285378" font-size="16" font-weight="700">ModelProvider</text>
+    <rect x="975" y="95" width="190" height="56" rx="13" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/><text x="1070" y="130" text-anchor="middle" fill="#6a5014" font-size="16" font-weight="700">ToolCallExecutor</text>
   </g>
+
+  <g stroke="#cfc5d6" stroke-width="1.5" stroke-dasharray="7 7">
+    <path d="M120 151V520"/><path d="M355 151V520"/><path d="M590 151V520"/><path d="M825 151V520"/><path d="M1070 151V520"/>
+  </g>
+
+  <g fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M120 190H343"/>
+    <path d="M355 235H578"/>
+    <path d="M590 280H813"/>
+    <path d="M825 325H602"/>
+    <path d="M590 370H1058"/>
+  </g>
+  <g fill="#4f4456" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">
+    <text x="232" y="181" text-anchor="middle">1. 用户目标经 IPC 进入 Main</text>
+    <text x="467" y="226" text-anchor="middle">2. 创建 Turn 并启动状态机</text>
+    <text x="702" y="271" text-anchor="middle">3. 发送系统规则、上下文和工具 Schema</text>
+    <text x="702" y="316" text-anchor="middle">4. 文本增量与 Tool Call 分片</text>
+    <text x="830" y="361" text-anchor="middle">5. 校验、审批、Hook、本地执行</text>
+  </g>
+
+  <path d="M1070 414H602" fill="none" stroke="#239474" stroke-width="2.8" marker-end="url(#arrowGreen)"/>
+  <text x="835" y="405" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">6. ToolResult 压缩为 Observation，进入下一轮</text>
+
+  <path d="M590 460H367" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M355 495H132" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="478" y="451" text-anchor="middle" fill="#4f4456" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">7. 形成唯一 Turn 终态</text>
+  <text x="245" y="486" text-anchor="middle" fill="#4f4456" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">8. 持久化事件并更新界面</text>
+
+  <rect x="470" y="525" width="260" height="27" rx="9" fill="#edf8f5" stroke="#9bd0c0"/>
+  <text x="600" y="544" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">循环只重复第 3 至第 6 步</text>
 </svg>

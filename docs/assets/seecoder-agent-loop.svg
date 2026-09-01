@@ -1,41 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
   <title id="title">SeeCoder Agent 主循环</title>
-  <desc id="desc">AgentCore 重复执行上下文构建、模型调用、输出解析、工具执行和结果反馈，并在明确条件下结束。</desc>
+  <desc id="desc">TurnRunner 检查干预，构建上下文，调用模型，解析输出，执行工具并反馈 Observation，直到进入终态。</desc>
   <defs>
     <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#70488d"/></marker>
+    <marker id="arrowGreen" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#239474"/></marker>
+    <marker id="arrowRed" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#c84b62"/></marker>
   </defs>
-  <rect width="1200" height="470" rx="28" fill="#f8f7fa"/>
+  <rect width="1200" height="560" rx="28" fill="#faf9fc"/>
+  <text x="40" y="43" fill="#251d2b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700">TurnRunner：一轮一轮推进，条件满足才停止</text>
+  <text x="40" y="71" fill="#786d80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">每轮都重新使用最新任务状态，不让模型直接控制循环</text>
+
   <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
-    <rect x="55" y="85" width="180" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2" filter="url(#shadow)"/>
-    <text x="145" y="130" text-anchor="middle" font-size="22" font-weight="700" fill="#241b2b">用户目标</text><text x="145" y="160" text-anchor="middle" font-size="15" fill="#746d79">开始 Turn</text>
-    <path d="M235 135H285" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="295" y="85" width="190" height="100" rx="20" fill="#f0e7fa" stroke="#b38add" stroke-width="2"/>
-    <text x="390" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#4d0099">构建上下文</text><text x="390" y="160" text-anchor="middle" font-size="15" fill="#675774">ContextBuilder</text>
-    <path d="M485 135H535" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="545" y="85" width="190" height="100" rx="20" fill="#eef5ff" stroke="#79a9ed" stroke-width="2"/>
-    <text x="640" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#243a63">调用模型</text><text x="640" y="160" text-anchor="middle" font-size="15" fill="#5d6980">ModelProvider</text>
-    <path d="M735 135H785" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="795" y="85" width="170" height="100" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
-    <text x="880" y="130" text-anchor="middle" font-size="21" font-weight="700" fill="#241b2b">解析输出</text><text x="880" y="160" text-anchor="middle" font-size="15" fill="#746d79">文本 / Tool Call</text>
-
-    <path d="M880 185V235" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <path d="M880 245L1010 325L880 405L750 325Z" fill="#fff" stroke="#7c3aed" stroke-width="2.5"/>
-    <text x="880" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#4d0099">需要工具？</text><text x="880" y="348" text-anchor="middle" font-size="15" fill="#746d79">并检查终止条件</text>
-
-    <path d="M750 325H640" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <text x="700" y="310" text-anchor="middle" font-size="15" fill="#675774">是</text>
-    <rect x="435" y="270" width="195" height="110" rx="20" fill="#fff8e8" stroke="#e5ad45" stroke-width="2" filter="url(#shadow)"/>
-    <text x="532" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#5c4119">执行工具</text><text x="532" y="350" text-anchor="middle" font-size="15" fill="#725d3b">ToolRuntime</text>
-    <path d="M435 325H280" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="80" y="270" width="190" height="110" rx="20" fill="#edf8f4" stroke="#63b89b" stroke-width="2" filter="url(#shadow)"/>
-    <text x="175" y="318" text-anchor="middle" font-size="21" font-weight="700" fill="#185b49">Observation</text><text x="175" y="350" text-anchor="middle" font-size="15" fill="#477366">结果返回下一轮</text>
-    <path d="M175 270V225H390V195" fill="none" stroke="#1f9d78" stroke-width="3" marker-end="url(#arrow)"/>
-
-    <path d="M1010 325H1095" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <text x="1050" y="310" text-anchor="middle" font-size="15" fill="#675774">否</text>
-    <rect x="1095" y="275" width="80" height="100" rx="20" fill="url(#brand)" filter="url(#shadow)"/>
-    <text x="1135" y="318" text-anchor="middle" font-size="19" font-weight="700" fill="#fff">结束</text><text x="1135" y="347" text-anchor="middle" font-size="14" fill="#f4eefe">终态</text>
+    <rect x="35" y="155" width="155" height="76" rx="16" fill="#fff" stroke="#d8cfdf" stroke-width="2"/><text x="112" y="185" text-anchor="middle" fill="#251d2b" font-size="16" font-weight="700">开始 Turn</text><text x="112" y="209" text-anchor="middle" fill="#867b8d" font-size="12">queued → running</text>
+    <rect x="245" y="155" width="170" height="76" rx="16" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/><text x="330" y="185" text-anchor="middle" fill="#4d176f" font-size="16" font-weight="700">检查控制信号</text><text x="330" y="209" text-anchor="middle" fill="#796488" font-size="12">取消、Steering、预算</text>
+    <rect x="470" y="155" width="170" height="76" rx="16" fill="#eef6ff" stroke="#8bb9df" stroke-width="2"/><text x="555" y="185" text-anchor="middle" fill="#285378" font-size="16" font-weight="700">构建上下文</text><text x="555" y="209" text-anchor="middle" fill="#61788c" font-size="12">buildHybridContext</text>
+    <rect x="695" y="155" width="170" height="76" rx="16" fill="#eef6ff" stroke="#8bb9df" stroke-width="2"/><text x="780" y="185" text-anchor="middle" fill="#285378" font-size="16" font-weight="700">调用模型</text><text x="780" y="209" text-anchor="middle" fill="#61788c" font-size="12">流式 ModelEvent</text>
+    <rect x="920" y="155" width="205" height="76" rx="16" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/><text x="1022" y="185" text-anchor="middle" fill="#4d176f" font-size="16" font-weight="700">解析完整响应</text><text x="1022" y="209" text-anchor="middle" fill="#796488" font-size="12">文本、Tool Calls、usage</text>
   </g>
+  <path d="M190 193H233" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M415 193H458" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M640 193H683" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M865 193H908" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+
+  <path d="M1022 231V280" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <path d="M1022 292L1135 360L1022 428L909 360Z" fill="#fff" stroke="#7c3aed" stroke-width="2.5"/>
+  <text x="1022" y="354" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">需要继续？</text>
+  <text x="1022" y="378" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">工具、完成、取消、错误</text>
+
+  <path d="M909 360H760" fill="none" stroke="#70488d" stroke-width="2.7" marker-end="url(#arrow)"/>
+  <text x="835" y="348" text-anchor="middle" fill="#5d0cae" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">有 Tool Calls</text>
+  <rect x="515" y="320" width="235" height="80" rx="17" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/>
+  <text x="632" y="352" text-anchor="middle" fill="#6a5014" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">ToolCallExecutor</text>
+  <text x="632" y="377" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">执行整批调用并返回 ToolResult</text>
+
+  <path d="M515 360H360" fill="none" stroke="#239474" stroke-width="2.8" marker-end="url(#arrowGreen)"/>
+  <rect x="125" y="320" width="225" height="80" rx="17" fill="#f1fbf8" stroke="#79c7b2" stroke-width="2"/>
+  <text x="237" y="352" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">Observation</text>
+  <text x="237" y="377" text-anchor="middle" fill="#5f8177" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">把结果反馈给下一轮模型</text>
+  <path d="M237 320V270H555V243" fill="none" stroke="#239474" stroke-width="2.8" marker-end="url(#arrowGreen)"/>
+
+  <path d="M1135 360H1168V486H1137" fill="none" stroke="#239474" stroke-width="2.8" marker-end="url(#arrowGreen)"/>
+  <text x="1138" y="346" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">完成</text>
+  <rect x="880" y="450" width="245" height="72" rx="17" fill="#f1fbf8" stroke="#79c7b2" stroke-width="2"/>
+  <text x="1002" y="479" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">completed</text>
+  <text x="1002" y="502" text-anchor="middle" fill="#5f8177" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">发布最终消息和终态事件</text>
+
+  <path d="M965 394L822 486" fill="none" stroke="#c84b62" stroke-width="2.7" marker-end="url(#arrowRed)"/>
+  <text x="866" y="430" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">停止</text>
+  <rect x="560" y="450" width="250" height="72" rx="17" fill="#fff2f4" stroke="#d96b7f" stroke-width="2"/>
+  <text x="685" y="479" text-anchor="middle" fill="#a62f47" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">其他终态</text>
+  <text x="685" y="502" text-anchor="middle" fill="#99606b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">failed / cancelled / limitReached</text>
 </svg>

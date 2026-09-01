@@ -1,32 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" role="img" aria-labelledby="title desc">
-  <title id="title">SeeCoder 上下文管理</title>
-  <desc id="desc">ContextBuilder 从权威状态、代码证据和最近历史中构建有限工作视图，超预算时使用摘要与检索。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
+  <title id="title">SeeCoder 混合上下文管理</title>
+  <desc id="desc">完整 Session 事件、ContextLedger、Evidence、Memory 和最近消息进入 buildHybridContext，经过预算选择后形成 ModelRequest。</desc>
   <defs>
     <linearGradient id="brand" x1="0" x2="1"><stop stop-color="#4d0099"/><stop offset="1" stop-color="#7c3aed"/></linearGradient>
-    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0L9 4.5L0 9Z" fill="#6d5a7d"/></marker>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#32104f" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#70488d"/></marker>
+    <marker id="arrowGold" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L11 5.5L0 11Z" fill="#c28a20"/></marker>
   </defs>
-  <rect width="1200" height="440" rx="28" fill="#f8f7fa"/>
+  <rect width="1200" height="520" rx="28" fill="#faf9fc"/>
+  <text x="40" y="43" fill="#251d2b" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24" font-weight="700">完整历史保留在磁盘，模型只看当前工作视图</text>
+  <text x="40" y="71" fill="#786d80" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">结构化事实优先，代码证据按哈希复用，旧叙事按预算压缩</text>
+
   <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
-    <rect x="50" y="55" width="230" height="108" rx="20" fill="#eef5ff" stroke="#79a9ed" stroke-width="2"/>
-    <text x="165" y="102" text-anchor="middle" font-size="23" font-weight="700" fill="#243a63">ContextLedger</text><text x="165" y="136" text-anchor="middle" font-size="16" fill="#5d6980">目标 · 计划 · 错误 · 验证</text>
-    <rect x="50" y="185" width="230" height="108" rx="20" fill="#edf8f4" stroke="#63b89b" stroke-width="2"/>
-    <text x="165" y="232" text-anchor="middle" font-size="23" font-weight="700" fill="#185b49">Evidence</text><text x="165" y="266" text-anchor="middle" font-size="16" fill="#477366">当前代码与工具结果</text>
-    <rect x="50" y="315" width="230" height="80" rx="20" fill="#fff" stroke="#d9c9e8" stroke-width="2"/>
-    <text x="165" y="350" text-anchor="middle" font-size="22" font-weight="700" fill="#241b2b">最近历史</text><text x="165" y="378" text-anchor="middle" font-size="15" fill="#746d79">完整协议组</text>
-
-    <path d="M280 109H390V180" fill="none" stroke="#6d5a7d" stroke-width="2.5" marker-end="url(#arrow)"/>
-    <path d="M280 239H390" stroke="#6d5a7d" stroke-width="2.5" marker-end="url(#arrow)"/>
-    <path d="M280 355H390V285" fill="none" stroke="#6d5a7d" stroke-width="2.5" marker-end="url(#arrow)"/>
-    <rect x="400" y="145" width="300" height="180" rx="26" fill="url(#brand)" filter="url(#shadow)"/>
-    <text x="550" y="220" text-anchor="middle" font-size="29" font-weight="700" fill="#fff">ContextBuilder</text><text x="550" y="260" text-anchor="middle" font-size="18" fill="#f4eefe">按优先级和预算组装</text><text x="550" y="294" text-anchor="middle" font-size="16" fill="#f4eefe">保护目标与工具协议</text>
-
-    <path d="M700 235H790" stroke="#6d5a7d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="800" y="160" width="330" height="150" rx="24" fill="#fff" stroke="#b38add" stroke-width="2" filter="url(#shadow)"/>
-    <text x="965" y="220" text-anchor="middle" font-size="27" font-weight="700" fill="#4d0099">ModelRequest</text><text x="965" y="260" text-anchor="middle" font-size="17" fill="#746d79">有限 · 相关 · 协议完整</text>
-
-    <rect x="470" y="360" width="510" height="55" rx="27" fill="#fff8e8" stroke="#e5ad45" stroke-width="2"/>
-    <text x="725" y="394" text-anchor="middle" font-size="17" font-weight="700" fill="#72501f">超出预算：语义摘要 + 历史检索；原始 Session 历史保持不变</text>
-    <path d="M550 325V350" stroke="#e5ad45" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <rect x="35" y="105" width="220" height="70" rx="15" fill="#fff" stroke="#d8cfdf" stroke-width="2"/><text x="145" y="134" text-anchor="middle" fill="#251d2b" font-size="16" font-weight="700">Session 事件</text><text x="145" y="156" text-anchor="middle" fill="#867b8d" font-size="12">完整、可回放、不直接删除</text>
+    <rect x="35" y="195" width="220" height="70" rx="15" fill="#eef6ff" stroke="#8bb9df" stroke-width="2"/><text x="145" y="224" text-anchor="middle" fill="#285378" font-size="16" font-weight="700">ContextLedger</text><text x="145" y="246" text-anchor="middle" fill="#61788c" font-size="12">目标、计划、revision、验证</text>
+    <rect x="35" y="285" width="220" height="70" rx="15" fill="#f1fbf8" stroke="#79c7b2" stroke-width="2"/><text x="145" y="314" text-anchor="middle" fill="#176a55" font-size="16" font-weight="700">Evidence 与 Memory</text><text x="145" y="336" text-anchor="middle" fill="#5f8177" font-size="12">代码片段、检索到的旧事实</text>
+    <rect x="35" y="375" width="220" height="70" rx="15" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/><text x="145" y="404" text-anchor="middle" fill="#6a5014" font-size="16" font-weight="700">最近完整消息组</text><text x="145" y="426" text-anchor="middle" fill="#887344" font-size="12">Assistant Tool Calls + Results</text>
   </g>
+
+  <path d="M255 140L353 180" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M255 230L353 220" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M255 320L353 260" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M255 410L353 300" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="365" y="155" width="300" height="165" rx="22" fill="url(#brand)"/>
+  <text x="515" y="198" text-anchor="middle" fill="#fff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="700">buildHybridContext</text>
+  <text x="515" y="231" text-anchor="middle" fill="#eadcff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">① 估算安全输入预算</text>
+  <text x="515" y="256" text-anchor="middle" fill="#eadcff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">② 先放权威事实与相关证据</text>
+  <text x="515" y="281" text-anchor="middle" fill="#eadcff" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">③ 补最近协议组和语义摘要</text>
+
+  <path d="M665 190L748 144" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M665 237H748" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M665 285L748 334" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <rect x="760" y="105" width="200" height="78" rx="16" fill="#fff" stroke="#b685dd" stroke-width="2"/>
+  <text x="860" y="137" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700">权威事实</text>
+  <text x="860" y="160" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">目标、计划、验证永不丢失</text>
+  <rect x="760" y="200" width="200" height="78" rx="16" fill="#fff" stroke="#79c7b2" stroke-width="2"/>
+  <text x="860" y="232" text-anchor="middle" fill="#176a55" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700">工作证据</text>
+  <text x="860" y="255" text-anchor="middle" fill="#5f8177" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">相关代码、工具观察、近况</text>
+  <rect x="760" y="295" width="200" height="78" rx="16" fill="#fff" stroke="#e0bd5d" stroke-width="2"/>
+  <text x="860" y="327" text-anchor="middle" fill="#6a5014" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" font-weight="700">旧历史摘要</text>
+  <text x="860" y="350" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">失败时使用确定性回退</text>
+  <path d="M960 144L1008 210" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M960 239H1008" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <path d="M960 334L1008 270" fill="none" stroke="#70488d" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <rect x="1020" y="185" width="145" height="110" rx="18" fill="#f4edfb" stroke="#b685dd" stroke-width="2"/>
+  <text x="1092" y="225" text-anchor="middle" fill="#4d176f" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">ModelRequest</text>
+  <text x="1092" y="250" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">有限、相关、协议完整</text>
+  <text x="1092" y="272" text-anchor="middle" fill="#796488" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">不等于完整历史</text>
+
+  <path d="M515 320V378" fill="none" stroke="#c28a20" stroke-width="2.5" marker-end="url(#arrowGold)"/>
+  <rect x="330" y="390" width="370" height="72" rx="16" fill="#fff8e8" stroke="#e0bd5d" stroke-width="2"/>
+  <text x="515" y="419" text-anchor="middle" fill="#6a5014" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="700">达到预算阈值：压缩到目标比例</text>
+  <text x="515" y="443" text-anchor="middle" fill="#887344" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">保存 ContextSnapshot，但原始 Session 事件保持不变</text>
 </svg>
