@@ -179,6 +179,165 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; col
 .source-row { display: grid; grid-template-columns: 180px 1fr; gap: 14px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); font-size: 14px; }
 .source-row code { width: fit-content; }
 
+/* Code Agent 面试题库：与普通章节样式隔离，只在题库元素出现时生效。 */
+.interview-bank { margin-top: 30px; }
+.interview-controls {
+  position: sticky;
+  top: 76px;
+  z-index: 8;
+  margin: 0 0 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+}
+.interview-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+.interview-search:focus-within {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.interview-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+}
+.interview-filter-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.interview-filter-list button,
+#expandAllQuestions,
+#collapseAllQuestions {
+  min-height: 34px;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.interview-filter-list button:hover,
+.interview-filter-list button:focus-visible,
+#expandAllQuestions:hover,
+#collapseAllQuestions:hover,
+#expandAllQuestions:focus-visible,
+#collapseAllQuestions:focus-visible {
+  border-color: var(--brand-line);
+  color: var(--brand);
+  outline: none;
+}
+.interview-filter-list button.active,
+.interview-filter-list button[aria-pressed="true"] {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+}
+.interview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+.interview-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
+.interview-action-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
+#interviewResultCount { margin-right: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+#interviewEmpty {
+  margin: 18px 0;
+  padding: 28px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.interview-question {
+  margin: 12px 0;
+  overflow: clip;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 5px 18px rgba(55, 30, 72, .035);
+}
+.interview-category[hidden] { display: none; }
+.interview-category h2 { margin-top: 42px; }
+.interview-question[hidden] { display: none; }
+.interview-question summary {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 58px;
+  padding: 16px 50px 16px 18px;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+  list-style: none;
+}
+.interview-question summary::-webkit-details-marker { display: none; }
+.interview-question summary::after {
+  content: "+";
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 18px;
+  font-weight: 500;
+}
+.interview-question[open] { border-color: var(--brand-line); }
+.interview-question[open] summary { background: var(--brand-soft); color: var(--brand); }
+.interview-question[open] summary::after { content: "−"; }
+.interview-answer { padding: 8px 18px 20px; }
+.interview-answer > :first-child { margin-top: 10px; }
+.interview-answer > :last-child { margin-bottom: 0; }
+.question-number {
+  flex: 0 0 auto;
+  min-width: 27px;
+  color: var(--brand);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.answer-label {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin: 0 8px 0 0;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: .02em;
+}
+.answer-label.project {
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  color: var(--success);
+}
+.answer-label.limit {
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+  color: var(--warning);
+}
+
 .chapter-footer { max-width: 900px; margin: 0 auto; padding: 18px 54px 64px; display: flex; justify-content: space-between; gap: 18px; }
 .chapter-link { flex: 1; min-height: 64px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: left; cursor: pointer; }
 .chapter-link.next { text-align: right; }
@@ -223,6 +382,10 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; col
   .chapter-footer { padding: 16px 22px 40px; }
   .split-grid { grid-template-columns: 1fr; }
   .source-row { grid-template-columns: 1fr; }
+  .interview-controls { position: static; padding: 13px; }
+  .interview-actions { align-items: flex-start; flex-direction: column; }
+  .interview-question summary { padding: 14px 46px 14px 14px; }
+  .interview-answer { padding: 7px 14px 17px; }
 }
 @media (max-width: 520px) {
   .article { --article-size: 16px; }
@@ -231,6 +394,19 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; col
   .chapter-footer { flex-direction: column; }
   .chapter-link.next { text-align: left; }
   .flow-row { min-width: 560px; }
+  .interview-filter-list {
+    flex-wrap: nowrap;
+    margin-right: -13px;
+    padding-right: 13px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .interview-filter-list button { flex: 0 0 auto; }
+  .interview-action-buttons { width: 100%; }
+  #expandAllQuestions, #collapseAllQuestions { flex: 1; }
+  .interview-toolbar #expandAllQuestions,
+  .interview-toolbar #collapseAllQuestions { width: 100%; }
+  #interviewResultCount { flex-basis: 100%; margin-right: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }

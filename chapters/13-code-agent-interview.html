@@ -1,0 +1,1003 @@
+<span class="chapter-kicker">第五部分 · 面试与复习</span>
+<h1>Code Agent 面试 100 问</h1>
+<p class="lead">从核心循环讲到上下文、工具、恢复和工程化。每道题先给可直接表达的答案，再说明 SeeCoder 的真实实现与边界。</p>
+
+<div class="callout">
+  <span class="callout-title">怎样使用这份题库</span>
+  <p>“面试回答”用于概括原理；“SeeCoder 实现”用于结合项目举例；“边界/改进”用于避免把尚未实现的能力说成现有功能。题目来自公开面经常见主题，经去重后按工程链路重新组织，并非任何公司的官方题库。</p>
+</div>
+
+<div class="interview-bank" data-interview-question-bank>
+  <div class="interview-controls">
+    <label class="interview-search" for="interviewSearch">
+      <span>搜索题目</span>
+      <input id="interviewSearch" type="search" placeholder="例如：ReAct、Memory、Rewind" autocomplete="off">
+    </label>
+    <div class="interview-filter-list" id="interviewFilters" aria-label="题目分类">
+      <button type="button" data-interview-category="all" class="active">全部</button>
+      <button type="button" data-interview-category="fundamentals">基础架构</button>
+      <button type="button" data-interview-category="tools">工具执行</button>
+      <button type="button" data-interview-category="loop">循环终止</button>
+      <button type="button" data-interview-category="coding">代码操作</button>
+      <button type="button" data-interview-category="context">上下文</button>
+      <button type="button" data-interview-category="memory">会话记忆</button>
+      <button type="button" data-interview-category="prompt">提示与干预</button>
+      <button type="button" data-interview-category="multi-agent">子 Agent</button>
+      <button type="button" data-interview-category="evaluation">评测观测</button>
+      <button type="button" data-interview-category="production">工程化</button>
+    </div>
+    <div class="interview-toolbar">
+      <span id="interviewResultCount">共 100 题</span>
+      <button type="button" id="expandAllQuestions">展开当前题目</button>
+      <button type="button" id="collapseAllQuestions">收起全部</button>
+    </div>
+  </div>
+
+  <section class="interview-category" data-category-section="fundamentals">
+    <h2>一、Agent 基础与整体架构</h2>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">01</span> 什么是 Code Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Code Agent 是“模型 + 控制循环 + 代码工具 + 状态系统”。模型提出下一步，程序负责读取、执行、记录、校验和停止，因此它不只是一次代码生成。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>SeeCoder 由 <code>TurnRunner</code> 驱动模型与本地工具循环，事件、Session、上下文和文件恢复都由项目自行实现。</p>
+        <p><span class="answer-label limit">边界/改进</span>它是本地桌面 Agent，不是云端自治开发平台；应用退出后不会继续在服务器执行任务。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">02</span> Code Agent 与普通聊天机器人有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>聊天机器人主要生成文本；Code Agent 能通过受控工具观察真实项目、产生副作用并用测试反馈继续决策。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>模型看不到磁盘本身，只能调用 <code>list_files</code>、<code>read_file</code>、<code>apply_patch</code>、<code>run_command</code> 等工具，结果再作为 Observation 返回。</p>
+        <p><span class="answer-label limit">边界/改进</span>工具能力不代表结果必然正确，最终仍要依赖验证、权限边界和用户审查。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">03</span> SeeCoder 的顶层架构怎样划分？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>清晰的 Agent 应把协议、模型适配、控制循环、工具、存储和界面分层，避免模型调用与本地副作用混在一起。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>protocol</code> 定义契约，<code>model</code> 解析流，<code>agent-core</code> 编排，<code>tools</code> 执行，<code>storage</code> 持久化，Electron Main 与 Renderer 负责桌面边界和展示。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前仍是模块化单体，并未拆成远程微服务。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">04</span> AgentCore 为什么要做成门面和依赖装配层？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>门面提供稳定入口，运行细节交给职责单一的组件，能减少巨型核心类并让循环、工具和会话分别测试。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>AgentCore</code> 对外提供创建 Session、启动 Turn、干预和恢复等方法；主循环下沉到 <code>TurnRunner</code>，工具链下沉到 <code>ToolCallExecutor</code>。</p>
+        <p><span class="answer-label limit">边界/改进</span>AgentCore 仍持有多类 Session 派生状态，后续可继续收敛状态所有权，但不必为拆分而拆分。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">05</span> 可以说 SeeCoder 使用了 ReAct 吗？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>可以说它采用 ReAct-style 的“模型决策—行动—观察—再决策”闭环，但不能说使用了某个 ReAct 框架。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>TurnRunner</code> 接收模型的 Tool Call，执行后把 Tool Result 作为 Observation 加入下一轮消息；循环与终止逻辑均为自行实现。</p>
+        <p><span class="answer-label limit">边界/改进</span>项目不保存或展示模型私有思维链，只保存可见文本、工具请求、工具结果和状态事件。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">06</span> 为什么没有使用 LangChain 等 Agent 框架？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>自行实现能完整控制消息协议、工具幂等、终止、压缩和恢复，也更容易解释每个状态由谁负责。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>项目使用 TypeScript、<code>fetch</code>、Zod 和 Electron 等基础能力，没有把核心循环交给 LangChain、LlamaIndex、OpenAI Agents SDK 等框架。</p>
+        <p><span class="answer-label limit">边界/改进</span>代价是必须自己维护 SSE、Tool Call 拼接、重试、取消和消息配对等边界逻辑。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">07</span> 模型和程序各自负责什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>模型负责语义判断和提出下一步；程序负责权限、参数、执行、持久化、预算、错误分类和终止。不能让模型直接决定系统边界。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>模型选择工具和参数，<code>ToolCallExecutor</code> 再执行 Zod 校验、模式限制、审批、Hook 与真实调用；<code>TurnRunner</code> 决定是否继续。</p>
+        <p><span class="answer-label limit">边界/改进</span>自然语言计划仍可能不合理，程序只能通过证据、预算和验证降低风险，不能证明模型推理一定正确。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">08</span> Session、Turn、Item、Event 分别是什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Session 是长期对话；Turn 是一次用户请求；Item 是消息、工具调用等内容单元；Event 是状态变化和实时展示的事实记录。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>这些共享类型定义在 <code>packages/protocol</code>，Core、Storage、Main 和 Renderer 使用同一契约。</p>
+        <p><span class="answer-label limit">边界/改进</span>TypeScript 类型只约束编译期，跨 IPC、配置文件和模型参数仍需运行时校验。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">09</span> 为什么 SeeCoder 采用模块化单体？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>本地 Agent 的模型、文件和界面需要低延迟协作，单进程模块边界比微服务更简单，也减少网络和一致性故障。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>多个 workspace package 在 Electron Main 的可信进程内装配，Renderer 只经类型化 IPC 请求本地能力。</p>
+        <p><span class="answer-label limit">边界/改进</span>若未来要支持云端多租户、后台任务和水平扩展，才需要任务服务、持久队列和独立执行容器。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="fundamentals">
+      <summary><span class="question-number">10</span> 一次用户任务的数据流是什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>用户目标进入 Session，程序构建上下文并请求模型；模型回答或调用工具；工具结果回到下一轮，直到完成或进入终态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>调用链是 Renderer → preload IPC → Electron Main → AgentCore → TurnRunner → ModelProvider/ToolCallExecutor → 事件存储与 Renderer 投影。</p>
+        <p><span class="answer-label limit">边界/改进</span>这条链路不是预先写死的业务工作流；固定的是控制边界，具体搜索、读取、修改顺序由模型结合工具结果选择。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="tools">
+    <h2>二、Function Calling 与工具执行</h2>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">11</span> Function Calling 在 Code Agent 中起什么作用？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>它把模型的自然语言意图转换成带名称和参数的结构化请求。模型只提出调用，宿主程序校验并决定是否真正执行。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>模型层聚合流式返回的 <code>callId</code>、工具名和参数片段，TurnRunner 得到完整 Tool Call 后才交给执行器。</p>
+        <p><span class="answer-label limit">边界/改进</span>Function Calling 不是 RPC 的可信输入，工具名和参数仍可能被模型捏造。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">12</span> 工具应怎样定义和注册？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>工具定义至少应包含名称、用途、参数 Schema、副作用、风险、并行安全性、超时和执行函数，使模型描述与运行策略共用同一能力清单。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>ToolRegistry</code> 保存 <code>ToolDefinition</code>，每个工具同时声明 Zod 参数、<code>sideEffect</code>、<code>parallelSafe</code>、<code>risk</code> 和 <code>timeoutMs</code>。</p>
+        <p><span class="answer-label limit">边界/改进</span>模型使用的 JSON Schema 与运行时 Zod 仍需保持同步，后续可从单一 Schema 自动生成另一份描述。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">13</span> Function Call 返回的 JSON 不标准怎么办？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先等流结束并按调用标识拼齐参数，再解析 JSON 和运行 Schema 校验；失败要返回结构化错误，让模型修正，绝不能猜参数后直接执行。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>ModelProvider 聚合 <code>argsDelta</code>，执行器把解析失败转换成 <code>invalid_args</code> ToolResult，下一轮模型能看到原因并重试。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前没有通用 JSON 自动修复器，这是刻意选择：对有副作用的工具，明确失败比模糊纠错更可靠。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">14</span> 模型调用了不存在的工具怎么办？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>注册表查找失败时返回 <code>unknown_tool</code>，同时保留调用与错误的配对，让模型基于真实可用工具重新决策。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>ToolCallExecutor</code> 不会把未知名称下发到 Shell，而是生成结构化失败结果并继续受控循环。</p>
+        <p><span class="answer-label limit">边界/改进</span>可以进一步在系统提示中按任务裁剪工具表，减少无关工具造成的选择错误。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">15</span> 为什么工具参数需要 Zod 校验？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>模型输出是不可信外部输入。运行时 Schema 能检查类型、必填项、枚举和长度，避免错误参数进入文件系统或命令执行器。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>每个工具在执行前使用自己的 Zod Schema 解析参数；Hook 配置也用 Zod 限制版本、标识、命令数量和超时。</p>
+        <p><span class="answer-label limit">边界/改进</span>Schema 只能验证结构，不能证明命令语义安全，因此后面仍需 WorkspacePolicy、风险识别和审批。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">16</span> 怎样阻止文件工具越出工作区？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>对用户路径做规范化和绝对路径解析，再验证最终路径仍位于工作区根目录内；不能只检查字符串前缀或相信模型。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>WorkspacePolicy</code> 是所有本地文件能力的统一边界，读取、写入、补丁和命令都在当前 workspace 约束内运行。</p>
+        <p><span class="answer-label limit">边界/改进</span>这是应用层路径隔离，不等于 OS 容器或虚拟机沙箱；命令仍具有当前 Windows 用户的系统权限。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">17</span> 为什么有些工具需要用户审批？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>审批把不可逆或高风险动作交还给用户确认。是否审批应由权限模式、工具副作用和风险共同决定，而不是由模型自行声明安全。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>执行器可把 Turn 切到 <code>waitingApproval</code>；用户允许后恢复运行，拒绝则生成 <code>approval_denied</code> 供模型选择替代方案。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前风险判断包含规则和正则，并非 Shell AST 或操作系统强制策略。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">18</span> 多个工具调用可以并行吗？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>只有相互独立且只读的调用适合并行；写文件、运行可能改变状态的命令及计划更新应按顺序执行，以避免竞态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>工具定义通过 <code>parallelSafe</code> 标记能力，独立只读调用可批量并行，副作用工具由工作区修改协调器串行保护。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前不是基于依赖图的通用调度器，不能自动证明两个任意调用真正互不影响。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">19</span> 如何避免工具因重试而重复产生副作用？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应把模型提供的调用标识当作幂等键：同一 Turn 内若已经完成该调用，就复用结果而不是再次写文件或运行命令。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>ToolCallExecutor</code> 记录已处理的 <code>callId</code>，工具请求与 Tool Result 也按该标识配对。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前缓存只保证同一 Turn 内的重复 callId 不会再次执行；它不是跨 Turn、跨进程或跨服务的分布式幂等协议。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="tools">
+      <summary><span class="question-number">20</span> SeeCoder 当前有哪些工具？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>工具应覆盖“定位—读取—修改—验证—协作—收尾”，同时保持数量有限、用途清楚。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>当前共 17 个：<code>list_files</code>、<code>read_file</code>、<code>read_files</code>、<code>read_artifact</code>、<code>search_text</code>、<code>search_memory</code>、<code>write_file</code>、<code>apply_patch</code>、<code>run_command</code>、<code>git_diff</code>、<code>set_plan</code>、<code>finish</code>、<code>delegate</code>、<code>ask_user</code>、<code>checkpoint</code>、<code>review_changes</code>、<code>compact_context</code>。</p>
+        <p><span class="answer-label limit">边界/改进</span><code>search_memory</code>、委派、完成和压缩等由 Core 特殊调度，并非普通 tools 包单独就能完成。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="loop">
+    <h2>三、Agent 循环、终止与故障恢复</h2>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">21</span> 一次 iteration 指什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>一次 iteration 是一次完整的模型决策边界：构建当前上下文、请求并解析模型响应，再根据响应完成、执行工具或进入其他状态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>TurnRunner.run()</code> 中的循环每轮重新消费 Steering、构建混合上下文、流式调用模型，并处理文本与 Tool Calls。</p>
+        <p><span class="answer-label limit">边界/改进</span>一次 iteration 可以包含一批工具调用，因此它不等于一个工具，也不等于一个完整 Turn。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">22</span> 一轮结束后怎样判断 Turn 是否完成？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先判断是否有明确终态、取消或错误；有工具调用就执行并继续，无工具调用且没有待消费干预时，才可自然完成。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>TurnRunner 同时检查完整 Tool Calls、<code>finish</code>、Steering、AbortSignal 和迭代预算，统一发布一个终态。</p>
+        <p><span class="answer-label limit">边界/改进</span>模型说“完成了”只是一段文本；代码层终止条件才是最终判断。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">23</span> <code>finish</code> 与自然结束有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span><code>finish</code> 是结构化完成声明，可携带摘要与验证；自然结束是模型没有再请求工具，系统把本轮正文作为最终回答。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>两条路径都由 TurnRunner 收口；工具执行期间到达 Steering 会撤销本次完成并继续下一轮。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前 <code>finish</code> 是推荐的明确收尾工具，但并非所有代码修改后的强制唯一出口。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">24</span> 为什么设置最大模型迭代次数？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>上限防止模型在重复搜索、参数修正或测试失败中无限循环，并给成本、时间和资源占用确定边界。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>主 Turn 最多 50 次模型迭代，接近上限时加入收敛提醒，最后一轮只允许 <code>finish</code>。</p>
+        <p><span class="answer-label limit">边界/改进</span>把上限调高不会解决不收敛的根因，还应监控重复调用、无进展和错误类型。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">25</span> 为什么 Agent 有时总说“结果被截断”？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>文件列表和命令输出必须有大小上限，否则单次工具结果会挤占模型上下文。截断是资源控制，不等于执行失败。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>list_files</code> 返回 <code>truncated=true</code> 时，系统提示模型缩小目录或直接读取已知路径；大型结果还可外置为 Artifact 后分段读取。</p>
+        <p><span class="answer-label limit">边界/改进</span>模型若忽略截断标志仍可能误判“文件不存在”，可进一步用策略自动缩小搜索范围。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">26</span> Agent 错误应如何分类和恢复？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应区分参数错误、未知工具、审批拒绝、超时、模型网络错误、取消和不可恢复异常；可修复错误反馈给模型，不可恢复错误进入终态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>工具统一返回结构化 <code>ToolResult</code>，TurnRunner 决定继续还是失败；ModelProvider 对有限的瞬时错误进行重试。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前策略不是学习型恢复器，复杂故障仍可能消耗多轮后到达迭代上限。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">27</span> AbortController 在 Agent 中做什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>它创建可传播的取消信号，让用户停止同一个 Turn 时，模型请求、工具、命令和子 Agent 都能尽快终止。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>每个活动 Turn 持有 AbortController，<code>signal</code> 沿 ModelProvider 和执行器下传；取消后 Turn 进入 <code>cancelled</code>，清理型 <code>turnEnd</code> Hook 使用独立信号。</p>
+        <p><span class="answer-label limit">边界/改进</span>取消是协作式的；底层调用若不监听信号，就不能保证立刻停止。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">28</span> 怎样识别 Agent 没有取得进展？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>可观察连续相同读取、相同错误、无新增 Evidence、无 revision 变化和反复调用同一参数，并在阈值后提醒收敛或停止。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统对连续只读探索和接近迭代上限提供提醒，也通过调用记录避免同一调用标识重复执行。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前不是完整的语义进展评分器；不同参数但语义重复的循环仍可能漏检。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">29</span> 最后一轮为什么只允许调用 <code>finish</code>？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>最后一轮再启动新工具已没有下一轮消化结果，容易出现“工具做完但没有最终回答”，因此应强制进入收尾。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>第 50 轮传给模型的工具表只保留 <code>finish</code>；若仍请求其他工具，TurnRunner 返回受控失败而不执行。</p>
+        <p><span class="answer-label limit">边界/改进</span>更理想的策略是更早根据剩余预算规划收尾，而不是等到最后一轮才限制。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="loop">
+      <summary><span class="question-number">30</span> 为什么工具执行完了却可能没有最终输出？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>工具结果只是 Observation，还需要下一次模型调用把证据组织成最终回答；若预算正好耗尽，旧实现就可能停在工具结果之后。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>当前通过 50 轮上限前的收敛提醒和“末轮仅 finish”避免在最后一步继续执行新工具，并统一保存终态。</p>
+        <p><span class="answer-label limit">边界/改进</span>若模型持续拒绝收尾，系统只能报告 <code>limitReached</code>，不能凭空生成一个经过模型确认的答案。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="coding">
+    <h2>四、代码检索、编辑与验证</h2>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">31</span> Code Agent 应怎样探索陌生仓库？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先定位入口和目录，再搜索关键符号，最后读取命中片段及其依赖；不要一开始把整个仓库塞进上下文。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统提示要求优先用 <code>list_files</code>、<code>search_text</code> 定位，再用 <code>read_file/read_files</code> 读取必要内容，并避免重复读取。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前没有 AST 级跨语言代码索引，主要依赖路径、文本搜索与模型判断。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">32</span> 文件列表被截断后应怎样处理？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>截断只说明结果超过展示预算，不能据此判断目标不存在。正确做法是缩小目录、提高搜索针对性或读取已知路径。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>list_files</code> 返回条目数和 <code>truncated</code> 标志，系统提示专门约束模型不要从不完整列表得出否定结论。</p>
+        <p><span class="answer-label limit">边界/改进</span>目录非常大时仍需多次缩小范围，未来可增加按扩展名和忽略规则的更精确过滤。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">33</span> 为什么要提供批量读取工具？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>当路径已经明确时，一次读取多个文件能减少模型往返次数，也能在同一上下文中比较接口、实现与调用方。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>read_files</code> 用于批量读取已知文本文件，系统提示要求它优先于连续多轮 <code>read_file</code>。</p>
+        <p><span class="answer-label limit">边界/改进</span>批量读取仍受输出预算限制，文件过大时应只取相关行而不是扩大批次。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">34</span> 怎样保证补丁写入的一致性？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应先校验所有旧内容和目标路径，再一次性提交写入；任一文件不匹配时整批失败，避免半个补丁成功。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>apply_patch</code> 支持 unified diff 和项目补丁格式，使用事务式多文件写入，并由工作区修改协调器锁住涉及路径。</p>
+        <p><span class="answer-label limit">边界/改进</span>它不是数据库事务；进程或机器在极端时刻崩溃时，文件系统级原子性仍受平台能力影响。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">35</span> 为什么运行命令属于高风险工具？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Shell 命令可修改任意文件、访问网络或启动进程，能力远大于专用读取工具，因此必须限制工作目录、超时、取消并按风险审批。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>run_command</code> 在 workspace 内运行并流式输出，默认作为有副作用、高风险且不可并行的工具处理。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前没有容器隔离，正则风险识别也不能理解全部 PowerShell 或 Shell 语义。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">36</span> ChangeSet 是什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>ChangeSet 是一次文件修改的结构化记录，保存改了哪些路径及恢复所需信息，便于界面展示、审计和撤销。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>文件写入成功后，<code>ChangeManager</code> 记录变更并建立修改前快照；Session 事件保存对应变更事实。</p>
+        <p><span class="answer-label limit">边界/改进</span>它关注工作区文件变化，不是完整 Git 提交，也不记录系统外部副作用。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">37</span> checkpoint 工具做什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Checkpoint 把一次任务修改前后的文件状态绑定到同一个恢复入口，用户之后可以撤销这一轮代码改动。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>checkpoint</code> 工具只登记创建意图；真正的恢复点由 <code>ChangeManager</code> 在 Turn 收尾时统一聚合，且一个发生过修改的 Turn 只创建一个。</p>
+        <p><span class="answer-label limit">边界/改进</span>Checkpoint 主要覆盖项目文件，不是虚拟机快照，无法撤销已经发送的网络请求或外部服务变化。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">38</span> checkpoint 与 rewind 有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Checkpoint 面向工作区恢复；Rewind 面向会话历史，表示从某个事件位置派生一条新的对话路线。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>恢复 Checkpoint 会校验文件哈希、逆序恢复 ChangeSet，并隐藏被撤销 Turn；<code>rewindSession()</code> 只通过 <code>SessionLifecycle</code> 创建增量子 Session，不自动修改工作区。</p>
+        <p><span class="answer-label limit">边界/改进</span>Session 分支共享同一物理工作区，因此不能把 Rewind 当成 Git 分支、Worktree 或代码快照。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">39</span> 为什么修改代码后旧测试结果会过期？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>测试只证明它运行时的代码版本。任何后续写入都可能改变行为，因此验证结果必须绑定 revision，不能永久复用。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>ContextLedger</code> 记录代码 revision 和验证状态；若最新成功验证早于最后一次修改，完成时会给出陈旧验证提醒。</p>
+        <p><span class="answer-label limit">边界/改进</span>revision 说明时间关系，不判断测试覆盖是否充分；仍需模型和用户选择针对性测试。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="coding">
+      <summary><span class="question-number">40</span> 如何同时回退对话和代码？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先把一次 Turn 的文件修改记录成可逆 ChangeSet；恢复时校验当前文件未被继续修改，再逆序还原文件，并追加一条历史撤销事件。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>界面的“回退本轮操作”调用 Checkpoint 恢复。<code>ChangeManager.restore()</code> 还原代码后发布 <code>turn.reverted</code>，回放器据此从可见对话和模型上下文中移除该 Turn。</p>
+        <p><span class="answer-label limit">边界/改进</span>若当前文件哈希与修改后的哈希不一致，系统会返回冲突并拒绝覆盖；普通 Session Rewind 本身不会恢复代码。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="context">
+    <h2>五、上下文工程与压缩</h2>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">41</span> 为什么不能把完整 Session 每次都发送给模型？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>完整历史会持续增长，带来上下文溢出、成本上升和注意力稀释。磁盘历史应完整保存，模型工作视图则按任务与预算构建。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Session 事件保留在 JSONL 中，<code>buildHybridContext</code> 只组合当前需要的 Ledger、Evidence、近期协议组和摘要。</p>
+        <p><span class="answer-label limit">边界/改进</span>筛选和摘要可能遗漏旧细节，因此提供 <code>search_memory</code> 让模型按需追溯。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">42</span> 什么是混合上下文？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>混合上下文不是单一聊天数组，而是把结构化任务状态、代码证据、近期消息和压缩摘要按优先级组合成模型请求。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>buildHybridContext</code> 先估算安全输入预算，优先保留权威事实与相关 Evidence，再加入完整的最近 Assistant Tool Calls + Results 协议组。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前相关性仍以规则和轻量索引为主，不是训练得到的最优上下文路由器。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">43</span> Ledger、Evidence、Memory、Observation 怎样配合？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Ledger 保存“任务现在是什么状态”，Evidence 保存“当前代码版本读到了什么”，Observation 是“刚执行工具得到什么”，Memory 用于“以后按需找回旧事实”。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>前两者自动参与混合上下文；近期 Observation 以工具消息保留；旧 Memory 不自动灌入，而由模型调用 <code>search_memory</code> 检索。</p>
+        <p><span class="answer-label limit">边界/改进</span>四者有信息重叠，但用途和生命周期不同；合并成一个大数组会失去版本和优先级语义。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">44</span> ContextLedger 具体保存什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Ledger 是结构化任务账本，适合保存目标、计划、约束、决定、代码 revision、验证和当前进展等需要稳定复用的顶层状态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>它按 Session 存放，由 AgentCore 管理并在事件和工具结果到来时更新，构建上下文时作为高优先级事实加入。</p>
+        <p><span class="answer-label limit">边界/改进</span>其中部分约束、验收条件和决策目前仍依赖模型或事件推导，自动维护还不完全。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">45</span> FileEvidenceStore 为什么要绑定文件版本？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>代码证据只有在对应文件未改变时才可信。写入后应使旧片段失效，防止模型依据修改前内容继续判断当前代码。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Evidence 记录已读取路径、片段和 revision；文件修改会更新状态，使过期 Evidence 不再被当作当前事实优先注入。</p>
+        <p><span class="answer-label limit">边界/改进</span>它不是完整语法图，也不会自动理解两个文件之间的语义依赖。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">46</span> Observation 是滑动窗口吗？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>可以把近期 Observation 类比为受预算裁剪的工作窗口，但它本质是工具调用的真实返回，不是一个单独的滑动窗口类。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Observation 以 <code>role: tool</code> 的 ModelMessage 保存，并与发起它的 Assistant Tool Call 成组进入后续上下文；旧组可能被摘要或裁剪。</p>
+        <p><span class="answer-label limit">边界/改进</span>不能只保留 Tool Result 而丢掉对应调用，否则模型协议会不完整，也不知道结果来自哪个工具。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">47</span> Memory 与普通对话历史有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>历史是按时间保存的原始事件；Memory 是从事件派生的可检索事实索引，用于在旧内容不再位于当前窗口时按需召回。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>MemoryIndex</code> 从用户消息、工具结果、修改、错误和验证等事件摄取条目，模型通过关键词查询而不是每轮自动注入。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前检索不是向量语义检索，同义表达可能需要模型生成更合适的关键词。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">48</span> 上下文压缩怎样保证不丢关键状态？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>关键是把“完整历史”和“模型视图”分离：原事件不删除，压缩只替换工作视图中的旧消息，并把目标、决定和验证保留在结构化状态中。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>compact_context</code> 或预算触发会生成 ContextSnapshot；失败时使用确定性摘要兜底，原始 Session JSONL 保持不变。</p>
+        <p><span class="answer-label limit">边界/改进</span>摘要仍可能损失语义，且压缩边界之前的细节需要通过 Memory 查询恢复。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">49</span> 为什么裁剪必须保持 Tool Call 协议组完整？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Assistant 发出的每个 Tool Call 必须有对应 Tool Result。若只裁掉其中一半，下一次模型请求会失去因果关系，甚至被 API 判为非法消息。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>上下文构建按完整消息组选择近期内容，不在 Assistant Tool Calls 和 Tool Results 中间截断。</p>
+        <p><span class="answer-label limit">边界/改进</span>组本身非常大时需要先外置 Tool Result 或摘要，不能靠任意字符截断解决。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="context">
+      <summary><span class="question-number">50</span> 模型上下文预算怎样分配？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先从模型窗口扣除预留输出和安全余量，再按优先级装入系统规则、当前目标、权威状态、相关证据和近期完整协议组。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>TokenCalibrator 根据实际 usage 校准估算，ContextBuilder 在预算阈值触发压缩，并保存本次 ContextSnapshot。</p>
+        <p><span class="answer-label limit">边界/改进</span>token 估算和不同兼容模型的计费方式可能有偏差，因此仍保留安全余量而非填满窗口。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="memory">
+    <h2>六、Memory、Session 与持久化状态</h2>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">51</span> <code>sessionMessages</code> 中保存什么格式的数据？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>它保存发给模型的协议消息：用户消息、助手正文及 Tool Calls、工具结果。核心字段是 <code>role</code>、<code>content</code>，工具消息还带调用配对信息。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>类型为 <code>ModelMessage[]</code>，常见角色是 <code>user</code>、<code>assistant</code> 和 <code>tool</code>；它是当前 Session 的模型消息投影，不等于完整事件日志。</p>
+        <p><span class="answer-label limit">边界/改进</span>调试器里看到 70 多条不代表它们每轮全部发送，ContextBuilder 还会按预算选择和压缩。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">52</span> 为什么 Session 采用追加式事件日志？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>追加事件能保留“发生过什么”，便于实时 UI、审计、重放和恢复；直接反复覆盖一个大状态对象会丢失过程。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>SessionStore</code> 把事件追加到 JSONL，同时用元数据和派生状态文件加速启动；回放函数从事件重建消息、Turn、ChangeSet 等。</p>
+        <p><span class="answer-label limit">边界/改进</span>JSONL 适合本地单机，不提供数据库级查询、事务和多进程并发写能力。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">53</span> 事件日志与当前状态是什么关系？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>事件是权威历史，当前状态是从历史推导的投影。投影可以缓存，但损坏或缺失时应能由事件重新构建。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>AgentCore 发出事件时补齐 Session 路由、写入存储、更新 Memory 索引并通知监听器；启动回放重建消息与派生对象。</p>
+        <p><span class="answer-label limit">边界/改进</span>部分 state 文件用于性能，必须通过版本和测试避免与事件事实发生漂移。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">54</span> Session 分支的基本机制是什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>分支从父 Session 的某个事件序号开始，读取时继承父分支此前历史，再接上自己的新增事件；父分支后续变化不进入子分支。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>子 Session 元数据保存 <code>parentSessionId</code> 和 <code>forkedFromSeq</code>，存储层递归读取父前缀并合并子 JSONL。</p>
+        <p><span class="answer-label limit">边界/改进</span>分支不是 Git 分支；它描述 Agent 会话和恢复关系，代码状态仍由快照与修改记录处理。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">55</span> 为什么分支只保存增量而不复制父 JSONL？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>复制会浪费空间，并让相同历史出现多份难以校验。保存父引用与分叉位置即可确定子分支可见的历史前缀。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>子 Session 自己的 JSONL 只记录分叉后的事件，读取结果是“父 E1–E3 + 子 E4′以后”，不会混入父 E4、E5。</p>
+        <p><span class="answer-label limit">边界/改进</span>读取长分支链需要递归合并；未来可用周期性物化快照优化，但不能改变事件语义。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">56</span> Fork 与 Rewind 有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>概念上，Fork 表示主动尝试另一条路线，Rewind 表示回到较早位置后继续；二者都可以用“父历史前缀 + 子分支增量”表示。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>SessionLifecycle</code> 中二者实际复用同一个 <code>forkFrom()</code>，差别只体现在分支标题表达的用户意图；都不会自动恢复工作区文件。</p>
+        <p><span class="answer-label limit">边界/改进</span>要撤销 Agent 对代码的修改，应恢复对应 Checkpoint；切换 Session 分支不等于切换 Git 分支或文件快照。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">57</span> 应用重启后怎样恢复 Agent 状态？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>启动时读取 Session 元数据与事件，重放得到 Turn、消息、计划和变更；正在执行的机器指令不能从中间续跑，应标为中断。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>SessionLifecycle 加载 JSONL，重建 Ledger、Evidence、Memory、ChangeSet、Checkpoint 与消息投影，必要时读取缓存状态。</p>
+        <p><span class="answer-label limit">边界/改进</span>本地应用退出后没有后台 worker，所以活动 Turn 只能恢复为可解释的中断状态，不能无缝续接进程。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">58</span> Memory 是怎样建立索引的？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Memory 应从已经发生的事件中派生，而不是凭空生成；可记录来源、事实类型、路径、文本和时间，以便之后可追溯。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>AgentCore 在事件发出时调用 <code>MemoryIndex.ingest()</code>，当前 Session 最多保留有限条事实，覆盖消息、代码、工具观察、错误和验证。</p>
+        <p><span class="answer-label limit">边界/改进</span>这是轻量本地索引，不包含知识图谱、向量数据库或跨项目全局记忆。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">59</span> 当前 Memory 如何召回？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>由 LLM 判断何时缺少旧信息，并生成明确关键词、路径或事实类型；程序只做确定性的本地匹配和结果排序，再把命中作为工具结果返回。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>模型显式调用 <code>search_memory</code>，MemoryIndex 在当前 Session 中按 includes/路径等匹配，限制返回数量和字符预算；不会每轮自动召回。</p>
+        <p><span class="answer-label limit">边界/改进</span>LLM 负责提出查询，不负责直接访问索引；当前无 embedding，关键词选错会造成漏召回。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="memory">
+      <summary><span class="question-number">60</span> SeeCoder 当前算企业级 RAG 吗？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>不算。企业 RAG 通常需要文档解析、分块、embedding、混合检索、权限过滤、重排、版本更新和离线评测。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>它的 <code>search_memory</code> 是当前 Session 内的轻量关键词事实召回，代码检索则主要使用本地路径与文本工具。</p>
+        <p><span class="answer-label limit">边界/改进</span>若要处理大规模跨仓库知识，应另建可增量更新、带 ACL 的索引服务，而不是继续扩大当前 Memory 数组。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="prompt">
+    <h2>七、Prompt、规划、Hook 与动态干预</h2>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">61</span> System Prompt 应怎样组织？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先定义身份和不可违反的边界，再写工具策略、完成条件和效率要求，最后注入项目规则与本轮 Skill；稳定规则应放前面。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>TurnRunner 按语言、权限模式、平台、workspace、AGENTS.md 和激活 Skill 动态构建 System Prompt，并明确 50 轮、验证和收尾规则。</p>
+        <p><span class="answer-label limit">边界/改进</span>Prompt 只是软约束，路径、审批、只读模式和终止仍必须由代码强制。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">62</span> 怎样缓解 Prompt Injection？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>把文件内容、工具输出和项目说明视为不可信数据，明确优先级；真正的安全要求由执行器强制，而不是期待模型忽略恶意文本。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统提示声明工作区文件、AGENTS.md、Skill 和命令输出不能覆盖核心规则；ToolCallExecutor 再独立执行权限和路径检查。</p>
+        <p><span class="answer-label limit">边界/改进</span>提示隔离不能完全消除注入，未来可增加来源标记、敏感动作二次确认和最小工具暴露。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">63</span> AGENTS.md 在 Prompt 中扮演什么角色？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>它提供仓库级开发约定，例如测试命令、代码风格和目录规则，属于项目上下文，不应覆盖平台安全和用户明确要求。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>根目录项目规则会作为带边界的附加段落注入本轮 System Prompt，优先级低于核心安全规则。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前主要加载根 AGENTS.md，尚未按目标文件路径完整实现嵌套规则继承。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">64</span> Skill 与普通 Prompt 有什么区别？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Skill 是按任务激活的可复用操作说明，适合封装特定领域步骤和资源；普通 Prompt 则是本轮用户目标或全局规则。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>被激活 Skill 的名称和内容在本轮加入 System Prompt，并发布 <code>skill.activated</code> 事件用于界面和审计。</p>
+        <p><span class="answer-label limit">边界/改进</span>Skill 内容仍是不可信项目数据，不能获得新的系统权限，也不能覆盖工作区策略。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">65</span> 怎样让主 Agent 的任务拆解更合理？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>计划应从目标、约束和验收条件出发，步骤必须可执行、可验证，并在发现新证据后更新，而不是一次生成后固定不变。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>模型可调用 <code>set_plan</code> 发布用户可见步骤；Ledger 保存当前计划与 revision，系统提示要求阶段变化时更新状态。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前计划质量主要由 LLM 决定，没有独立规划器对步骤依赖做形式化验证。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">66</span> Hook 的作用是什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Hook 是在确定生命周期边界自动运行的项目命令，用于把格式化、检查、策略或清理变成程序保证，而不是等模型主动记起。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>HookRuntime 解析可信配置，ToolCallExecutor 顺序执行命令并发布 <code>hook.started/completed</code> 事件；失败返回结构化结果。</p>
+        <p><span class="answer-label limit">边界/改进</span>Hook 本身也可能执行代码，不能把未审查的仓库配置自动当成可信命令。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">67</span> 当前有哪些 Hook 生命周期？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span><code>preToolUse</code> 在工具前检查并可阻止；<code>postFileEdit</code> 在文件修改后做格式化或检查；<code>turnEnd</code> 在 Turn 终态前做收尾。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>每阶段最多配置有限条命令并按顺序执行，前置 Hook 失败会阻止工具；后置 Hook 失败不会假装已成功的文件写入从未发生。</p>
+        <p><span class="answer-label limit">边界/改进</span>项目定义的是三个固定阶段，不是任意事件都可注入代码的通用插件系统。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">68</span> 为什么启用 Hook 要确认配置哈希？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>用户信任的是一份具体配置内容，而不是永久信任某个文件名。内容改变后哈希随之改变，应重新确认，防止命令被静默替换。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Electron Main 读取并验证 Hook 配置，首次使用由用户确认配置哈希；Core 只通过受信任 HookRuntime 执行。</p>
+        <p><span class="answer-label limit">边界/改进</span>哈希只证明“内容与已确认版本相同”，不证明命令本身无漏洞。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">69</span> Steering 是什么，何时生效？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Steering 是对正在运行的同一个 Turn 改方向，例如“停止改后端，只修前端”。它在下一个安全协议边界加入，而不是插进半个工具调用。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>steerTurn()</code> 把内容写入 InterventionQueue；TurnRunner 在模型请求前或完整工具组后消费，作为正式用户消息加入原 Turn。</p>
+        <p><span class="answer-label limit">边界/改进</span>它不会倒退已经完成的副作用；若要撤销代码，需要恢复 ChangeSet 或 Checkpoint，普通 Rewind 只处理会话分支。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="prompt">
+      <summary><span class="question-number">70</span> Follow-up 与 Steering 如何区分？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Steering 修改当前 Turn 的方向；Follow-up 等当前任务结束后启动新 Turn，例如“做完后再补测试”。二者不能混成普通字符串追加。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>InterventionQueue 分别记录 <code>steering</code> 和 <code>followUp</code>；成功收尾后，TurnRunner 按顺序合并待执行 Follow-up 并创建新的 turnId。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前 Follow-up 是本 Session 内的顺序追加，不是可持久调度到未来时间的任务队列。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="multi-agent">
+    <h2>八、子 Agent 与多 Agent 协作</h2>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">71</span> SeeCoder 是否包含子 Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>包含。子 Agent 适合把边界清楚的探索或审查任务独立出去，让主 Agent 保持当前执行脉络。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span><code>SubagentRunner</code> 为每个委派创建独立短消息历史、模型循环、取消控制器和 UI 状态，结果作为主 Agent 的工具结果返回。</p>
+        <p><span class="answer-label limit">边界/改进</span>这不是多个对等 Agent 自治协商；主 Agent 始终负责任务方向和唯一写入。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">72</span> 当前子 Agent 有哪些角色？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>角色应按输出目标区分，而不是只换一个名字：Explore 负责定位和理解，Review 负责从已有变化中找问题与风险。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>当前只有 <code>explore</code> 和 <code>review</code> 两类；主模型分别通过 <code>delegate</code> 与 <code>review_changes</code> 调度。</p>
+        <p><span class="answer-label limit">边界/改进</span>没有实现可写的 Implementer、测试执行 Agent 或任意自定义角色。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">73</span> 主 Agent 如何把上下文传给子 Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应传递明确任务、角色和可选关注路径，而不是复制主 Agent 的全部聊天历史；子 Agent 再通过只读工具获取所需证据。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>委派参数包含 <code>role</code>、<code>task</code> 和可选 <code>focusPaths</code>，子 Agent 自建 system/user 消息并读取同一 workspace。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前不会把完整 Ledger、Memory 和主消息自动同步给子 Agent，复杂背景需要在 task 中说明。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">74</span> 为什么子 Agent 只能只读？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>限制为只读可避免多个 Agent 并发覆盖文件、难以排序 ChangeSet 或把错误责任分散；主 Agent 保持唯一写入者。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>子 Agent 只暴露 <code>list_files</code>、<code>read_file</code>、<code>search_text</code>、<code>git_diff</code>，并再次检查工具定义不能有副作用。</p>
+        <p><span class="answer-label limit">边界/改进</span>因此子 Agent 不能自己修复发现的问题，只能把结论和证据交回主 Agent。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">75</span> 为什么禁止子 Agent 继续委派？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>禁止嵌套能限制调用树、Token 成本和取消复杂度，也避免子任务失控地继续拆分。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>子 Agent 的工具白名单不包含 <code>delegate</code> 或 <code>review_changes</code>，System Prompt 也明确禁止继续委派。</p>
+        <p><span class="answer-label limit">边界/改进</span>这牺牲了深层分治能力；若未来开放嵌套，必须增加深度、总预算和任务图约束。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">76</span> 子 Agent 有哪些资源上限？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>子任务应有独立的并发数、模型轮数、输出长度和证据数量上限，避免辅助调查反过来耗尽主任务预算。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>最多同时运行 2 个只读子 Agent，每个最多 6 轮，单轮最大输出 3000 token，最终摘要和证据也会截断。</p>
+        <p><span class="answer-label limit">边界/改进</span>这些是固定本地上限，尚未按任务难度或全局 Token 预算动态分配。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">77</span> 什么任务适合委派给子 Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>适合可独立、只读且输出边界明确的工作，例如定位入口、追踪某条调用链、检查一组 Diff；简单搜索不应为了“多 Agent”而委派。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统提示只允许 Explore/Review，主 Agent 可以并行获取不同调查结论，再统一决定是否修改。</p>
+        <p><span class="answer-label limit">边界/改进</span>委派本身要多一次模型循环，任务过小时延迟和成本可能高于收益。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">78</span> 子 Agent 的结果怎样回到主 Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应返回有限的结构化摘要、证据位置和风险，而不是把完整子对话直接灌入主上下文。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>SubagentRunner 把最终 <code>summary</code> 和最多有限条 <code>evidence</code> 包装成 ToolResult，主 Agent 在下一轮像读取普通 Observation 一样消费。</p>
+        <p><span class="answer-label limit">边界/改进</span>子 Agent 的完整消息轨迹目前没有作为独立 Session 完整持久化，复盘粒度小于主 Agent。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">79</span> 多 Agent 常见协作模式有哪些？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>常见模式有主管—执行者、并行专家、流水线、辩论/评审和黑板共享状态；选择取决于任务依赖、写冲突和验证成本。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>它主要采用“主管—只读专家”：主 Agent 委派 Explore/Review，子 Agent 返回证据，主 Agent 串行实施。</p>
+        <p><span class="answer-label limit">边界/改进</span>项目未实现对等群聊、拍卖调度、共享黑板或多个写 Agent 的冲突合并。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="multi-agent">
+      <summary><span class="question-number">80</span> 父 Turn 取消后子 Agent 会怎样？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>取消必须沿任务树传播，否则界面看似停止，子 Agent 仍会消耗模型和读取旧工作区。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>每个子 Agent 有独立 AbortController，同时监听父 Turn 的 AbortSignal；父级取消或切换 workspace 时会中止并清理并发记录。</p>
+        <p><span class="answer-label limit">边界/改进</span>底层 Provider 和工具仍需正确响应 signal，取消不是强制终止任意第三方 API 的保证。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="evaluation">
+    <h2>九、评测、可观测性与可靠性</h2>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">81</span> 如何设计 Code Agent 的评价指标？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先看任务成功率和测试通过率，再看补丁正确性、工具失败率、迭代数、Token、时延、用户干预率与回滚率；不能只评价最终文本。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>事件中记录 Turn 终态、工具结果、模型 usage、验证、修改和耗时，可支持按 Session 复盘这些指标。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前没有完整的线上评测平台和趋势看板，主要依赖测试与本地轨迹分析。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">82</span> 为什么不能只用“答案看起来不错”评估 Agent？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>代码任务的结果作用于真实仓库，文字正确不代表程序能构建、测试通过或未破坏既有行为，必须验证最终环境状态。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统要求完成摘要中的 verification 只列真实运行过的命令，并用代码 revision 判断成功验证是否已经过期。</p>
+        <p><span class="answer-label limit">边界/改进</span>测试通过仍不等于需求完全满足，还需更好的任务级验收用例与人工审查。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">83</span> SeeCoder 的测试分哪些层级？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>Agent 应同时测试纯算法、控制循环、真实文件副作用和桌面交互，不应把全部行为押在端到端模型测试上。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>项目包含 lint、TypeScript typecheck、Vitest 单元/集成测试和 Electron Playwright E2E；Core 测试覆盖循环、审批、Hook、记忆与恢复。</p>
+        <p><span class="answer-label limit">边界/改进</span>真实模型 Eval 数量和长期回归样本仍可扩充，尤其是不同兼容网关的流式边界。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">84</span> 为什么测试 AgentCore 要使用 Fake ModelProvider？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>模型输出具有随机性且调用昂贵。Fake Provider 能按脚本返回文本、Tool Calls、错误和 usage，使状态机测试快速、可重复。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>测试用假 Provider 精确构造多轮流，断言消息配对、自然完成、Steering、Follow-up、迭代限制和文件副作用。</p>
+        <p><span class="answer-label limit">边界/改进</span>Fake 只能证明程序对给定输入的行为，不能证明真实模型会生成高质量策略，因此仍需少量真实 Prompt Eval。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">85</span> 为什么一个 listener 能收到很多事件？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span><code>listeners.size</code> 表示订阅回调数量，不是事件数量。同一个回调会在每次 emit 时调用，所以一个监听器可连续接收许多不同事件。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>AgentCore 的 <code>emit()</code> 每次保存并派生事件后，对 Set 中每个 listener 调用一次；Electron Main 的一个转发器即可把整条事件流发送给 Renderer。</p>
+        <p><span class="answer-label limit">边界/改进</span>若 listener 执行缓慢，会影响同步分发路径；未来可按需求增加缓冲或隔离，但当前本地监听规模很小。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">86</span> Agent 轨迹应该记录什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>应记录可观察事实：用户消息、可见助手文本、Tool Call、Tool Result、审批、Hook、状态、usage 和变更；不应记录私有思维链。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>V3 AgentEvent 写入 Session JSONL 并实时投影到 UI，工具卡、计划、子 Agent 和终态都由事件重建。</p>
+        <p><span class="answer-label limit">边界/改进</span>日志可观测性与隐私需平衡，API Key 和敏感内容不应进入事件或调试输出。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">87</span> 工具失败后为什么要反馈给模型？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>失败是新 Observation。结构化返回错误码、信息和可重试性后，模型才能修正参数、缩小范围或选择另一种方法。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>工具异常不会只在后台打印，而是转换为 <code>ToolResult</code> 并按 callId 加入消息；例如 <code>invalid_args</code> 会进入下一轮。</p>
+        <p><span class="answer-label limit">边界/改进</span>反馈过长会污染上下文，过短又难以恢复；当前主要依赖结构化错误和输出截断平衡两者。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">88</span> 怎样缓解 Agent 幻觉和乱调工具？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>用真实工具观察替代猜测；缩小并清楚描述工具集；对名称和参数校验；把错误反馈给模型；对副作用增加权限和验证。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>注册表、Zod、WorkspacePolicy、审批、Hook、Evidence 和验证 revision 构成多层边界，未知工具不会进入真实执行。</p>
+        <p><span class="answer-label limit">边界/改进</span>这些措施降低行为风险，但不能消除模型对需求或代码语义的错误理解。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">89</span> 怎样建立 Agent 回归测试集？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>收集代表性的读取、修改、测试、审批、取消、压缩、恢复和错误场景，冻结输入仓库与验收脚本，同时统计成功率和成本。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>现有测试覆盖正常闭环、参数错误、重复 callId、Plan 只读、Hook 阻断、Steering/Follow-up、Memory 搜索与 Session 分支。</p>
+        <p><span class="answer-label limit">边界/改进</span>尚未形成类似 SWE-bench 的大规模真实 Issue 数据集，也未自动比较不同模型版本。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="evaluation">
+      <summary><span class="question-number">90</span> UI 为什么要基于事件投影而不是直接读取 Core 内存？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>事件让实时展示、重启回放和审计使用同一事实来源，也避免 Renderer 获得本地 Core 的直接对象权限。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Electron Main 订阅一个 AgentCore 事件流，经 preload 的类型化 IPC 转发；Renderer 把事件投影成消息、工具卡、状态和计划。</p>
+        <p><span class="answer-label limit">边界/改进</span>投影逻辑若对同一语义重复渲染，可能出现重复最终消息，需要通过事件类型与 item identity 去重。</p>
+      </div>
+    </details>
+  </section>
+
+  <section class="interview-category" data-category-section="production">
+    <h2>十、安全、并发、成本与规模化</h2>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">91</span> 当前 SeeCoder 如何调度多个任务？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>单机 Agent 可在进程内维护活动 Turn 和工作区互斥；只有跨进程、后台和多租户场景才需要持久队列与分布式调度。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>当前是 Electron 本地桌面应用，TurnRunner 和 WorkspaceMutationCoordinator 在内存中协调任务与文件修改，没有 Redis、消息队列或远程 worker。</p>
+        <p><span class="answer-label limit">边界/改进</span>应用退出后任务不会继续，亦不支持多台机器争抢同一作业。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">92</span> 多用户同时调用 API，任务多时如何避免卡死？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>生产系统应使用持久任务队列、每租户配额、按模型和工具分池、超时取消、背压与幂等键，并把状态存入数据库。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>SeeCoder 面向单个本地用户，只实现 Turn、只读工具和子 Agent 的有限并发，以及同 workspace 的修改互斥。</p>
+        <p><span class="answer-label limit">边界/改进</span>不能把现有内存 Map 描述成多租户调度方案；若服务化，需要新增鉴权、隔离、队列、租约和故障转移。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">93</span> 如何为一万篇长文档构建 RAG？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先解析与去噪，再按结构分块并保留来源；建立关键词与向量混合索引，查询时做权限过滤、召回、重排和引用，最后用离线题集评估。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>当前仅有 Session 内 <code>search_memory</code> 关键词召回与代码文本搜索，可以作为接口原型，不能承担上述文档知识库。</p>
+        <p><span class="answer-label limit">边界/改进</span>需要新增独立摄取流水线、embedding/倒排存储、增量更新、ACL、重排与检索评测，而不是让模型一次读完文档。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">94</span> SeeCoder 的安全边界在哪里？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>安全应分为工具最小化、参数校验、工作区路径约束、权限审批、Hook 信任、取消与审计；Prompt 不能代替执行边界。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Renderer 无 Node 权限，本地能力经 preload IPC；工具经过 Zod、WorkspacePolicy、风险模式和审批，写入可记录恢复点。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前不是 OS 级沙箱，已获准的命令仍以当前用户权限运行，不能宣称具备恶意代码强隔离。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">95</span> API Key 应如何保存？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>密钥只应来自环境变量或受保护的进程配置，避免写进源码、仓库、Prompt、事件和日志，并提供轮换和清除能力。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>密钥可从环境变量读取，也可由 Electron <code>safeStorage</code> 加密保存；Renderer 与 Session 事件不保存明文 Key。</p>
+        <p><span class="answer-label limit">边界/改进</span>本地加密强度依赖操作系统账户环境，若主机已被攻破，应用层无法提供绝对保护。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">96</span> 如何降低 Agent 的成本和延迟？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>减少无效模型轮次，批量执行独立读取，按需检索旧记忆，外置大结果，限制子 Agent，并用小模型处理简单分类或摘要。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>系统提示鼓励先搜索后读取、使用 <code>read_files</code>、并行安全只读工具和及时收敛；上下文预算、Artifact、Memory 与迭代上限共同控成本。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前没有自动模型路由、前缀缓存计费分析或基于历史数据的动态预算器。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">97</span> 流式模型响应为什么难解析？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>SSE 的文本、工具名、参数 JSON 和 usage 都可能分片到达，网络块边界也不等于事件边界；必须缓冲完整行并按 callId 聚合。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>ModelProvider 解析 OpenAI 兼容 SSE，分别产出 <code>textDelta</code>、<code>toolCallDelta</code>、usage、completed 和 error 事件，TurnRunner 在流结束后处理完整调用。</p>
+        <p><span class="answer-label limit">边界/改进</span>不同兼容网关可能返回非标准分片；当前对严重畸形流的诊断和兼容测试仍可加强。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">98</span> Hook 机制有哪些供应链风险？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>仓库中的 Hook 命令可能被依赖更新或提交内容修改，自动执行就等于授予代码执行权，因此需要内容确认、最小权限、超时和审计。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>Main 对配置哈希建立信任，配置经 Zod 校验，Hook 按阶段顺序运行并记录事件；<code>preToolUse</code> 失败可阻止真实工具。</p>
+        <p><span class="answer-label limit">边界/改进</span>当前仍在用户权限下执行命令，未来可增加签名、命令白名单或受限子进程环境。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">99</span> 当前项目最重要的已知限制有哪些？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>成熟度判断应主动说明隔离、检索、恢复、评测和分布式能力的边界，而不是只罗列功能。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>核心循环、工具、Session、上下文、干预和本地恢复已经闭环；但没有 OS 沙箱、云端队列、企业 RAG，子 Agent 只读，嵌套规则与真实模型评测仍有限。</p>
+        <p><span class="answer-label limit">边界/改进</span>优先改进应由实际失败数据驱动：先加强命令隔离与 Eval，再考虑复杂多 Agent 或分布式架构。</p>
+      </div>
+    </details>
+
+    <details class="interview-question" data-category="production">
+      <summary><span class="question-number">100</span> 如果把 SeeCoder 演进为生产级 Code Agent，应先做什么？</summary>
+      <div class="interview-answer">
+        <p><span class="answer-label">面试回答</span>先建立可重复任务集与可观测指标，再加强执行隔离、上下文质量和故障恢复；只有出现真实吞吐需求后才引入队列和分布式 worker。</p>
+        <p><span class="answer-label project">SeeCoder 实现</span>现有 Protocol、AgentCore 门面、TurnRunner、ToolCallExecutor 和事件存储可作为演进边界，避免重写已经清晰的核心闭环。</p>
+        <p><span class="answer-label limit">边界/改进</span>推荐顺序是 Eval → OS 级沙箱与权限 → 检索/上下文评测 → 可恢复后台任务 → 多租户；不是先堆更多 Agent 角色。</p>
+      </div>
+    </details>
+  </section>
+
+  <p id="interviewEmpty" hidden>没有匹配的题目，请更换关键词或分类。</p>
+</div>
+
+<h2>题型来源与答案依据</h2>
+<p>下面的公开资料只用于归纳常见面试主题和校准原理。所有“SeeCoder 实现”均以当前仓库源码为准；公开资料不是本项目依赖，也不代表某家公司会原样提问。</p>
+
+<h3>公开面试题型</h3>
+<ul>
+  <li><a href="https://github.com/aishwaryanr/awesome-generative-ai-guide/blob/main/interview_prep/system-design/coding-agent/README.md" target="_blank" rel="noreferrer">Coding Agent System Design Interview</a>：Coding Agent 架构、代码检索、工具和评测题型。</li>
+  <li><a href="https://www.joinai.com/blog/ai-agent-system-design-interview" target="_blank" rel="noreferrer">AI Agent System Design Interview Questions</a>：Agent 循环、记忆、可靠性和生产化题型。</li>
+  <li><a href="https://www.reddit.com/r/AI_Agents/" target="_blank" rel="noreferrer">Reddit AI Agents 社区</a>：真实项目讨论中的工具、RAG、多 Agent 和上线问题；只用于发现题型，不作为技术结论依据。</li>
+</ul>
+
+<h3>一手技术依据</h3>
+<ul>
+  <li><a href="https://arxiv.org/abs/2210.03629" target="_blank" rel="noreferrer">ReAct: Synergizing Reasoning and Acting in Language Models</a>：行动与观察闭环。</li>
+  <li><a href="https://arxiv.org/abs/2310.06770" target="_blank" rel="noreferrer">SWE-bench</a>：真实软件问题与仓库级 Agent 评测。</li>
+  <li><a href="https://www.anthropic.com/engineering/building-effective-agents" target="_blank" rel="noreferrer">Anthropic：Building effective agents</a>：工作流、Agent、工具和多 Agent 设计原则。</li>
+  <li><a href="https://modelcontextprotocol.io/specification/2025-06-18" target="_blank" rel="noreferrer">Model Context Protocol Specification</a>：模型、工具与宿主之间的协议边界。</li>
+  <li><a href="https://platform.openai.com/docs/guides/structured-outputs" target="_blank" rel="noreferrer">OpenAI Structured Outputs</a>：结构化模型输出与 Schema 约束。</li>
+  <li><a href="https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" target="_blank" rel="noreferrer">OWASP LLM06: Excessive Agency</a>：工具权限、最小能力与用户审批风险。</li>
+  <li><a href="https://www.nist.gov/itl/ai-risk-management-framework" target="_blank" rel="noreferrer">NIST AI Risk Management Framework</a>：AI 系统风险识别、测量与治理。</li>
+</ul>
+
+<div class="callout">
+  <span class="callout-title">最后记住</span>
+  <p>回答项目题时采用“原理 → SeeCoder 代码落点 → 当前边界”的顺序。能准确说出尚未实现什么，比把行业方案都说成现有功能更可信。</p>
+</div>

@@ -12,6 +12,7 @@ const chapters = [
   { id: "11", group: "保证可靠", title: "终止、安全与恢复", file: "10-safety-recovery.html" },
   { id: "12", group: "保证可靠", title: "测试怎样证明系统可信", file: "11-testing.html" },
   { id: "13", group: "进入源码", title: "源码阅读路线", file: "12-defense.html" },
+  { id: "14", group: "面试准备", title: "Code Agent 面试 100 问", file: "13-code-agent-interview.html" },
 ];
 
 const completedKey = "seecoder-docs-completed";
@@ -19,14 +20,17 @@ const progressSchemaKey = "seecoder-docs-progress-schema";
 
 function loadCompletedChapters() {
   const saved = JSON.parse(localStorage.getItem(completedKey) || "[]");
-  if (localStorage.getItem(progressSchemaKey) === "2") return new Set(saved);
-  // 新增第 6 章后，原来的第 6～12 章整体后移一位；迁移旧进度，避免把旧章节误记到新章节。
-  const migrated = saved.map((id) => {
+  const schema = localStorage.getItem(progressSchemaKey);
+  if (schema === "3") return new Set(saved);
+
+  // schema 2 已包含历史章节编号迁移；追加第 14 章时无需再改旧编号。
+  // 只对更旧的记录执行一次“第 6～12 章后移”，避免重复迁移。
+  const migrated = schema === "2" ? saved : saved.map((id) => {
     const number = Number(id);
     return Number.isInteger(number) && number >= 6 ? String(number + 1).padStart(2, "0") : id;
   });
   localStorage.setItem(completedKey, JSON.stringify(migrated));
-  localStorage.setItem(progressSchemaKey, "2");
+  localStorage.setItem(progressSchemaKey, "3");
   return new Set(migrated);
 }
 
@@ -41,6 +45,7 @@ const article = $("#article");
 const chapterNav = $("#chapterNav");
 const searchInput = $("#searchInput");
 const searchResults = $("#searchResults");
+let disposeInterviewQuestions = () => {};
 
 const wait = (duration) => new Promise((resolve) => setTimeout(resolve, duration));
 
@@ -108,13 +113,90 @@ function resolveChapterAssets() {
   });
 }
 
+/**
+ * 为“Code Agent 面试 100 问”初始化局部搜索、分类筛选和展开控制。
+ * 函数在其他章节中会立即返回，不会改变全局搜索与导航行为。
+ */
+function initializeInterviewQuestions() {
+  disposeInterviewQuestions();
+  disposeInterviewQuestions = () => {};
+
+  const interviewSearch = article.querySelector("#interviewSearch");
+  const questions = [...article.querySelectorAll("details.interview-question[data-category]")];
+  if (!interviewSearch || questions.length === 0) return;
+
+  const controller = new AbortController();
+  const eventOptions = { signal: controller.signal };
+  const categorySections = [...article.querySelectorAll("[data-category-section]")];
+  let activeCategory = "all";
+
+  const updateQuestions = () => {
+    const query = interviewSearch.value.trim().toLocaleLowerCase("zh-CN");
+    let visibleCount = 0;
+
+    questions.forEach((question) => {
+      const matchesCategory = activeCategory === "all" || question.dataset.category === activeCategory;
+      const matchesQuery = !query || question.textContent.toLocaleLowerCase("zh-CN").includes(query);
+      const visible = matchesCategory && matchesQuery;
+      question.hidden = !visible;
+      if (visible) visibleCount += 1;
+    });
+
+    categorySections.forEach((section) => {
+      section.hidden = ![...section.querySelectorAll(".interview-question")]
+        .some((question) => !question.hidden);
+    });
+
+    article.querySelectorAll("#interviewFilters [data-interview-category]").forEach((button) => {
+      const selected = button.dataset.interviewCategory === activeCategory;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+
+    const resultCount = article.querySelector("#interviewResultCount");
+    if (resultCount) resultCount.textContent = `显示 ${visibleCount} / ${questions.length} 题`;
+    const emptyState = article.querySelector("#interviewEmpty");
+    if (emptyState) emptyState.hidden = visibleCount !== 0;
+  };
+
+  article.addEventListener("input", (event) => {
+    if (event.target === interviewSearch) updateQuestions();
+  }, eventOptions);
+
+  article.addEventListener("click", (event) => {
+    const filter = event.target.closest("#interviewFilters [data-interview-category]");
+    if (filter) {
+      activeCategory = filter.dataset.interviewCategory || "all";
+      updateQuestions();
+      return;
+    }
+
+    if (event.target.closest("#expandAllQuestions")) {
+      questions.forEach((question) => {
+        if (!question.hidden) question.open = true;
+      });
+      return;
+    }
+
+    if (event.target.closest("#collapseAllQuestions")) {
+      questions.forEach((question) => { question.open = false; });
+    }
+  }, eventOptions);
+
+  updateQuestions();
+  disposeInterviewQuestions = () => controller.abort();
+}
+
 async function navigate(index, updateHash = true) {
   if (index < 0 || index >= chapters.length) return;
   state.current = index;
+  disposeInterviewQuestions();
+  disposeInterviewQuestions = () => {};
   article.innerHTML = '<div class="loading">正在加载章节…</div>';
   try {
     article.innerHTML = await loadChapter(index);
     resolveChapterAssets();
+    initializeInterviewQuestions();
     state.completed.add(chapters[index].id);
     localStorage.setItem(completedKey, JSON.stringify([...state.completed]));
     $("#chapterCrumb").textContent = chapters[index].title;
